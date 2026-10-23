@@ -1,0 +1,149 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "zhouteng/pi_moon/core/provider"
+
+import {
+  "conglinyizhi/moonbit-llm-faceoff",
+  "moonbitlang/core/debug",
+  "zhouteng/pi_moon/core/message",
+  "zhouteng/pi_moon/core/runtime",
+  "zhouteng/pi_moon/core/state",
+}
+
+// Values
+pub fn build_request_body(ResolvedProvider, @state.AgentState, ChatOptions, Bool) -> Json
+
+pub let default_compat : ModelCompat
+
+pub fn effect_table(PiConfig, ChatOptions) -> @runtime.EffectTable
+
+pub fn effect_table_full(PiConfig, ChatOptions, ProviderHooks, async (@state.AgentState, Array[@message.ToolCall], @runtime.Dispatch) -> Unit) -> @runtime.EffectTable
+
+pub fn effect_table_with_hooks(PiConfig, ChatOptions, ProviderHooks) -> @runtime.EffectTable
+
+pub fn effect_table_with_tools(PiConfig, ChatOptions, async (@state.AgentState, Array[@message.ToolCall], @runtime.Dispatch) -> Unit) -> @runtime.EffectTable
+
+pub async fn load_pi_config(agent_dir? : String) -> PiConfig
+
+pub fn noop_hooks() -> ProviderHooks
+
+pub fn provider_env_key(String) -> String
+
+pub fn request_body_text(ResolvedProvider, @state.AgentState, ChatOptions) -> String
+
+pub fn resolve_agent_dir(Map[String, String]) -> String
+
+// Errors
+pub(all) suberror ProviderError {
+  UnknownProvider(String)
+  UnknownModel(provider~ : String, model~ : String)
+  UnsupportedApi(api~ : String, provider~ : String)
+  MissingBaseUrl(provider~ : String)
+  Config(message~ : String)
+}
+pub fn ProviderError::to_string(Self) -> String
+
+// Types and methods
+pub(all) struct ChatOptions {
+  api_key : String?
+  thinking_level : String?
+  temperature : Double?
+  max_tokens : Int32?
+  idle_timeout_ms : Int32
+} derive(Eq, @debug.Debug)
+pub fn ChatOptions::defaults() -> Self
+
+pub(all) struct ModelCompat {
+  thinking_format : String
+  max_tokens_field : String
+  supports_reasoning_effort : Bool
+  supports_usage_in_streaming : Bool
+  requires_reasoning_content : Bool
+  supports_developer_role : Bool
+  requires_tool_result_name : Bool
+} derive(Eq, @debug.Debug)
+
+pub(all) struct PiConfig {
+  providers : Array[PiProviderInfo]
+  default_provider : String?
+  default_model : String?
+  default_thinking_level : String
+  auth : Map[String, String]
+  env : Map[String, String]
+  agent_dir : String
+  diagnostics : Array[String]
+}
+pub fn PiConfig::describe_models(Self) -> String
+pub fn PiConfig::find_provider(Self, String) -> PiProviderInfo?
+pub fn PiConfig::resolve(Self, provider? : String, model? : String, api_key? : String, thinking? : String) -> ResolvedProvider raise ProviderError
+
+pub(all) struct PiModelInfo {
+  id : String
+  name : String
+  api : String
+  base_url : String?
+  reasoning : Bool
+  context_window : Int32
+  max_tokens : Int32?
+  thinking_level_map : Map[String, String?]
+  cost_input : Double
+  cost_output : Double
+  compat : ModelCompat
+}
+
+pub(all) struct PiProviderInfo {
+  name : String
+  base_url : String
+  api : String
+  api_key : String?
+  models : Array[PiModelInfo]
+}
+
+pub(all) struct ProviderHooks {
+  on_content : async (String) -> Unit
+  on_thinking : async (String) -> Unit
+}
+
+pub(all) struct ResolvedProvider {
+  provider_name : String
+  base_url : String
+  api : String
+  model : PiModelInfo
+  api_key : String
+  thinking_level : String
+  agent_dir : String
+}
+pub fn ResolvedProvider::describe(Self) -> String
+pub fn ResolvedProvider::faceoff_settings(Self, String) -> @moonbit-llm-faceoff.Settings
+
+pub(all) struct StreamAccumulator {
+  content : StringBuilder
+  reasoning : StringBuilder
+  drafts : Array[ToolCallDraft]
+  mut usage : @moonbit-llm-faceoff.TokenUsage?
+  mut finish_reason : String?
+  mut done : Bool
+}
+pub fn StreamAccumulator::apply_line(Self, String) -> StreamDelta
+pub fn StreamAccumulator::is_truncated(Self) -> Bool
+pub fn StreamAccumulator::new() -> Self
+pub fn StreamAccumulator::text(Self) -> String
+pub fn StreamAccumulator::thinking(Self) -> String
+pub fn StreamAccumulator::to_assistant_part(Self, PiModelInfo) -> @message.AssistantPart
+pub fn StreamAccumulator::tool_calls(Self) -> Array[@message.ToolCall]
+
+pub(all) enum StreamDelta {
+  DeltaNone
+  DeltaContent(String)
+  DeltaReasoning(String)
+} derive(Eq, @debug.Debug)
+
+pub(all) struct ToolCallDraft {
+  index : Int32
+  mut id : String
+  mut name : String
+  mut arguments : String
+}
+
+// Type aliases
+
+// Traits

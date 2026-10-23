@@ -1,0 +1,108 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "zhouteng/pi_moon/core/trace"
+
+import {
+  "moonbitlang/core/debug",
+  "moonbitlang/core/immut/hashmap",
+  "zhouteng/pi_moon/core/message",
+}
+
+// Values
+pub fn advances_tip(TraceNode) -> Bool
+
+pub fn append_node(TraceTree, String?, TraceNodeKind, TraceNodeStatus, String, Int64, detail? : String, meta? : Array[(String, String)], message? : @message.Message, ended_at? : Int64) -> (TraceTree, TraceNode)
+
+pub fn children_of(TraceTree, String?) -> Array[TraceNode]
+
+pub fn create_trace_tree(String) -> TraceTree
+
+pub fn format_duration(Int64) -> String
+
+pub fn get_node(TraceTree, String) -> TraceNode?
+
+pub fn head_path(TraceTree) -> Array[TraceNode]
+
+pub fn meta_get(TraceNode, String) -> String?
+
+pub fn patch_node(TraceTree, String, status? : TraceNodeStatus, label? : String, detail? : String, meta? : Array[(String, String)], ended_at? : Int64) -> TraceTree
+
+pub fn path_to(TraceTree, String) -> Array[TraceNode]
+
+pub fn render_tree(TraceTree, max_width? : Int32) -> String
+
+pub fn trace_rows(TraceTree, max_width? : Int32) -> Array[TraceRow]
+
+pub fn trace_stats(TraceTree) -> TraceStats
+
+// Errors
+
+// Types and methods
+pub(all) struct TraceNode {
+  id : String
+  parent_id : String?
+  kind : TraceNodeKind
+  status : TraceNodeStatus
+  label : String
+  detail : String?
+  meta : Array[(String, String)]
+  message : @message.Message?
+  created_at : Int64
+  ended_at : Int64?
+} derive(Eq, @debug.Debug)
+
+pub(all) enum TraceNodeKind {
+  User
+  TurnStart
+  TurnEnd
+  StepStart
+  StepEnd
+  LlmResult
+  ToolCallNode
+  ToolResultNode
+  ErrorNode
+  StopNode
+  CompactNode
+  PromptBase
+  PromptTools
+  PromptSegment
+  PromptSkills
+  ModelInit
+  ModelChanged
+  ExtensionEvent
+} derive(Eq, @debug.Debug)
+pub fn TraceNodeKind::name(Self) -> String
+
+pub(all) enum TraceNodeStatus {
+  Pending
+  Ok
+  Errored
+  Aborted
+} derive(Eq, @debug.Debug)
+pub fn TraceNodeStatus::name(Self) -> String
+
+pub(all) struct TraceRow {
+  node : TraceNode
+  prefix : String
+  text : String
+} derive(Eq, @debug.Debug)
+
+pub(all) struct TraceStats {
+  turns : Int32
+  steps : Int32
+  tool_calls : Int32
+  errors : Int32
+  retries : Int32
+  duration_ms : Int64
+} derive(Eq, @debug.Debug)
+
+pub(all) struct TraceTree {
+  nodes : @hashmap.HashMap[String, TraceNode]
+  order : Array[String]
+  tip_id : String?
+  next_seq : Int32
+  session_id : String
+} derive(Eq, @debug.Debug)
+
+// Type aliases
+
+// Traits

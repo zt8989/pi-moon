@@ -1,0 +1,114 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "zhouteng/pi_moon/core/action"
+
+import {
+  "moonbitlang/core/debug",
+  "zhouteng/pi_moon/core/common",
+  "zhouteng/pi_moon/core/message",
+  "zhouteng/pi_moon/core/trace",
+}
+
+// Values
+pub let no_capabilities : ModelCapabilities
+
+// Errors
+
+// Types and methods
+pub(all) enum AgentAction {
+  PromptInit(PromptInitData)
+  ModelInit(ModelSpec)
+  ModelChanged(ModelSpec)
+  ThinkingChanged(String)
+  UserMessage(UserInput)
+  QueueInput(QueuedInputAction)
+  QueueDelivered(QueuedInputAction)
+  QueueClear
+  TurnStart
+  TurnEnd
+  TurnContinue
+  StepStart
+  StepEnd(StepEndData)
+  AgentRun(String?)
+  LlmStarted
+  LlmDelta(String)
+  LlmThinking(String)
+  LlmDone(LlmDoneData)
+  LlmFailed(LlmFailedData)
+  LlmGiveup(LlmFailedData)
+  ToolCall(Array[@message.ToolCall])
+  ToolStart(@message.ToolCall)
+  ToolProgress(ToolProgressData)
+  ToolResult(@message.ToolResultPart)
+  ToolBatchDone(Int32)
+  TracePersisted(Int32)
+  ConversationReset(ConversationResetData)
+} derive(Eq, @debug.Debug)
+pub fn AgentAction::name(Self) -> String
+
+pub(all) struct ConversationResetData {
+  session_id : String?
+} derive(Eq, @debug.Debug)
+
+pub(all) struct LlmDoneData {
+  message : @message.AssistantPart
+  node_id : String?
+} derive(Eq, @debug.Debug)
+
+pub(all) struct LlmFailedData {
+  error : String
+  kind : @common.LlmErrorKind
+  node_id : String?
+  cause : @common.StopCause?
+} derive(Eq, @debug.Debug)
+
+pub(all) struct ModelCapabilities {
+  mid_convo_system_messages : Bool
+  mid_convo_tool_additions : Bool
+  developer_role : Bool
+} derive(Eq, @debug.Debug)
+
+pub(all) struct ModelSpec {
+  provider : String
+  model_id : String
+  thinking_level : String
+  reasoning : Bool
+  capabilities : ModelCapabilities
+  context_window : Int32
+} derive(Eq, @debug.Debug)
+
+pub(all) struct PromptInitData {
+  system_prompt : String
+  tools : Array[PromptToolDefinition]
+} derive(Eq, @debug.Debug)
+
+pub(all) struct PromptToolDefinition {
+  name : String
+  description : String
+  parameters : String
+} derive(Eq, @debug.Debug)
+
+pub(all) struct QueuedInputAction {
+  text : String
+  content : Array[@message.Content]
+  kind : @common.QueueKind
+} derive(Eq, @debug.Debug)
+
+pub(all) struct StepEndData {
+  step_index : Int32
+  status : @trace.TraceNodeStatus
+  tool_calls : Int32
+} derive(Eq, @debug.Debug)
+
+pub(all) struct ToolProgressData {
+  tool_call_id : String
+  content : Array[@message.Content]
+} derive(Eq, @debug.Debug)
+
+pub(all) struct UserInput {
+  text : String
+  content : Array[@message.Content]
+} derive(Eq, @debug.Debug)
+
+// Type aliases
+
+// Traits

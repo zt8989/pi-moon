@@ -1,0 +1,13 @@
+import {
+  "zhouteng/pi_moon/core/common",
+  "zhouteng/pi_moon/core/message",
+  "zhouteng/pi_moon/core/trace",
+  "zhouteng/pi_moon/core/action",
+  "zhouteng/pi_moon/core/state",
+  "zhouteng/pi_moon/core/runtime",
+  "moonbitlang/async",
+}
+
+pkgtype(kind: "executable")
+
+warnings = "-79-67"

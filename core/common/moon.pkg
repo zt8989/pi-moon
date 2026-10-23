@@ -1,0 +1,2 @@
+// 共享的标量枚举与错误分类。没有依赖，谁都可以引。
+warnings = "-implicit_impl_as_method"

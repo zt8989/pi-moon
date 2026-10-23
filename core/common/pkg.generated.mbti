@@ -1,0 +1,81 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "zhouteng/pi_moon/core/common"
+
+import {
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn cause_from_kind(LlmErrorKind, StopCause?) -> StopCause
+
+pub fn classify_llm_error(String) -> LlmErrorKind
+
+pub fn is_retryable(LlmErrorKind) -> Bool
+
+pub fn stop_cause_text(StopCause) -> String
+
+pub fn summarize(String) -> String
+
+pub fn turn_reason_text(TurnEndReason) -> String
+
+// Errors
+
+// Types and methods
+pub(all) enum LlmErrorKind {
+  Timeout
+  Network
+  Auth
+  Model
+  Aborted
+  Unknown
+} derive(Eq, @debug.Debug)
+pub fn LlmErrorKind::name(Self) -> String
+
+pub(all) enum Phase {
+  Idle
+  Thinking
+  CallingTools
+} derive(Eq, @debug.Debug)
+pub fn Phase::name(Self) -> String
+
+pub(all) enum QueueKind {
+  Steer
+  FollowUp
+} derive(Eq, @debug.Debug)
+pub fn QueueKind::name(Self) -> String
+
+pub(all) enum StopCause {
+  CauseCompleted
+  CauseMaxTurns
+  CauseUser
+  CauseTimeout
+  CauseNetwork
+  CauseAuth
+  CauseModel
+  CauseLlmError
+  CauseToolError
+  CauseShutdown
+  CauseCompactError
+} derive(Eq, @debug.Debug)
+pub fn StopCause::name(Self) -> String
+
+pub(all) enum StopReason {
+  Completed
+  MaxTurns
+  Errored
+  Aborted
+} derive(Eq, @debug.Debug)
+pub fn StopReason::name(Self) -> String
+
+pub(all) enum TurnEndReason {
+  TurnCompleted
+  TurnMaxTurns
+  TurnError
+  TurnAborted
+  TurnInterrupted
+} derive(Eq, @debug.Debug)
+pub fn TurnEndReason::name(Self) -> String
+
+// Type aliases
+
+// Traits

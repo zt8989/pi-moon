@@ -1,0 +1,14 @@
+import {
+  "zhouteng/pi_moon/core/message",
+  "zhouteng/pi_moon/core/action",
+  "zhouteng/pi_moon/core/state",
+  "zhouteng/pi_moon/core/loop",
+}
+
+import {
+  "zhouteng/pi_moon/core/common",
+  "zhouteng/pi_moon/core/trace",
+  "moonbitlang/async",
+} for "wbtest"
+
+warnings = "-79-67"

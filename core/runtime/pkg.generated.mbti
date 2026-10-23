@@ -1,0 +1,51 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "zhouteng/pi_moon/core/runtime"
+
+import {
+  "zhouteng/pi_moon/core/action",
+  "zhouteng/pi_moon/core/loop",
+  "zhouteng/pi_moon/core/message",
+  "zhouteng/pi_moon/core/state",
+}
+
+// Values
+pub fn noop_effect_table() -> EffectTable
+
+// Errors
+pub suberror AgentError {
+  BudgetExhausted
+}
+
+// Types and methods
+pub(all) struct Agent {
+  mut state : @state.AgentState
+  table : EffectTable
+  clock : () -> Int64
+  queue : Array[@action.AgentAction]
+  mut head : Int32
+  deferred : Array[@loop.Cmd]
+  mut budget : Int32
+  mut processed : Int32
+  mut observer : ((@action.AgentAction) -> Unit)?
+}
+pub fn Agent::enqueue(Self, @action.AgentAction) -> Unit
+pub fn Agent::new(@state.AgentState, EffectTable, () -> Int64) -> Self
+pub fn Agent::observe(Self, (@action.AgentAction) -> Unit) -> Unit
+pub fn Agent::pending(Self) -> Bool
+pub async fn Agent::pump_pending(Self) -> Unit
+pub async fn Agent::run(Self) -> Unit
+pub async fn Agent::send(Self, @action.AgentAction) -> Unit
+
+pub(all) struct Dispatch {
+  emit : (@action.AgentAction) -> Unit raise
+}
+pub fn Dispatch::send(Self, @action.AgentAction) -> Unit raise
+
+pub(all) struct EffectTable {
+  run_agent : async (@state.AgentState, Dispatch) -> Unit
+  run_tools : async (@state.AgentState, Array[@message.ToolCall], Dispatch) -> Unit
+}
+
+// Type aliases
+
+// Traits

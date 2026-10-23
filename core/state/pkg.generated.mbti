@@ -1,0 +1,125 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "zhouteng/pi_moon/core/state"
+
+import {
+  "moonbitlang/core/debug",
+  "moonbitlang/core/immut/hashmap",
+  "zhouteng/pi_moon/core/action",
+  "zhouteng/pi_moon/core/common",
+  "zhouteng/pi_moon/core/message",
+  "zhouteng/pi_moon/core/trace",
+}
+
+// Values
+pub fn create_initial_state(InitialStateOptions) -> AgentState
+
+pub let default_llm_timeout_ms : Int64
+
+// Errors
+
+// Types and methods
+pub(all) struct AgentState {
+  phase : @common.Phase
+  session_id : String
+  cwd : String
+  prompt : PromptState
+  model : ModelState
+  system_prompt : String
+  provider_name : String
+  model_id : String
+  thinking_level : String
+  messages : Array[@message.Message]
+  tool_names : Array[String]
+  streaming_text : String
+  thinking_text : String
+  stream_seq : Int32
+  pending_tool_calls : Array[@message.ToolCall]
+  executing : Array[ExecutingTool]
+  turns : Int32
+  max_turns : Int32?
+  turn_index : Int32
+  step_index : Int32
+  total_steps : Int32
+  steer_queue : Array[QueuedInput]
+  follow_up_queue : Array[QueuedInput]
+  delivering_input : QueuedInput?
+  delivering_as : @common.QueueKind?
+  usage : @message.Usage?
+  total_cost : Double
+  error : String?
+  error_node_id : String?
+  error_kind : @common.LlmErrorKind?
+  stop_reason : @common.StopReason?
+  stop_cause : @common.StopCause?
+  stop_cause_detail : String?
+  retrying : Bool
+  aborted : Bool
+  trace : @trace.TraceTree
+  trace_begun : Bool
+  model_trace_dirty : Bool
+  open_llm_node_id : String?
+  open_step_node_id : String?
+  open_turn_node_id : String?
+  open_turn_seq : Int32?
+  turn_steps : Int32
+  step_tool_calls : Int32
+  open_tool_node_ids : @hashmap.HashMap[String, String]
+  tool_progress : @hashmap.HashMap[String, ToolProgress]
+  tool_timings : @hashmap.HashMap[String, Int64]
+  llm_attempts : Int32
+  max_llm_attempts : Int32
+  llm_timeout_ms : Int64
+  persisted_seq : Int32
+} derive(@debug.Debug)
+
+pub(all) struct ExecutingTool {
+  call : @message.ToolCall
+  started_at : Int64
+} derive(Eq, @debug.Debug)
+
+pub(all) struct InitialStateOptions {
+  system_prompt : String
+  provider_name : String
+  model_id : String
+  thinking_level : String
+  tool_names : Array[String]
+  max_turns : Int32?
+  max_llm_attempts : Int32
+  llm_timeout_ms : Int64
+  session_id : String
+  cwd : String
+  trace : @trace.TraceTree?
+} derive(@debug.Debug)
+pub fn InitialStateOptions::defaults(String, String) -> Self
+
+pub(all) struct ModelState {
+  provider : String
+  model_id : String
+  thinking_level : String
+  reasoning : Bool
+  capabilities : @action.ModelCapabilities
+  context_window : Int32
+  seeded : Bool
+} derive(Eq, @debug.Debug)
+
+pub(all) struct PromptState {
+  system_prompt : String
+  tools : Array[@action.PromptToolDefinition]
+  head_tools : Array[@action.PromptToolDefinition]?
+  seeded : Bool
+} derive(Eq, @debug.Debug)
+
+pub(all) struct QueuedInput {
+  text : String
+  content : Array[@message.Content]
+  at : Int64
+} derive(Eq, @debug.Debug)
+
+pub(all) struct ToolProgress {
+  tool_call_id : String
+  content : Array[@message.Content]
+} derive(Eq, @debug.Debug)
+
+// Type aliases
+
+// Traits

@@ -1,0 +1,78 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "zhouteng/pi_moon/core/loop"
+
+import {
+  "moonbitlang/core/debug",
+  "zhouteng/pi_moon/core/action",
+  "zhouteng/pi_moon/core/common",
+  "zhouteng/pi_moon/core/message",
+  "zhouteng/pi_moon/core/state",
+  "zhouteng/pi_moon/core/trace",
+}
+
+// Values
+pub fn append_model_node(@trace.TraceTree, @state.ModelState, Int64, @trace.TraceNodeKind) -> @trace.TraceTree
+
+pub fn append_prompt_nodes(@trace.TraceTree, @state.PromptState, Int64) -> @trace.TraceTree
+
+pub fn apply_model_spec(@state.AgentState, @action.ModelSpec) -> @state.AgentState
+
+pub fn begin_trace(@state.AgentState, Int64) -> @trace.TraceTree
+
+pub fn close_llm_failure(@state.AgentState, Int64, String, @common.LlmErrorKind, String?, @common.StopCause, Bool) -> @state.AgentState
+
+pub fn close_llm_success(@state.AgentState, Int64, String, @message.Message) -> @state.AgentState
+
+pub fn close_step_node(@state.AgentState, Int64, @trace.TraceNodeStatus) -> @state.AgentState
+
+pub fn close_turn_cmd() -> Cmd
+
+pub fn close_turn_node(@state.AgentState, Int64, @common.TurnEndReason, String) -> @state.AgentState
+
+pub fn dedupe_tool_call_ids(@state.AgentState, @message.AssistantPart) -> (@message.AssistantPart, Array[@message.ToolCall])
+
+pub fn flatten_cmds(Array[Cmd]) -> Array[Cmd]
+
+pub fn flush_model_change(@state.AgentState, Int64) -> @state.AgentState
+
+pub fn new_turn_counters() -> TurnCounters
+
+pub fn open_step_node(@state.AgentState, Int64) -> (@state.AgentState, @trace.TraceNode)
+
+pub fn redispatch(@action.AgentAction) -> Cmd
+
+pub fn reduce(@state.AgentState, @action.AgentAction, Int64) -> (@state.AgentState, Array[Cmd])
+
+pub fn repair_tail_tool_calls(Array[@message.Message], Int64) -> Array[@message.Message]?
+
+pub fn start_step_cmd() -> Cmd
+
+pub fn transition(@state.AgentState, @action.AgentAction, Int64) -> @state.AgentState
+
+pub fn wiring(@action.AgentAction, @state.AgentState) -> Array[Cmd]
+
+pub fn with_tool_declarations(@state.AgentState) -> Array[@message.Message]
+
+// Errors
+
+// Types and methods
+pub(all) enum Cmd {
+  Noop
+  Batch(Array[Cmd])
+  Redispatch(@action.AgentAction)
+  RunAgent(String?)
+  RunTools(Array[@message.ToolCall])
+} derive(Eq, @debug.Debug)
+pub fn Cmd::batch(Array[Self]) -> Self
+
+pub(all) struct TurnCounters {
+  turns : Int32
+  llm_attempts : Int32
+  retrying : Bool
+  step_index : Int32
+  turn_steps : Int32
+} derive(Eq, @debug.Debug)
+
+// Type aliases
+
+// Traits

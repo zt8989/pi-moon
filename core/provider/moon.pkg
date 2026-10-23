@@ -1,0 +1,29 @@
+import {
+  "zhouteng/pi_moon/core/common",
+  "zhouteng/pi_moon/core/message",
+  "zhouteng/pi_moon/core/action",
+  "zhouteng/pi_moon/core/state",
+  "zhouteng/pi_moon/core/runtime",
+  "conglinyizhi/moonbit-llm-faceoff" @faceoff,
+  "moonbitlang/async",
+  "moonbitlang/async/http",
+  "moonbitlang/async/fs",
+  "moonbitlang/core/json",
+  "moonbitlang/core/env",
+}
+
+warnings = "-79-67"
+
+// 提供方按 OpenAI 兼容线格式工作，配置格式直接读 pi 的那三份文件：
+//   <agent dir>/models.json   provider / baseUrl / api / 模型目录 / 可选 apiKey
+//   <agent dir>/auth.json     provider → { type: "api_key", key }
+//   <agent dir>/settings.json defaultProvider / defaultModel / defaultThinkingLevel
+//
+// agent dir 与 pi 同址（PI_CODING_AGENT_DIR，缺省 ~/.pi/agent）。两边共用同一份
+// 配置，改一次两处都生效 —— 这是「兼容 pi 的配置」的全部含义。
+
+import {
+  "zhouteng/pi_moon/core/loop",
+} for "wbtest"
+
+supported_targets = "+native"

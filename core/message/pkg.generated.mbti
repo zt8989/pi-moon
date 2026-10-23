@@ -1,0 +1,89 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "zhouteng/pi_moon/core/message"
+
+import {
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn assistant_message(String, String, Int64) -> Message
+
+pub fn content_text(Content) -> String
+
+pub fn contents_text(Array[Content]) -> String
+
+pub fn tool_result_message(ToolCall, String, Bool, Int64) -> Message
+
+pub fn user_message(String, Int64) -> Message
+
+pub let zero_usage : Usage
+
+// Errors
+
+// Types and methods
+pub(all) struct AssistantPart {
+  content : Array[Content]
+  stop_reason : String
+  error_message : String?
+  usage : Usage?
+  timestamp : Int64
+} derive(Eq, @debug.Debug)
+pub fn AssistantPart::tool_calls(Self) -> Array[ToolCall]
+
+pub(all) enum Content {
+  Text(String)
+  Thinking(String)
+  ToolCallBlock(ToolCall)
+  Image(String)
+} derive(Eq, @debug.Debug)
+
+pub(all) enum Message {
+  UserMsg(UserPart)
+  AssistantMsg(AssistantPart)
+  ToolResultMsg(ToolResultPart)
+  SystemMsg(SystemPart)
+} derive(Eq, @debug.Debug)
+pub fn Message::content(Self) -> Array[Content]
+pub fn Message::role(Self) -> String
+pub fn Message::text(Self) -> String
+pub fn Message::timestamp(Self) -> Int64
+pub fn Message::tool_calls(Self) -> Array[ToolCall]
+pub fn Message::tool_result_id(Self) -> String?
+
+pub(all) struct SystemPart {
+  role : String
+  content : String
+  sections : Array[(String, String)]
+  source : String?
+  timestamp : Int64
+} derive(Eq, @debug.Debug)
+
+pub(all) struct ToolCall {
+  id : String
+  name : String
+  arguments : String
+} derive(Eq, @debug.Debug)
+
+pub(all) struct ToolResultPart {
+  tool_call_id : String
+  tool_name : String
+  content : Array[Content]
+  is_error : Bool
+  timestamp : Int64
+} derive(Eq, @debug.Debug)
+
+pub(all) struct Usage {
+  input_tokens : Int32
+  output_tokens : Int32
+  total_tokens : Int32
+  cost_total : Double
+} derive(Eq, @debug.Debug)
+
+pub(all) struct UserPart {
+  content : Array[Content]
+  timestamp : Int64
+} derive(Eq, @debug.Debug)
+
+// Type aliases
+
+// Traits

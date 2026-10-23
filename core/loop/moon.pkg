@@ -1,0 +1,9 @@
+import {
+  "zhouteng/pi_moon/core/common",
+  "zhouteng/pi_moon/core/message",
+  "zhouteng/pi_moon/core/trace",
+  "zhouteng/pi_moon/core/action",
+  "zhouteng/pi_moon/core/state",
+}
+
+warnings = "-implicit_impl_as_method"

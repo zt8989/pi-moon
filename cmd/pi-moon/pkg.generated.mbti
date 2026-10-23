@@ -1,0 +1,19 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "zhouteng/pi_moon/cmd/pi-moon"
+
+// Values
+
+// Errors
+pub suberror CliError {
+  MissingValue(flag~ : String)
+  UnknownFlag(flag~ : String)
+  BadNumber(value~ : String)
+}
+pub fn CliError::to_string(Self) -> String
+
+// Types and methods
+type CliArgs
+
+// Type aliases
+
+// Traits

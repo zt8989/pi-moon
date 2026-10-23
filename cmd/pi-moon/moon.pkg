@@ -1,0 +1,18 @@
+import {
+  "zhouteng/pi_moon/core/common",
+  "zhouteng/pi_moon/core/trace",
+  "zhouteng/pi_moon/core/action",
+  "zhouteng/pi_moon/core/state",
+  "zhouteng/pi_moon/core/runtime",
+  "zhouteng/pi_moon/core/provider",
+  "moonbitlang/async",
+  "moonbitlang/async/stdio",
+  "moonbitlang/core/env",
+  "moonbitlang/core/json",
+}
+
+pkgtype(kind: "executable")
+
+supported_targets = "+native"
+
+warnings = "-79-67"
