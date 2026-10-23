@@ -51,7 +51,7 @@ pub fn transition(@state.AgentState, @action.AgentAction, Int64) -> @state.Agent
 
 pub fn wiring(@action.AgentAction, @state.AgentState) -> Array[Cmd]
 
-pub fn with_tool_declarations(@state.AgentState) -> Array[@message.Message]
+pub fn with_tool_declarations(@state.AgentState, Int64) -> (Array[@message.Message], Array[@action.PromptToolDefinition])
 
 // Errors
 

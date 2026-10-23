@@ -106,6 +106,7 @@ pub(all) struct PromptState {
   system_prompt : String
   tools : Array[@action.PromptToolDefinition]
   head_tools : Array[@action.PromptToolDefinition]?
+  declared_tools : Array[@action.PromptToolDefinition]
   seeded : Bool
 } derive(Eq, @debug.Debug)
 

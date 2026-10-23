@@ -126,7 +126,10 @@ pub(all) struct ToolProgressData {
 /// 为什么不拆成 `prompt.init` + 一条条 `user.message`：那样会在轨迹树上重放
 /// 一遍历史（节点重复、tip 错位），而且 `begin_trace` 会把装载节点补到错误的位置。
 pub(all) struct SessionRestoredData {
+  /// system prompt + **装载时**那一批工具（head）。
   prompt : PromptInitData
+  /// **当前**工具集（中途 `tools.changed` 过的话与 `prompt.tools` 不同）。
+  tools : Array[PromptToolDefinition]
   model : ModelSpec
   messages : Array[@message.Message]
   trace : @trace.TraceTree
@@ -181,6 +184,9 @@ pub(all) enum AgentAction {
   ToolBatchDone(Int32)
   /// 轨迹节点已落盘（游标推回来）。
   TracePersisted(Int32)
+  /// 当前工具集变了（`tools.changed`）。**只改当前声明**；差额由下一次
+  /// `AgentRun` 作为一条 system 消息追加到 messages 里。
+  ToolsChanged(Array[PromptToolDefinition])
   /// 从 JSONL 恢复出来的会话。
   SessionRestored(SessionRestoredData)
   /// 清空对话 / 开新会话。
@@ -217,6 +223,7 @@ pub fn AgentAction::name(self : AgentAction) -> String {
     ToolResult(_) => "tool.result"
     ToolBatchDone(_) => "tool.batch.done"
     TracePersisted(_) => "trace.persisted"
+    ToolsChanged(_) => "tools.changed"
     SessionRestored(_) => "session.restored"
     ConversationReset(_) => "conversation.reset"
   }

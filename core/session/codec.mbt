@@ -484,6 +484,28 @@ fn decode_tools(obj : Map[String, Json]) -> Array[@action.PromptToolDefinition] 
 }
 
 ///|
+/// 工具集变更记录（会话中途 `tools.changed`）。
+pub fn encode_tools_changed(
+  tools : Array[@action.PromptToolDefinition],
+) -> Json {
+  jobj([("op", jstr("tools.changed")), ("tools", encode_tools(tools))])
+}
+
+///|
+pub fn decode_tools_changed(
+  json : Json,
+) -> Array[@action.PromptToolDefinition]? {
+  let obj = match json {
+    Object(obj) => obj
+    _ => return None
+  }
+  if field_string_or(obj, "op", "") != "tools.changed" {
+    return None
+  }
+  Some(decode_tools(obj))
+}
+
+///|
 /// prompt 装载记录。
 pub fn encode_prompt_init(prompt : @state.PromptState) -> Json {
   jobj([

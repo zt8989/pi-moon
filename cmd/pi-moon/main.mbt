@@ -31,7 +31,7 @@ let usage : String = "pi-moon — Elm architecture agent core in MoonBit\n" +
   "  -s, --session <file>     会话文件（存在则恢复，否则新建）\n" +
   "  -c, --continue           恢复 sessions 目录里最新的会话\n" +
   "      --no-session         不落盘 / 不恢复\n" +
-  "  -i, --interactive        多轮 REPL（/exit 退出，/continue 续跑）\n" +
+  "  -i, --interactive        多轮 REPL（/tools 换工具；/exit 退出；/continue 续跑）\n" +
   "      --no-trace           不打印轨迹树\n" +
   "  -h, --help               显示这段文字"
 
@@ -544,6 +544,14 @@ async fn run(args : CliArgs) -> Unit {
       }
     None => fallback_prompt
   }
+  let current_tools = match loaded {
+    Some(loaded) =>
+      match loaded.tools {
+        Some(tools) => tools
+        None => prompt_data.tools
+      }
+    None => prompt_data.tools
+  }
   let model_spec = match loaded {
     Some(loaded) =>
       match loaded.model {
@@ -553,7 +561,7 @@ async fn run(args : CliArgs) -> Unit {
     None => fallback_model
   }
   let active_tool_names : Array[String] = []
-  for tool in prompt_data.tools {
+  for tool in current_tools {
     active_tool_names.push(tool.name)
   }
   let hooks : @provider.ProviderHooks = {
@@ -617,6 +625,7 @@ async fn run(args : CliArgs) -> Unit {
       agent.send(
         @action.SessionRestored({
           prompt: prompt_data,
+          tools: current_tools,
           model: model_spec,
           messages: loaded.messages,
           trace: loaded.trace,
@@ -639,7 +648,7 @@ async fn run(args : CliArgs) -> Unit {
       )
     }
     None => {
-      seed(agent, prompt_data.system_prompt, prompt_data.tools, model_spec) catch {
+      seed(agent, prompt_data.system_prompt, current_tools, model_spec) catch {
         err => {
           runtime_failure(err.to_string())
           return
@@ -709,6 +718,44 @@ async fn run(args : CliArgs) -> Unit {
       }
       let text = line.trim(chars=" \t\r\n").to_owned()
       if text.is_empty() {
+        continue
+      }
+      if text == "/tools" {
+        eprintln(
+          "tools: " +
+          (if agent.state.tool_names.is_empty() {
+            "(none)"
+          } else {
+            agent.state.tool_names.join(",")
+          }),
+        )
+        continue
+      }
+      if text.has_prefix("/tools ") {
+        let list = text[7:].trim().to_owned()
+        let names = if list == "none" || list == "off" {
+          []
+        } else {
+          split_tool_list(list)
+        }
+        let tools = @tools.definitions_for(names)
+        let applied : Array[String] = []
+        for tool in tools {
+          applied.push(tool.name)
+        }
+        agent.send(@action.ToolsChanged(tools)) catch {
+          err => {
+            eprintln("[error] " + err.to_string())
+            break
+          }
+        }
+        eprintln(
+          "tools -> " +
+          (if applied.is_empty() { "(none)" } else { applied.join(",") }) +
+          "（下一轮请求起生效）",
+        )
+        // 立刻落盘：用户可能改完工具就退出，下一轮不一定发生。
+        writer = persist(writer, agent)
         continue
       }
       if text == "/exit" || text == "/quit" {

@@ -11,7 +11,10 @@
 pub(all) struct LoadedSession {
   messages : Array[@message.Message]
   trace : @trace.TraceTree
+  /// 装载段（head）：system prompt + 装载时那批工具。
   prompt : @action.PromptInitData?
+  /// 中途 `tools.changed` 过的话，这里是**当前**工具集；没有就是 None。
+  tools : Array[@action.PromptToolDefinition]?
   model : @action.ModelSpec?
   /// 已经 `add` 过的最大节点序号（`TracePersisted` 的游标）。
   persisted_seq : Int32
@@ -28,6 +31,8 @@ pub(all) struct SessionWriter {
   prompt_written : Bool
   /// 上一次写过的模型（provider / model / thinking）。变了才再写一条。
   model_key : String
+  /// 上一次写过的工具集。变了才写一条 `tools.changed`。
+  tools_key : String
   /// 已经 add 过、但落盘时还没闭合的节点（后面要补 close）。
   open_nodes : @ihm.HashMap[String, Bool]
 }
@@ -40,6 +45,7 @@ pub fn SessionWriter::new(path : String) -> SessionWriter {
     message_cursor: 0,
     prompt_written: false,
     model_key: "",
+    tools_key: "",
     open_nodes: @ihm.HashMap::new(),
   }
 }
@@ -73,8 +79,36 @@ pub fn SessionWriter::restored(
         model_key_of_spec(model.provider, model.model_id, model.thinking_level)
       None => ""
     },
+    tools_key: tools_key_of(current_tools_of(loaded)),
     open_nodes,
   }
+}
+
+///|
+/// 恢复时「当前工具集」：有 `tools.changed` 就用它，否则用 head。
+fn current_tools_of(
+  loaded : LoadedSession,
+) -> Array[@action.PromptToolDefinition] {
+  match loaded.tools {
+    Some(tools) => tools
+    None =>
+      match loaded.prompt {
+        Some(prompt) => prompt.tools
+        None => []
+      }
+  }
+}
+
+///|
+/// 工具集的指纹：名字 + 描述 + schema 都变了才需要重新声明。
+fn tools_key_of(tools : Array[@action.PromptToolDefinition]) -> String {
+  let parts : Array[String] = []
+  for tool in tools {
+    parts.push(
+      tool.name + "\u{0000}" + tool.description + "\u{0000}" + tool.parameters,
+    )
+  }
+  parts.join("\u{0001}")
 }
 
 ///|
@@ -134,12 +168,22 @@ pub async fn SessionWriter::flush(
   let lines : Array[String] = []
   let mut prompt_written = self.prompt_written
   let mut model_key = self.model_key
+  let mut tools_key = self.tools_key
   let mut node_cursor = self.node_cursor
   let mut message_cursor = self.message_cursor
   let mut open_nodes = self.open_nodes
-  if state.prompt.seeded && !prompt_written {
-    lines.push(encode_prompt_init(state.prompt).stringify())
-    prompt_written = true
+  if state.prompt.seeded {
+    if !prompt_written {
+      lines.push(encode_prompt_init(state.prompt).stringify())
+      prompt_written = true
+      tools_key = tools_key_of(state.prompt.tools)
+    } else {
+      let key = tools_key_of(state.prompt.tools)
+      if key != tools_key {
+        lines.push(encode_tools_changed(state.prompt.tools).stringify())
+        tools_key = key
+      }
+    }
   }
   if state.model.seeded {
     let key = model_key_of_state(state.model)
@@ -179,6 +223,7 @@ pub async fn SessionWriter::flush(
     message_cursor,
     prompt_written,
     model_key,
+    tools_key,
     open_nodes,
   }
   if lines.is_empty() {
@@ -225,6 +270,7 @@ pub async fn load_session(path : String, session_id : String) -> LoadedSession? 
   let messages : Array[@message.Message] = []
   let mut trace = @trace.create_trace_tree(session_id)
   let mut prompt : @action.PromptInitData? = None
+  let mut tools : Array[@action.PromptToolDefinition]? = None
   let mut model : @action.ModelSpec? = None
   let mut persisted_seq : Int32 = 0
   let mut saw_record = false
@@ -270,6 +316,7 @@ pub async fn load_session(path : String, session_id : String) -> LoadedSession? 
           None => ()
         }
       "prompt.init" => prompt = decode_prompt_init(json)
+      "tools.changed" => tools = decode_tools_changed(json)
       "model.init" => model = decode_model_init(json)
       _ => ()
     }
@@ -281,6 +328,7 @@ pub async fn load_session(path : String, session_id : String) -> LoadedSession? 
     messages,
     trace: @trace.recompute_tip(trace),
     prompt,
+    tools,
     model,
     persisted_seq,
   })

@@ -25,7 +25,7 @@ reducer 里没有一个 `await`、没有一个 `fetch`、也没有 while。真�
 [redux-loop](https://github.com/redux-loop/redux-loop) 的形状：`update` 返回
 `(model, Cmd)`，而 `Cmd` 是可检视的数据。
 
-## 现状：v0.4 循环核心 + provider + 工具 + 会话
+## 现状：v0.5 循环核心 + provider + 工具 + 会话
 
 - 三张表：**迁移表**（action → 下一个状态）、**接线表**（action → Cmd）、
   **effect 表**（`RunAgent` / `RunTools` 的真正实现）；
@@ -42,14 +42,17 @@ reducer 里没有一个 `await`、没有一个 `fetch`、也没有 while。真�
 - **流式工具输出**：shell 命令边跑边读，`ToolProgress` 每 100ms 回到环上；
   `--show-tool-progress` 能在 stderr 直接看到中间输出；
 - **会话落盘 / 恢复**：JSONL 追加写（messages + add/close 轨迹节点 +
-  prompt/model 装载段），`-s` / `-c` 恢复，`-i` 多轮 REPL（见 [docs/session.md](docs/session.md)）。
+  prompt/model / tools.changed 装载段），`-s` / `-c` 恢复，`-i` 多轮 REPL
+  （见 [docs/session.md](docs/session.md)）；
+- **会话中途换工具**：`tools.changed` 只改当前集，下一次请求追加一条声明消息
+  （REPL 里用 `/tools read,bash`；见 [docs/tools.md](docs/tools.md)）。
 
-**还没有**（下一步逐步接）：上下文压缩、`tools.changed`、pi 扩展、TUI / Web。
+**还没有**（下一步逐步接）：上下文压缩、pi 扩展、TUI / Web。
 
 ## 跑起来
 
 ```bash
-moon test                        # 49 个测试：纯表 + 整环 + 轨迹树 + provider + 工具 + 会话
+moon test                        # 52 个测试：纯表 + 整环 + 轨迹树 + provider + 工具 + 会话
 
 # 真实模型：读 ~/.pi/agent/ 下与 pi 同一份配置
 moon run cmd/pi-moon -- -p "用一句话说明什么是 Elm 架构"
@@ -70,6 +73,7 @@ moon run cmd/pi-moon -- -t bash --show-tool-progress \
 moon run cmd/pi-moon -- -p "记住 42"
 moon run cmd/pi-moon -- -c -p "我刚才让你记住什么？"
 moon run cmd/pi-moon -- -i -s logs/today.jsonl
+moon run cmd/pi-moon -- -i        # REPL 里 /tools read,bash 可中途换工具
 moon run cmd/pi-moon -- --no-session -p "..."
 
 # 离线演示：假 provider / 假工具，看两棵轨迹树
@@ -219,12 +223,10 @@ effect 调 `@tools.execute`）。`core/session` 只依赖数据层（`action` / 
 | provider 复用 faceoff 的 `Settings` + `parse_sse_line` | 消息体 / 工具 / usage / tool_call 分片由本项目补（见 provider 文档） |
 | 工具输出里 `edit` 只做严格匹配、`find` 用 rg 代替 fd | 不引模糊匹配与 fd 依赖；差异清单见 [docs/tools.md](docs/tools.md) |
 | 会话**一回合 flush 一次**，不是每个 action 都写 | 写盘不参与 reducer，也不打断流式输出；粒度取舍见 [docs/session.md](docs/session.md) |
-| `tools.changed` / `compact.*` / 扩展尚未接 | 循环核心与外围先立住，再加压缩 / 扩展 |
+| `compact.*` / 扩展尚未接 | 循环核心与外围先立住，再加压缩 / 扩展 |
 
 ## 下一步（按顺序）
 
-1. **`tools.changed`**：会话中途改工具集时，追加一条 system 消息并更新
-   `state.prompt.tools`（不能改 head，前缀缓存靠它）。
-2. **上下文压缩**：`compact.request / done / failed` 三个 action 与 pi 的切点算法。
-3. **界面**：rabbita（Web）与终端渲染共用同一份 state；跨包只碰 `Agent` 的
+1. **上下文压缩**：`compact.request / done / failed` 三个 action 与 pi 的切点算法。
+2. **界面**：rabbita（Web）与终端渲染共用同一份 state；跨包只碰 `Agent` 的
    `state` / `send`。

@@ -344,3 +344,47 @@ async test "会话路径：时间戳命名、--continue 取最新、id 从文件
     _ => ()
   }
 }
+
+///|
+async test "tools.changed 落盘：恢复出当前工具集，head 仍是装载时那批" {
+  let path = session_test_path("tools")
+  remove_file(path)
+  let state = session_state_after_turn()
+  let grep_tool : @action.PromptToolDefinition = {
+    name: "grep",
+    description: "Search file contents",
+    parameters: "{\"type\":\"object\"}",
+  }
+  let current = [session_tool(), grep_tool]
+  // 先落一次盘：prompt.init 记的是**装载时**那批（read）。
+  let writer = SessionWriter::new(path)
+  let (writer, _cursor) = writer.flush(state) catch {
+    err => abort(err.to_string())
+  }
+  let (state, _) = @loop.reduce(state, @action.ToolsChanged(current), 30L)
+  // 请求发起：把差额声明进消息流（同时写进会话的 message 记录）。
+  let (state, _) = @loop.reduce(state, @action.AgentRun(None), 31L)
+  let (_writer, _cursor) = writer.flush(state) catch {
+    err => abort(err.to_string())
+  }
+  let loaded = match load_session(path, "s-session") {
+    Some(loaded) => loaded
+    None => abort("load failed")
+  }
+  assert_eq(loaded.tools, Some(current))
+  match loaded.prompt {
+    Some(prompt) => assert_eq(prompt.tools, [session_tool()])
+    None => abort("prompt.init missing")
+  }
+  // 恢复出来的 writer 已经知道当前工具集，不会把 tools.changed 再写一遍。
+  let before = (@fs.read_file(path) catch { _ => abort("file missing") }).binary()
+  let before_lines = @utf8.decode_lossy(before).split("\n").count()
+  let restored = SessionWriter::restored(path, loaded)
+  let (_restored, _cursor) = restored.flush(state) catch {
+    err => abort(err.to_string())
+  }
+  let after = (@fs.read_file(path) catch { _ => abort("file missing") }).binary()
+  let after_lines = @utf8.decode_lossy(after).split("\n").count()
+  assert_eq(after_lines, before_lines)
+  remove_file(path)
+}

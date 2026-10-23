@@ -253,9 +253,11 @@ LLM 被调两遍，第二遍的结果覆盖第一遍，树上就是两个 `llm.r
   写进 `state.tool_progress`；超时会保留 partial 输出。
 - **会话落盘 / 恢复**：JSONL 追加写（`add` / `close` / `message` / 装载段），
   `session.restored` 一次性装回 state；详见 [session](session.md)。
+- **工具集变更**：`tools.changed` 只改当前声明；下一次 `agent.run` 把差额作为
+  一条新 system 消息追加并更新 `declared_tools`（不改 head / 不改历史消息）。
+  声明写在防重入守卫**之前**：真实流程里 step 容器已经开了，守卫会跳过状态
+  重置，但工具声明不能跳。
 
 ## 尚未接的部分（按计划的顺序）
 
-1. **prompt head 与工具声明**：`with_tool_declarations` 目前是恒等函数。
-   工具集变化必须作为**新的 system 消息**追加，不能改 head（前缀缓存）。
-2. **压缩 / 扩展 / 分支**：action 与迁移都未搬（刻意留在环稳定之后）。
+1. **压缩 / 扩展 / 分支**：action 与迁移都未搬（刻意留在环稳定之后）。

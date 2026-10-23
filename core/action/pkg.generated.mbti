@@ -41,6 +41,7 @@ pub(all) enum AgentAction {
   ToolResult(@message.ToolResultPart)
   ToolBatchDone(Int32)
   TracePersisted(Int32)
+  ToolsChanged(Array[PromptToolDefinition])
   SessionRestored(SessionRestoredData)
   ConversationReset(ConversationResetData)
 } derive(Eq, @debug.Debug)
@@ -96,6 +97,7 @@ pub(all) struct QueuedInputAction {
 
 pub(all) struct SessionRestoredData {
   prompt : PromptInitData
+  tools : Array[PromptToolDefinition]
   model : ModelSpec
   messages : Array[@message.Message]
   trace : @trace.TraceTree

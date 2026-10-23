@@ -440,13 +440,76 @@ pub fn dedupe_tool_call_ids(
 ///|
 /// 请求即将发起时，把**工具集的变化**声明进消息流。
 ///
-/// v0.1 还没有 `tools.changed` / prompt head，所以这里是恒等函数 ——
-/// 但入口保留：工具集变更必须走「追加新的 system 消息」而不是改 head，
-/// 否则前缀缓存全废。下一步接工具注册表时在这里实现 diff。
+/// `state.prompt.tools` 是「当前可执行什么」，`declared_tools` 是「transcript 里
+/// 已经声明过什么」。不一致时追加一条 system 消息（只追加，不改已有消息 ——
+/// 前缀缓存靠的就是历史一个字节不动），并返回新的「已声明」集合。
+///
+/// 返回的第二个值由调用方写回 `state.prompt.declared_tools`：于是同一份差额
+/// 不会在每次 `AgentRun`（包括重试、下一步）重复追加。
 pub fn with_tool_declarations(
   state : @state.AgentState,
-) -> Array[@message.Message] {
-  state.messages
+  now : Int64,
+) -> (Array[@message.Message], Array[@action.PromptToolDefinition]) {
+  let current = state.prompt.tools
+  let declared = state.prompt.declared_tools
+  let added : Array[@action.PromptToolDefinition] = []
+  let updated : Array[String] = []
+  let removed : Array[String] = []
+  for tool in current {
+    match find_tool(declared, tool.name) {
+      None => added.push(tool)
+      Some(previous) => if previous != tool { updated.push(tool.name) }
+    }
+  }
+  for tool in declared {
+    match find_tool(current, tool.name) {
+      Some(_) => ()
+      None => removed.push(tool.name)
+    }
+  }
+  if added.is_empty() && updated.is_empty() && removed.is_empty() {
+    return (state.messages, declared)
+  }
+  let lines : Array[String] = ["[toolset changed]"]
+  let sections : Array[(String, String)] = []
+  if !added.is_empty() {
+    let names : Array[String] = []
+    lines.push("added:")
+    for tool in added {
+      names.push(tool.name)
+      lines.push("- " + tool.name + ": " + tool.description)
+    }
+    sections.push(("tools_added", names.join(",")))
+  }
+  if !updated.is_empty() {
+    lines.push("updated: " + updated.join(","))
+    sections.push(("tools_updated", updated.join(",")))
+  }
+  if !removed.is_empty() {
+    lines.push("removed: " + removed.join(","))
+    sections.push(("tools_removed", removed.join(",")))
+  }
+  let message = @message.SystemMsg({
+    role: "system",
+    content: lines.join("\n"),
+    sections,
+    source: Some("tools.changed"),
+    timestamp: now,
+  })
+  (state.messages.add([message]), current)
+}
+
+///|
+fn find_tool(
+  tools : Array[@action.PromptToolDefinition],
+  name : String,
+) -> @action.PromptToolDefinition? {
+  for tool in tools {
+    if tool.name == name {
+      return Some(tool)
+    }
+  }
+  None
 }
 
 ///|

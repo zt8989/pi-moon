@@ -226,17 +226,19 @@ test "session.restored：一次性装回 messages / trace / 游标，不重放�
   let messages = with_history.messages
   let trace = with_history.trace
   let tip = trace.tip_id
+  let read_tool : @action.PromptToolDefinition = {
+    name: "read",
+    description: "读",
+    parameters: "{\"type\":\"object\"}",
+  }
+  let grep_tool : @action.PromptToolDefinition = {
+    name: "grep",
+    description: "搜",
+    parameters: "{\"type\":\"object\"}",
+  }
   let restored = @action.SessionRestored({
-    prompt: {
-      system_prompt: "恢复出来的 prompt",
-      tools: [
-        {
-          name: "read",
-          description: "读",
-          parameters: "{\"type\":\"object\"}",
-        },
-      ],
-    },
+    prompt: { system_prompt: "恢复出来的 prompt", tools: [read_tool], },
+    tools: [read_tool, grep_tool],
     model: {
       provider: "other",
       model_id: "other-1",
@@ -258,7 +260,11 @@ test "session.restored：一次性装回 messages / trace / 游标，不重放�
   assert_eq(next.trace_begun, true)
   assert_eq(next.prompt.system_prompt, "恢复出来的 prompt")
   assert_eq(next.prompt.seeded, true)
-  assert_eq(next.prompt.head_tools, Some(next.prompt.tools))
+  // head 是装载时那批；当前工具集与已声明的那份是恢复文件里的新一批。
+  assert_eq(next.prompt.head_tools, Some([read_tool]))
+  assert_eq(next.prompt.tools.length(), 2)
+  assert_eq(next.prompt.declared_tools.length(), 2)
+  assert_eq(next.tool_names.join(","), "read,grep")
   assert_eq(next.model.provider, "other")
   assert_eq(next.model.thinking_level, "low")
   assert_eq(next.provider_name, "other")
@@ -268,4 +274,93 @@ test "session.restored：一次性装回 messages / trace / 游标，不重放�
   let (after, _) = reduce(next, user("第二句"), 300L)
   assert_eq(after.messages.length(), messages.length() + 1)
   assert_eq(after.trace.order.length(), trace.order.length() + 1)
+}
+
+///|
+test "tools.changed：只改当前集；下一次 agent.run 追加一次声明消息" {
+  let read_tool : @action.PromptToolDefinition = {
+    name: "read",
+    description: "读",
+    parameters: "{\"type\":\"object\"}",
+  }
+  let grep_tool : @action.PromptToolDefinition = {
+    name: "grep",
+    description: "搜",
+    parameters: "{\"type\":\"object\"}",
+  }
+  let (state, _) = reduce(
+    loop_test_state(),
+    @action.PromptInit({ system_prompt: "你是助手", tools: [read_tool], }),
+    10L,
+  )
+  let (state, _) = reduce(
+    state,
+    @action.ModelInit({
+      provider: "demo",
+      model_id: "demo-1",
+      thinking_level: "off",
+      reasoning: false,
+      capabilities: @action.no_capabilities,
+      context_window: 1000,
+    }),
+    11L,
+  )
+  let (state, _) = reduce(state, user("第一句"), 12L)
+  let (changed, cmds) = reduce(
+    state,
+    @action.ToolsChanged([read_tool, grep_tool]),
+    13L,
+  )
+  assert_eq(cmd_names(cmds), [])
+  assert_eq(changed.prompt.tools.length(), 2)
+  assert_eq(changed.prompt.head_tools, Some([read_tool]))
+  // 还没声明：declared 仍是 head 那一份。
+  assert_eq(changed.prompt.declared_tools, [read_tool])
+  assert_eq(changed.tool_names.join(","), "read,grep")
+  // 请求即将发起：追加一条 system 消息，并更新 declared。
+  // 先 StepStart —— 真实流程里它先把 step 容器打开，AgentRun 会走防重入分支。
+  let (stepped, _) = reduce(changed, @action.StepStart, 14L)
+  let (running, _) = reduce(stepped, @action.AgentRun(None), 15L)
+  assert_eq(running.messages.length(), changed.messages.length() + 1)
+  match running.messages[running.messages.length() - 1] {
+    @message.SystemMsg(part) => {
+      assert_eq(part.source, Some("tools.changed"))
+      assert_true(part.content.contains("added:"))
+      assert_true(part.content.contains("grep"))
+    }
+    _ => abort("expected a tools.changed system message")
+  }
+  assert_eq(running.prompt.declared_tools.length(), 2)
+  // 第二次 agent.run（重试 / 下一步）不再重复追加。
+  let (again, _) = reduce(running, @action.AgentRun(None), 16L)
+  assert_eq(again.messages.length(), running.messages.length())
+}
+
+///|
+test "tools.changed：同名定义变了 → updated，并且 head 不动" {
+  let read_v1 : @action.PromptToolDefinition = {
+    name: "read",
+    description: "读 v1",
+    parameters: "{\"type\":\"object\"}",
+  }
+  let read_v2 : @action.PromptToolDefinition = {
+    name: "read",
+    description: "读 v2",
+    parameters: "{\"type\":\"object\",\"required\":[\"path\"]}",
+  }
+  let (state, _) = reduce(
+    loop_test_state(),
+    @action.PromptInit({ system_prompt: "你是助手", tools: [read_v1], }),
+    10L,
+  )
+  let (state, _) = reduce(state, user("第一句"), 12L)
+  let (changed, _) = reduce(state, @action.ToolsChanged([read_v2]), 13L)
+  assert_eq(changed.prompt.head_tools, Some([read_v1]))
+  let (stepped, _) = reduce(changed, @action.StepStart, 13L)
+  let (running, _) = reduce(stepped, @action.AgentRun(None), 14L)
+  match running.messages[running.messages.length() - 1] {
+    @message.SystemMsg(part) =>
+      assert_true(part.content.contains("updated: read"))
+    _ => abort("expected a tools.changed system message")
+  }
 }

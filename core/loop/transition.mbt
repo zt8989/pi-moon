@@ -111,6 +111,7 @@ pub fn transition(
         // 装载时那一批**单独留一份**：prompt head 的 toolsAdded 用它，
         // 之后工具集再变也不动。
         head_tools: Some(data.tools),
+        declared_tools: data.tools,
         seeded: true,
       }
       let tool_names : Array[String] = []
@@ -484,14 +485,23 @@ pub fn transition(
       { ..closed, turn_steps: state.turn_steps, }
     }
     @action.AgentRun(_text) => {
-      // 防重入：上一次 step 还开着时不要再跑。
+      // 请求即将发起 —— 工具集的变化要**在这一刻**声明出去（只追加消息）。
+      //
+      // 这一步必须在防重入守卫**之前**：真实流程里 `StepStart` 刚把 step 容器
+      // 打开，`open_step_node_id` 是 Some，守卫会把下面的状态重置整个跳过 ——
+      // 而工具声明不能跳（否则 tools.changed 永远到不了模型）。
+      let (messages, declared_tools) = with_tool_declarations(state, now)
+      let with_declarations = {
+        ..state,
+        messages,
+        prompt: { ..state.prompt, declared_tools, },
+      }
+      // 防重入：上一次 step 还开着时不要再重开（声明已经补上）。
       if state.phase == @common.Thinking && state.open_step_node_id is Some(_) {
-        return state
+        return with_declarations
       }
       {
-        ..state,
-        // 请求即将发起 —— 工具集的变化要在**这一刻**声明出去。
-        messages: with_tool_declarations(state),
+        ..with_declarations,
         phase: @common.Thinking,
         error: None,
         error_node_id: None,
@@ -934,7 +944,7 @@ pub fn transition(
     // ── 会话恢复 ──
     @action.SessionRestored(data) => {
       let tool_names : Array[String] = []
-      for tool in data.prompt.tools {
+      for tool in data.tools {
         tool_names.push(tool.name)
       }
       // 用 create_initial_state 重建一份「干净的」state（流式缓冲 / 队列 /
@@ -956,8 +966,10 @@ pub fn transition(
         ..base,
         prompt: {
           system_prompt: data.prompt.system_prompt,
-          tools: data.prompt.tools,
+          tools: data.tools,
           head_tools: Some(data.prompt.tools),
+          // transcript 里已经声明过「当前」这份（中途变更的 system 消息也在 messages 里）。
+          declared_tools: data.tools,
           seeded: true,
         },
         messages: data.messages.copy(),
@@ -966,6 +978,20 @@ pub fn transition(
         total_steps: @trace.trace_stats(data.trace).steps,
       }
       apply_model_spec(restored, data.model)
+    }
+    // ── 工具集变更 ──
+    @action.ToolsChanged(tools) => {
+      let tool_names : Array[String] = []
+      for tool in tools {
+        tool_names.push(tool.name)
+      }
+      // 老状态（没有 head_tools）首次变更时，把**变更前**那批留作 head；
+      // 否则 head 会跟着新工具集走，前缀立刻作废。
+      let head_tools = match state.prompt.head_tools {
+        Some(head) => Some(head)
+        None => Some(state.prompt.tools)
+      }
+      { ..state, prompt: { ..state.prompt, tools, head_tools, }, tool_names, }
     }
     // ── 会话 ──
     @action.ConversationReset(data) => {

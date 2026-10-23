@@ -39,13 +39,20 @@ pub(all) struct ToolProgress {
 pub(all) struct PromptState {
   /// 基础 system prompt（渲染好的整段）。
   system_prompt : String
-  /// **当前**工具的完整定义（原样进 LLM 请求的那三样）。
+  /// **当前**可执行的工具定义（原样进 LLM 请求的那三样）。
+  ///
+  /// 会话中途可以通过 `tools.changed` 改；执行侧的启用检查读的就是这里。
   tools : Array[@action.PromptToolDefinition]
   /// **装载时**那一批工具定义 —— prompt head 里 `toolsAdded` 用它，永不更新。
   ///
   /// 为什么必须留一份「旧的」：head 是**不可变历史**（前缀缓存靠的就是它一个字节
   /// 不动）。工具集变了之后如果 head 也跟着换，前缀立刻作废。
   head_tools : Array[@action.PromptToolDefinition]?
+  /// **已经声明给模型**的那一批（transcript 里的现状）。
+  ///
+  /// `tools.changed` 只改 `tools`，下一次 `AgentRun` 把差额追加成一条 system
+  /// 消息后，这里才跟着更新 —— 于是同一份差额不会每轮重发。
+  declared_tools : Array[@action.PromptToolDefinition]
   /// 是否已经装载过。回放时据此判断「init 段读到了没有」。
   seeded : Bool
 } derive(Eq, Debug)
@@ -203,6 +210,7 @@ pub fn create_initial_state(options : InitialStateOptions) -> AgentState {
     system_prompt: options.system_prompt,
     tools: [],
     head_tools: None,
+    declared_tools: [],
     seeded: false,
   }
   let empty_model : ModelState = {

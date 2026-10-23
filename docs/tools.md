@@ -118,6 +118,39 @@ moon run cmd/pi-moon -- -t bash --show-tool-progress \
 
 stderr 会依次出现 `step1` / `step1 step2` / `step1 step2 step3`。
 
+## 会话中途改工具集（`tools.changed`）
+
+`state.prompt.tools` 是「当前可执行什么」，可以中途改：
+
+```text
+REPL：/tools read,bash
+        │
+        ▼
+ToolsChanged([read, bash])
+        │  只改 prompt.tools / tool_names
+        │  finished 的 messages 一个字节不动
+        ▼
+下一次 AgentRun（请求即将发起）
+        ├─ 与 prompt.declared_tools 做差
+        ├─ 追加一条 system 消息（added / updated / removed）
+        └─ declared_tools = 当前工具集（差额不会重发）
+```
+
+- `head_tools` 永远不动（装载时那一批）—— 前缀缓存靠它。
+- 差额只作为**新消息**追加，不去改已有的 system prompt 或历史消息。
+- 执行侧立刻生效（`prompt.tools` 同时是启用检查的来源）；模型侧从下一次请求起
+  拿到新的 `tools` 字段 + 一条说明消息。
+- 会话落盘会写一条 `tools.changed` 记录，恢复后当前工具集与声明状态都接得上
+  （见 [session](session.md)）。
+
+REPL 命令：
+
+```text
+/tools                 打印当前工具
+/tools read,bash       换成这两个（未知名字会被忽略）
+/tools none            全关
+```
+
 ## 执行细节
 
 ```

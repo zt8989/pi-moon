@@ -11,7 +11,8 @@
 
 | op | 内容 | 什么时候写 |
 | --- | --- | --- |
-| `prompt.init` | system prompt + 工具定义 | 会话第一次落盘时 |
+| `prompt.init` | system prompt + **装载时**那批工具（head） | 会话第一次落盘时 |
+| `tools.changed` | **当前**工具集（中途换过才有） | 工具集第一次落盘时，以及此后每次变化时 |
 | `model.init` | provider / model / thinking / 能力 / context window | 首次，以及模型或档位变化时 |
 | `message` | 一条对话消息（user / assistant / toolResult / system） | 消息第一次出现时 |
 | `add` | 轨迹节点的**完整**字段（带 `seq`） | 节点第一次出现时 |
@@ -106,5 +107,6 @@ stderr 会打出这一次用的是哪个文件、恢复了多少：
 - **`conversation.reset` 不落盘**：messages 只增不减；CLI 目前没有 `/clear`。
 - **prompt / model 记录只保留最后一次**：回放取最后一条；没有「会话中途换过
   哪些模型」的完整时间线（轨迹节点里有 event，但 message 级历史不追）。
-- **工具集以恢复出来的 `prompt.tools` 为准**：即使当前 `settings.json` 改了
-  `defaultTools`，恢复的会话仍用它装载时的那份（否则历史里的 toolCall 会对不上）。
+- **工具集以恢复出来的记录为准**：有 `tools.changed` 就用它，否则用
+  `prompt.init` 里那批；即使当前 `settings.json` 改了 `defaultTools` 也不会
+  覆盖会话里的选择（否则历史里的 toolCall 会对不上）。
