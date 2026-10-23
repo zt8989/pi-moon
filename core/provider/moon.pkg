@@ -4,6 +4,7 @@ import {
   "zhouteng/pi_moon/core/action",
   "zhouteng/pi_moon/core/state",
   "zhouteng/pi_moon/core/runtime",
+  "zhouteng/pi_moon/core/tools",
   "conglinyizhi/moonbit-llm-faceoff" @faceoff,
   "moonbitlang/async",
   "moonbitlang/async/http",

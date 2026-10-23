@@ -25,7 +25,7 @@ reducer 里没有一个 `await`、没有一个 `fetch`、也没有 while。真�
 [redux-loop](https://github.com/redux-loop/redux-loop) 的形状：`update` 返回
 `(model, Cmd)`，而 `Cmd` 是可检视的数据。
 
-## 现状：v0.2 循环核心 + provider
+## 现状：v0.3 循环核心 + provider + 内置工具
 
 - 三张表：**迁移表**（action → 下一个状态）、**接线表**（action → Cmd）、
   **effect 表**（`RunAgent` / `RunTools` 的真正实现）；
@@ -35,20 +35,29 @@ reducer 里没有一个 `await`、没有一个 `fetch`、也没有 while。真�
 - 轮数上限、空闲超时、可重试错误分类、`/continue` 的尾消息修复；
 - 轨迹渲染：lazygit 风格的轨道树；
 - **真实 provider**：读 pi 的 `models.json` / `auth.json` / `settings.json`，
-  走 OpenAI 兼容的流式接口，token 增量逐字到达（见 [docs/provider.md](docs/provider.md)）。
+  走 OpenAI 兼容的流式接口，token 增量逐字到达（见 [docs/provider.md](docs/provider.md)）；
+- **真实工具**：read / write / edit / bash / powershell / grep / find / ls 八个内置工具，
+  默认开启 read / bash / edit / write（与 pi 的 `DEFAULT_TOOL_NAMES` 一致），
+  `settings.json` 的 `defaultTools` 支持 `+name` / `-name`（见 [docs/tools.md](docs/tools.md)）。
 
-**还没有**（下一步逐步接）：工具注册表（read / write / edit / bash）、会话与轨迹
-落盘 / 恢复、上下文压缩、pi 扩展、TUI / Web。
+**还没有**（下一步逐步接）：`ToolProgress` 的流式回传、会话与轨迹落盘 / 恢复、
+上下文压缩、pi 扩展、TUI / Web。
 
 ## 跑起来
 
 ```bash
-moon test                        # 26 个测试：纯表 + 整环 + 轨迹树 + provider 协议
+moon test                        # 38 个测试：纯表 + 整环 + 轨迹树 + provider 协议 + 工具
 
 # 真实模型：读 ~/.pi/agent/ 下与 pi 同一份配置
 moon run cmd/pi-moon -- -p "用一句话说明什么是 Elm 架构"
 moon run cmd/pi-moon -- --list-models
 moon run cmd/pi-moon -- -P deepseek -m deepseek-chat --thinking low -p "..."
+
+# 工具开关：与 pi 的 -t / -xt / --no-tools 同一套语义
+moon run cmd/pi-moon -- -p "读 README.md 的前 3 行"
+moon run cmd/pi-moon -- -t read,grep,ls -p "..."
+moon run cmd/pi-moon -- -xt bash,powershell -p "..."
+moon run cmd/pi-moon -- --no-tools -p "..."
 
 # 离线演示：假 provider / 假工具，看两棵轨迹树
 moon run cmd/main
@@ -99,6 +108,7 @@ moon run cmd/main
 | `core/loop` | 两张表：`transition`（迁移）与 `wiring`（接线）；`Cmd` 数据；`reduce` |
 | `core/runtime` | 环的驱动者：即时归约 + 延迟 effect（`async`） |
 | `core/provider` | pi 配置解析 + OpenAI 兼容请求 / SSE + 真实 effect 表 |
+| `core/tools` | 八个内置工具：定义 / 执行 / 与 pi 一致的启用状态 |
 | `cmd/pi-moon` | 命令行：一条 prompt 跑真实模型 |
 | `cmd/main` | 离线演示（假 provider / 假工具） |
 
@@ -108,6 +118,9 @@ moon run cmd/main
 common → message → trace → action → state → loop → runtime → provider → cmd/pi-moon
                                                       └──► cmd/main
 ```
+
+`core/tools` 只依赖 `action` / `message`；`core/provider` 额外依赖它（`RunTools`
+effect 调 `@tools.execute`）。
 
 没有循环依赖，也没有全局状态。
 
@@ -166,6 +179,7 @@ common → message → trace → action → state → loop → runtime → provi
 | `packages/core/src/reducer.ts` 的 `loopWiring` | `core/loop/wiring.mbt` |
 | `packages/core/src/effects.ts`（接口那一半） | `core/runtime/runtime.mbt` 的 `EffectTable` |
 | `packages/core/src/effects.ts`（pi-ai 那一半） | `core/provider/`（配置 + 请求 + SSE） |
+| `packages/core/src/tools.ts`（内置工具 + 开关） | `core/tools/`（八个工具 + `resolve_tool_selection`） |
 | `redux-loop` 的 `install()` | `core/runtime/runtime.mbt` 的 `Agent::run` |
 
 语义上刻意保留的几件事：
@@ -186,12 +200,13 @@ common → message → trace → action → state → loop → runtime → provi
 | Cmd 摊平在运行时入口做 | 原项目踩过「嵌套 LIST 静默吞 action」的坑，这里从结构上消掉 |
 | effect 是 `async`，但 `Dispatch.send()` 同步归约 | 流式 token 到达时 state 立刻更新；只有 effect 边界在 `await` |
 | provider 复用 faceoff 的 `Settings` + `parse_sse_line` | 消息体 / 工具 / usage / tool_call 分片由本项目补（见 provider 文档） |
-| `tools.changed` / `compact.*` / 扩展 / 落盘尚未接 | 循环核心先立住，再加外围 |
+| 工具输出里 bash 的两条流是拼接的、`edit` 只做严格匹配 | 不引 shell 合并与模糊匹配的复杂度；差异清单见 [docs/tools.md](docs/tools.md) |
+| `ToolProgress` / `tools.changed` / `compact.*` / 扩展 / 落盘尚未接 | 循环核心先立住，再加外围 |
 
 ## 下一步（按顺序）
 
-1. **工具执行**：`RunTools` 接 `read` / `write` / `edit` / `bash`，`ToolProgress`
-   流式回传；然后 provider 的默认「工具未接入」占位就能换掉。
+1. **`ToolProgress` 流式回传**：bash 长命令边跑边显示（action / state / 渲染已就位，
+   缺执行器里的流式回调）。
 2. **会话与轨迹落盘 / 恢复**：JSONL 追加写 + `trace.persisted` 游标。
 3. **上下文压缩**：`compact.request / done / failed` 三个 action 与 pi 的切点算法。
 4. **界面**：rabbita（Web）与终端渲染共用同一份 state；跨包只碰 `Agent` 的

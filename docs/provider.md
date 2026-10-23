@@ -227,9 +227,9 @@ Elm 架构是一种把界面程序拆成 Model、View、Update 三部分、以�
 
 - **只支持 OpenAI 兼容线格式。** 没有 Anthropic / Gemini / Responses 的转换；
   遇到这些 `api` 会明确报错而不是发一个必然失败的请求。
-- **工具执行还没接。** 请求里会带工具定义（如果 state 里有），但默认的
-  `run_tools` 只把「未接入」作为**错误结果**交回模型（消息序列仍然合法）。
-  真正读写文件是下一步。
+- **工具执行已接。** 请求里带 `state.prompt.tools` 的声明；`run_tools`、工具实现
+  与开关语义见 [tools](tools.md)。工具失败是**错误结果**（消息序列仍然合法），
+  不掐回合。
 - **OAuth 凭证不认。** `auth.json` 里只有 `key`（api_key）会被使用。
 - **价格**：`models.json` 的模型没写 `cost` 时，`tokens` 照常显示，`cost` 不显示。
 - **不读系统代理环境变量**：`@http` 客户端不会自动用 `HTTPS_PROXY`。需要走代理时

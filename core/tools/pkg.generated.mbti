@@ -1,0 +1,100 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "zhouteng/pi_moon/core/tools"
+
+import {
+  "moonbitlang/core/debug",
+  "zhouteng/pi_moon/core/action",
+  "zhouteng/pi_moon/core/message",
+}
+
+// Values
+pub fn ancestors(String) -> Array[String]
+
+pub fn basename(String) -> String
+
+pub fn builtin_tool_definition(String) -> @action.PromptToolDefinition?
+
+pub let builtin_tool_names : Array[String]
+
+pub fn byte_length(String) -> Int32
+
+pub let default_max_bytes : Int32
+
+pub let default_max_lines : Int32
+
+pub fn definitions_for(Array[String]) -> Array[@action.PromptToolDefinition]
+
+pub fn display_path(String) -> String
+
+pub fn env_contains(Map[String, String], String) -> Bool
+
+pub fn env_get(Map[String, String], String) -> String?
+
+pub fn exclude_tools(Array[String], Array[String]) -> Array[String]
+
+pub async fn execute(String, @message.ToolCall, env? : Map[String, String], enabled? : Array[String]) -> ToolOutcome
+
+pub fn format_size(Int32) -> String
+
+pub fn glob_match(String, String) -> Bool
+
+pub let grep_max_line_length : Int32
+
+pub fn home_dir(Map[String, String]) -> String
+
+pub fn is_absolute_path(String) -> Bool
+
+pub fn is_builtin_tool(String) -> Bool
+
+pub fn is_windows_env(Map[String, String]) -> Bool
+
+pub fn normalize_segments(String) -> String
+
+pub fn parent_dir(String) -> String
+
+pub let pi_default_tool_names : Array[String]
+
+pub fn prompt_guidelines(String) -> Array[String]
+
+pub fn prompt_snippet(String) -> String?
+
+pub fn relative_to(String, String) -> String
+
+pub fn resolve_path(String, String) -> String
+
+pub fn resolve_tool_selection(Array[String]?) -> Array[String]
+
+pub fn split_lines(String) -> Array[String]
+
+pub fn truncate_head(String, max_lines? : Int32, max_bytes? : Int32) -> TruncatedText
+
+pub fn truncate_line(String, max_chars? : Int32) -> (String, Bool)
+
+pub fn truncate_tail(String, max_lines? : Int32, max_bytes? : Int32) -> TruncatedText
+
+// Errors
+pub suberror ToolFailure {
+  Failed(String)
+}
+
+// Types and methods
+pub(all) struct ToolOutcome {
+  content : Array[@message.Content]
+  is_error : Bool
+} derive(@debug.Debug)
+
+pub(all) struct TruncatedText {
+  content : String
+  truncated : Bool
+  truncated_by : String
+  total_lines : Int32
+  output_lines : Int32
+  total_bytes : Int32
+  output_bytes : Int32
+  last_line_partial : Bool
+  first_line_exceeds_limit : Bool
+} derive(@debug.Debug)
+
+// Type aliases
+
+// Traits

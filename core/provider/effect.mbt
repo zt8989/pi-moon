@@ -232,28 +232,46 @@ async fn run_agent_effect(
 }
 
 ///|
-/// 工具执行尚未接入时的默认行为：**把失败当成工具结果交回模型**，而不是直接掐掉回合。
+/// 默认的工具执行：逐个调 `core/tools` 的实现，把 outcome 变成 `tool.result`。
 ///
-/// 这样消息序列仍然合法（每个 toolCall 都有 toolResult），模型能看到「工具没接上」，
-/// 自行决定继续还是收工。等工具注册表接上后，换一张表即可。
-async fn unsupported_tools(
-  _state : @state.AgentState,
+/// 每个调用都必须落一条结果（即使工具失败），否则消息序列里就留下一个没有
+/// 结果的 toolCall，下一轮请求会被网关拒掉。失败也**不掐回合**：模型能看到
+/// 错误，自行决定重试还是换办法。
+///
+/// 启用检查读 `state.prompt.tools` —— 那是 `prompt.init` 装进来、**真正声明给模型**
+/// 的那一份。关着的工具（例如默认关的 `powershell`）即使被硬调也只回「未知工具」。
+async fn run_tools_default(
+  state : @state.AgentState,
   calls : Array[@message.ToolCall],
   dispatch : @runtime.Dispatch,
 ) -> Unit {
+  let enabled : Array[String] = []
+  for definition in state.prompt.tools {
+    enabled.push(definition.name)
+  }
   for call in calls {
     dispatch.send(@action.ToolStart(call))
+    let env : Map[String, String] = Map([])
+    if !state.session_id.is_empty() {
+      env["PI_SESSION_ID"] = state.session_id
+    }
+    if !state.model.provider.is_empty() {
+      env["PI_PROVIDER"] = state.model.provider
+    }
+    if !state.model.model_id.is_empty() {
+      env["PI_MODEL"] = state.model.model_id
+    }
+    if !state.model.thinking_level.is_empty() {
+      env["PI_REASONING_LEVEL"] = state.model.thinking_level
+    }
+    let outcome = @tools.execute(state.cwd, call, env~, enabled~)
     dispatch.send(
       @action.ToolResult({
         tool_call_id: call.id,
         tool_name: call.name,
-        content: [
-          @message.Text(
-            "工具执行尚未接入（pi-moon v0.2 只接了 provider）。请不要继续调用工具。",
-          ),
-        ],
-        is_error: true,
-        timestamp: 0L,
+        content: outcome.content,
+        is_error: outcome.is_error,
+        timestamp: @env.now().reinterpret_as_int64(),
       }),
     )
   }
@@ -266,7 +284,7 @@ pub fn effect_table(
   config : PiConfig,
   options : ChatOptions,
 ) -> @runtime.EffectTable {
-  effect_table_full(config, options, noop_hooks(), unsupported_tools)
+  effect_table_full(config, options, noop_hooks(), run_tools_default)
 }
 
 ///|
@@ -276,7 +294,7 @@ pub fn effect_table_with_hooks(
   options : ChatOptions,
   hooks : ProviderHooks,
 ) -> @runtime.EffectTable {
-  effect_table_full(config, options, hooks, unsupported_tools)
+  effect_table_full(config, options, hooks, run_tools_default)
 }
 
 ///|

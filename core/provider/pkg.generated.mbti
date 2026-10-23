@@ -67,6 +67,7 @@ pub(all) struct PiConfig {
   default_provider : String?
   default_model : String?
   default_thinking_level : String
+  default_tools : Array[String]?
   auth : Map[String, String]
   env : Map[String, String]
   agent_dir : String

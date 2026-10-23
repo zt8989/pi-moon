@@ -1,7 +1,8 @@
 // pi-moon 的命令行入口。
 //
-// v0.2 的边界：**provider 是真的**（pi 配置 → OpenAI 兼容流式接口），工具执行
-// 还是占位（会把「未接入」作为错误结果交回模型）。所以它现在能聊天，还不能读写文件。
+// v0.3：provider 与工具都是真的 —— pi 配置 → OpenAI 兼容流式接口；八个内置工具
+// 按 pi 的 `defaultTools` 语义开关（默认 read / bash / edit / write）。
+// 命令行开关与 pi 的 `-t` / `-xt` / `--no-tools` 对齐。
 
 ///|
 let usage : String = "pi-moon — Elm architecture agent core in MoonBit\n" +
@@ -22,6 +23,9 @@ let usage : String = "pi-moon — Elm architecture agent core in MoonBit\n" +
   "      --temperature <f>    采样温度\n" +
   "      --idle-timeout <ms>  流上多久没数据算超时（默认 120000）\n" +
   "      --show-thinking      把思考增量打到 stderr\n" +
+  "  -t, --tools <list>       替换默认工具选择（逗号分隔，例如 read,grep,ls）\n" +
+  "  -xt, --exclude-tools <list>  从选择里去掉几个工具（逗号分隔）\n" +
+  "      --no-tools           关闭全部内置工具\n" +
   "      --no-trace           不打印轨迹树\n" +
   "  -h, --help               显示这段文字"
 
@@ -56,6 +60,9 @@ struct CliArgs {
   mut max_tokens : Int32?
   mut temperature : Double?
   mut idle_timeout_ms : Int32
+  mut tools : String?
+  mut exclude_tools : String?
+  mut no_tools : Bool
   mut list_models : Bool
   mut show_thinking : Bool
   mut no_trace : Bool
@@ -74,6 +81,9 @@ fn default_args() -> CliArgs {
     max_tokens: None,
     temperature: None,
     idle_timeout_ms: 120000,
+    tools: None,
+    exclude_tools: None,
+    no_tools: false,
     list_models: false,
     show_thinking: false,
     no_trace: false,
@@ -182,6 +192,17 @@ fn parse_args(argv : Array[String]) -> CliArgs raise CliError {
         args.idle_timeout_ms = parse_int(value)
         index = next
       }
+      "-t" | "--tools" => {
+        let (value, next) = option_value(argv, index, inline, flag)
+        args.tools = Some(value)
+        index = next
+      }
+      "-xt" | "--exclude-tools" => {
+        let (value, next) = option_value(argv, index, inline, flag)
+        args.exclude_tools = Some(value)
+        index = next
+      }
+      "--no-tools" => args.no_tools = true
       _ => raise UnknownFlag(flag~)
     }
     index = index + 1
@@ -190,11 +211,71 @@ fn parse_args(argv : Array[String]) -> CliArgs raise CliError {
 }
 
 ///|
-fn default_system_prompt() -> String {
-  "You are pi-moon, a concise coding assistant running in a terminal. " +
-  "Answer in the user's language. " +
-  "Tool execution is not wired up yet in this build: if you call a tool, " +
-  "you will get an error result saying so. Prefer answering directly."
+/// system prompt：与 pi 同形 —— 交代工作目录、列出**当前开启**的工具，再附上
+/// 工具自己的使用提示（pi 的 `promptSnippet` / `promptGuidelines`）。
+fn build_system_prompt(cwd : String, tool_names : Array[String]) -> String {
+  let lines : Array[String] = [
+    "You are pi-moon, a concise coding assistant running in a terminal.",
+    "Answer in the user's language.",
+    "",
+    "Current working directory: " + cwd,
+  ]
+  if !tool_names.is_empty() {
+    lines.push("")
+    lines.push("Available tools:")
+    for name in tool_names {
+      match @tools.prompt_snippet(name) {
+        Some(snippet) => lines.push("- " + name + ": " + snippet)
+        None => ()
+      }
+    }
+    let guidelines : Array[String] = []
+    for name in tool_names {
+      for guideline in @tools.prompt_guidelines(name) {
+        guidelines.push("- " + guideline)
+      }
+    }
+    if !guidelines.is_empty() {
+      lines.push("")
+      lines.push("Tool guidelines:")
+      for guideline in guidelines {
+        lines.push(guideline)
+      }
+    }
+  }
+  lines.join("\n")
+}
+
+///|
+/// 逗号分隔的清单（CLI 的 `--tools` / `--exclude-tools`）。
+fn split_tool_list(text : String) -> Array[String] {
+  let out : Array[String] = []
+  for item in text.split(",") {
+    let name = item.trim().to_owned()
+    if !name.is_empty() {
+      out.push(name)
+    }
+  }
+  out
+}
+
+///|
+/// 本次会话开哪些工具：
+///
+/// 1. `--tools` 给了就**替换**（与 pi 的 `-t` 一致）；否则从
+///    `settings.json` 的 `defaultTools` 解析（不配就是 pi 的默认四个）；
+/// 2. `--no-tools` 再清空（内置工具全关）；
+/// 3. `--exclude-tools` 最后剔除（与 pi 的 `-xt` 一致）。
+fn selected_tools(config : @provider.PiConfig, args : CliArgs) -> Array[String] {
+  let base = match args.tools {
+    Some(list) => split_tool_list(list)
+    None => @tools.resolve_tool_selection(config.default_tools)
+  }
+  let base = if args.no_tools { [] } else { base }
+  match args.exclude_tools {
+    Some(list) => @tools.exclude_tools(base, split_tool_list(list))
+    None => base
+  }
 }
 
 ///|
@@ -204,17 +285,19 @@ fn default_system_prompt() -> String {
 fn initial_state(
   resolved : @provider.ResolvedProvider,
   idle_timeout_ms : Int32,
+  system_prompt : String,
+  tool_names : Array[String],
 ) -> @state.AgentState {
   let cwd = match @env.current_dir() {
     Some(cwd) => cwd
     None => "."
   }
   @state.create_initial_state({
-    system_prompt: default_system_prompt(),
+    system_prompt,
     provider_name: resolved.provider_name,
     model_id: resolved.model.id,
     thinking_level: resolved.thinking_level,
-    tool_names: [],
+    tool_names,
     max_turns: None,
     max_llm_attempts: 2,
     llm_timeout_ms: idle_timeout_ms.to_int64(),
@@ -228,9 +311,14 @@ fn initial_state(
 async fn seed(
   agent : @runtime.Agent,
   resolved : @provider.ResolvedProvider,
+  system_prompt : String,
+  tool_names : Array[String],
 ) -> Unit {
   agent.send(
-    @action.PromptInit({ system_prompt: default_system_prompt(), tools: [], }),
+    @action.PromptInit({
+      system_prompt,
+      tools: @tools.definitions_for(tool_names),
+    }),
   )
   let compat = resolved.model.compat
   agent.send(
@@ -336,6 +424,12 @@ async fn run(args : CliArgs) -> Unit {
     max_tokens: args.max_tokens,
     idle_timeout_ms: args.idle_timeout_ms,
   }
+  let cwd = match @env.current_dir() {
+    Some(cwd) => cwd
+    None => "."
+  }
+  let tool_names = selected_tools(config, args)
+  let system_prompt = build_system_prompt(cwd, tool_names)
   let hooks : @provider.ProviderHooks = {
     on_content: async fn(text) { @stdio.stdout.write(text) catch { _ => () } },
     on_thinking: async fn(text) {
@@ -348,19 +442,21 @@ async fn run(args : CliArgs) -> Unit {
   }
   let table = @provider.effect_table_with_hooks(config, options, hooks)
   let agent = @runtime.Agent::new(
-    initial_state(resolved, args.idle_timeout_ms),
+    initial_state(resolved, args.idle_timeout_ms, system_prompt, tool_names),
     table,
     fn() { @env.now().reinterpret_as_int64() },
   )
+  // stdout 只留给模型回答：诊断与工具日志全走 stderr（先收集，跑完再打）。
+  let notices : Array[String] = []
   agent.observe(action => {
     match action {
       @action.LlmFailed(data) =>
-        println("\n[llm failed: " + data.kind.name() + "] " + data.error)
-      @action.ToolStart(call) => println("\n[tool] " + call.name)
+        notices.push("[llm failed: " + data.kind.name() + "] " + data.error)
+      @action.ToolStart(call) => notices.push("[tool] " + call.name)
       _ => ()
     }
   })
-  seed(agent, resolved) catch {
+  seed(agent, resolved, system_prompt, tool_names) catch {
     err => {
       runtime_failure(err.to_string())
       return
@@ -369,7 +465,9 @@ async fn run(args : CliArgs) -> Unit {
   eprintln(
     "[" +
     resolved.describe() +
-    "]  按 Ctrl-C 中断（流式输出在 stdout，诊断在 stderr）",
+    "]  tools=" +
+    (if tool_names.is_empty() { "(none)" } else { tool_names.join(",") }) +
+    "  按 Ctrl-C 中断（流式输出在 stdout，诊断在 stderr）",
   )
   agent.send(@action.UserMessage({ text: prompt, content: [], })) catch {
     err => {
@@ -380,6 +478,9 @@ async fn run(args : CliArgs) -> Unit {
   // 模型的回答可能没有结尾换行；这里补一个，但只在 stdout 上。
   @stdio.stdout.write("\n") catch {
     _ => ()
+  }
+  for notice in notices {
+    eprintln(notice)
   }
   print_report(agent, !args.no_trace)
 }

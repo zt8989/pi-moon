@@ -66,6 +66,12 @@ pub(all) struct PiConfig {
   default_provider : String?
   default_model : String?
   default_thinking_level : String
+  /// `settings.json` 的 `defaultTools`（没配就是 None）。
+  ///
+  /// 语义与 pi 的 `resolveDefaultTools()` 一致（见 `core/tools` 的
+  /// `resolve_tool_selection`）：不带前缀的名字替换默认合集，`+name` / `-name`
+  /// 在结果上增删。这里只负责**读**，不开工。
+  default_tools : Array[String]?
   /// provider → api key（auth.json）。
   auth : Map[String, String]
   env : Map[String, String]
@@ -152,6 +158,24 @@ fn jobject(value : Json?) -> Map[String, Json]? {
 ///|
 fn field_string(obj : Map[String, Json], key : String) -> String? {
   jstring(obj.get(key))
+}
+
+///|
+/// 字符串数组：只收字符串元素（pi 的 schema 也是这个口径）。
+fn field_string_array(obj : Map[String, Json], key : String) -> Array[String]? {
+  match obj.get(key) {
+    Some(Array(items)) => {
+      let out : Array[String] = []
+      for item in items {
+        match item {
+          String(value) => out.push(value)
+          _ => ()
+        }
+      }
+      Some(out)
+    }
+    _ => None
+  }
 }
 
 ///|
@@ -498,6 +522,7 @@ pub async fn load_pi_config(agent_dir? : String) -> PiConfig {
       Some(level) => level
       None => "off"
     },
+    default_tools: field_string_array(settings, "defaultTools"),
     auth: parse_auth(auth_json),
     env,
     agent_dir: dir,

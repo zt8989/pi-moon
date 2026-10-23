@@ -25,6 +25,7 @@ fn test_config(
       Some(level) => level
       None => "off"
     },
+    default_tools: field_string_array(settings_obj, "defaultTools"),
     auth: parse_auth(Some(auth)),
     env: Map([]),
     agent_dir: "/tmp/pi",
@@ -135,6 +136,7 @@ test "内置 provider：deepseek + 环境变量 key，不需要 models.json" {
     default_provider: None,
     default_model: None,
     default_thinking_level: "off",
+    default_tools: None,
     auth: Map([]),
     env,
     agent_dir: "/tmp/pi",

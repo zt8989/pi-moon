@@ -246,11 +246,14 @@ LLM 被调两遍，第二遍的结果覆盖第一遍，树上就是两个 `llm.r
   按这个形状接的：SSE 增量在 await 期间逐条 dispatch。
 - **provider**：pi 的 `models.json` / `auth.json` / `settings.json` → OpenAI 兼容
   的流式请求；详见 [provider](provider.md)。
+- **工具**：`RunTools` 接上了八个内置工具（read / write / edit / bash /
+  powershell / grep / find / ls），开关语义与 pi 的 `defaultTools` 一致；
+  详见 [tools](tools.md)。
 
 ## 尚未接的部分（按计划的顺序）
 
-1. **工具注册表**：`RunTools` 现在只有接口。工具实现（read / write / edit /
-   bash）与 `ToolProgress` 的流式回传下一步接。
+1. **`ToolProgress` 的流式回传**：action / state / 渲染已就位，执行器还是一次性
+   返回结果（bash 长命令不是边跑边显示）。
 2. **prompt head 与工具声明**：`with_tool_declarations` 目前是恒等函数。
    工具集变化必须作为**新的 system 消息**追加，不能改 head（前缀缓存）。
 3. **落盘**：`TracePersisted` 与 `persisted_seq` 已在 state 里，写 JSONL 的
