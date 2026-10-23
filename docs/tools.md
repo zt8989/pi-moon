@@ -83,11 +83,40 @@ moon run cmd/pi-moon -- --no-tools -p "..."
 
 | 差异 | 原因 |
 | --- | --- |
-| `bash` 的 stdout / stderr 是**分别收集后拼接** | `@shell.Cmd::output` 不合并两条流；pi 是按到达顺序合并。对模型来说顺序偶尔不同，截断策略一致。 |
 | `edit` 只做**严格匹配** | pi 还有 NFKC / 智能引号 / 行尾空白的模糊匹配兜底。严格匹配更可预测，失败信息也照抄 pi。 |
 | `find` 用 `rg --files` + 本地 glob 匹配器 | 不依赖 fd；`*` / `?` / `**` / `[...]` 都支持。没有 `rg` 时退回 `@shell.glob`（此时**不读** .gitignore）。 |
 | `read` 的图片不做缩放 | pi 会把大图重新编码；这里原样转成 `data:` URL 发给模型。 |
-| `ToolProgress` 还没有增量 | 工具结果一次性回传；bash 的长输出不是边跑边显示。action / state / 渲染都已就位，缺的是执行器里的流式回调。 |
+| `ToolProgress` 的快照是**尾部截断后的全文** | 与 pi 的 accumulator 口径一致；超过 50KB 时早期内容会被裁掉。 |
+
+## 流式输出（ToolProgress）
+
+shell 工具（`bash` / `powershell`）是**边跑边读**的：
+
+```text
+spawn 进程（stdout / stderr → 同一个管道）
+   │  每读到 ~8KB
+   ▼
+每 100ms 把「当前全文的尾部截断」交给 on_progress
+   │
+   ├─ provider: dispatch ToolProgress（state.tool_progress）
+   └─ CLI: --show-tool-progress 时在 stderr 原地刷新最后一行
+   ▼
+命令结束 → 完整输出 → ToolResult
+```
+
+- 输出**顺序**就是命令实际写的顺序（stdout / stderr 合并到一根管道，与 pi 同形）。
+- 超时会保留已经产生的输出：`Command timed out after N seconds` 追加在 partial 输出后面。
+- 完整输出最多留 8MB（`max_stream_bytes`），模型看到的仍是尾部 2000 行 / 50KB。
+- 进度不是状态：`ToolProgress` 只写 `state.tool_progress`，终值才进 `messages`。
+
+CLI 里可以直接看到：
+
+```bash
+moon run cmd/pi-moon -- -t bash --show-tool-progress \
+  -p '用 bash 执行：for i in 1 2 3; do printf "step$i "; sleep 0.4; done'
+```
+
+stderr 会依次出现 `step1` / `step1 step2` / `step1 step2 step3`。
 
 ## 执行细节
 
@@ -119,4 +148,9 @@ moon run cmd/pi-moon -- --no-tools -p "..."
   环境变量都在里面；非零退出码 / 未知工具 / 坏参数 / 缺参数 / 未启用的工具
   都是错误结果；
 - `edit` 保留 CRLF 与 BOM；`read` 把图片转成 text + `data:` image 块；
+- shell 流式：`printf first; sleep 0.35; printf second` 的中间态确实在命令结束前
+  到达；超时保留 partial 输出；
 - `powershell`：Windows 上真跑，其它平台给明确错误。
+
+`core/provider/provider_wbtest.mbt` 还钉了一条接线：`run_tools` 发给环上的
+action 里，`ToolProgress` 出现在 `ToolStart` 与 `ToolResult` 之间。

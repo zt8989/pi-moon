@@ -201,6 +201,8 @@ echo "总结这段日志" | pi-moon --no-trace
   所以 `pi-moon -p ... > answer.txt` 拿到的是干净的回答。
 - `--thinking` 的级别会进请求（见上面的思考参数表）。
 - `--show-thinking` 把思考增量打到 stderr（默认不显示）。
+- `--show-tool-progress` 把 shell 工具的中间输出（只取最后一行）原地刷到 stderr；
+  `ToolProgress` action 本身无论开不开都会回环（见 [tools](tools.md)）。
 - `--agent-dir` 指向另一份 pi 配置（默认 `~/.pi/agent`）。
 - 退出码：参数 / 配置 / 网络错误为 1。
 

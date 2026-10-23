@@ -10,6 +10,7 @@ import {
   "zhouteng/pi_moon/core/message",
   "moonbitlang/async",
   "moonbitlang/async/fs",
+  "moonbitlang/async/process",
   "moonbitlang/async/shell",
   "moonbitlang/core/env",
   "moonbitlang/core/json",

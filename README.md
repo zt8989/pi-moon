@@ -38,15 +38,16 @@ reducer 里没有一个 `await`、没有一个 `fetch`、也没有 while。真�
   走 OpenAI 兼容的流式接口，token 增量逐字到达（见 [docs/provider.md](docs/provider.md)）；
 - **真实工具**：read / write / edit / bash / powershell / grep / find / ls 八个内置工具，
   默认开启 read / bash / edit / write（与 pi 的 `DEFAULT_TOOL_NAMES` 一致），
-  `settings.json` 的 `defaultTools` 支持 `+name` / `-name`（见 [docs/tools.md](docs/tools.md)）。
+  `settings.json` 的 `defaultTools` 支持 `+name` / `-name`（见 [docs/tools.md](docs/tools.md)）；
+- **流式工具输出**：shell 命令边跑边读，`ToolProgress` 每 100ms 回到环上；
+  `--show-tool-progress` 能在 stderr 直接看到中间输出。
 
-**还没有**（下一步逐步接）：`ToolProgress` 的流式回传、会话与轨迹落盘 / 恢复、
-上下文压缩、pi 扩展、TUI / Web。
+**还没有**（下一步逐步接）：会话与轨迹落盘 / 恢复、上下文压缩、pi 扩展、TUI / Web。
 
 ## 跑起来
 
 ```bash
-moon test                        # 38 个测试：纯表 + 整环 + 轨迹树 + provider 协议 + 工具
+moon test                        # 41 个测试：纯表 + 整环 + 轨迹树 + provider 协议 + 工具
 
 # 真实模型：读 ~/.pi/agent/ 下与 pi 同一份配置
 moon run cmd/pi-moon -- -p "用一句话说明什么是 Elm 架构"
@@ -58,6 +59,10 @@ moon run cmd/pi-moon -- -p "读 README.md 的前 3 行"
 moon run cmd/pi-moon -- -t read,grep,ls -p "..."
 moon run cmd/pi-moon -- -xt bash,powershell -p "..."
 moon run cmd/pi-moon -- --no-tools -p "..."
+
+# 看长命令边跑边输出
+moon run cmd/pi-moon -- -t bash --show-tool-progress \
+  -p '用 bash 执行：for i in 1 2 3; do printf "step$i "; sleep 0.4; done'
 
 # 离线演示：假 provider / 假工具，看两棵轨迹树
 moon run cmd/main
@@ -200,14 +205,13 @@ effect 调 `@tools.execute`）。
 | Cmd 摊平在运行时入口做 | 原项目踩过「嵌套 LIST 静默吞 action」的坑，这里从结构上消掉 |
 | effect 是 `async`，但 `Dispatch.send()` 同步归约 | 流式 token 到达时 state 立刻更新；只有 effect 边界在 `await` |
 | provider 复用 faceoff 的 `Settings` + `parse_sse_line` | 消息体 / 工具 / usage / tool_call 分片由本项目补（见 provider 文档） |
-| 工具输出里 bash 的两条流是拼接的、`edit` 只做严格匹配 | 不引 shell 合并与模糊匹配的复杂度；差异清单见 [docs/tools.md](docs/tools.md) |
-| `ToolProgress` / `tools.changed` / `compact.*` / 扩展 / 落盘尚未接 | 循环核心先立住，再加外围 |
+| 工具输出里 `edit` 只做严格匹配、`find` 用 rg 代替 fd | 不引模糊匹配与 fd 依赖；差异清单见 [docs/tools.md](docs/tools.md) |
+| `tools.changed` / `compact.*` / 扩展 / 落盘尚未接 | 循环核心先立住，再加外围 |
 
 ## 下一步（按顺序）
 
-1. **`ToolProgress` 流式回传**：bash 长命令边跑边显示（action / state / 渲染已就位，
-   缺执行器里的流式回调）。
-2. **会话与轨迹落盘 / 恢复**：JSONL 追加写 + `trace.persisted` 游标。
-3. **上下文压缩**：`compact.request / done / failed` 三个 action 与 pi 的切点算法。
-4. **界面**：rabbita（Web）与终端渲染共用同一份 state；跨包只碰 `Agent` 的
+1. **会话与轨迹落盘 / 恢复**：JSONL 追加写 + `trace.persisted` 游标；
+   顺带做多轮 CLI（`--session` / `--continue`）。
+2. **上下文压缩**：`compact.request / done / failed` 三个 action 与 pi 的切点算法。
+3. **界面**：rabbita（Web）与终端渲染共用同一份 state；跨包只碰 `Agent` 的
    `state` / `send`。

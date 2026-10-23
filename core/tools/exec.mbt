@@ -5,10 +5,12 @@
 // 与 pi 的 `runToolCall` 同口径。
 //
 // 与 pi 的差异（都写进了 docs/tools.md）：
-//   - bash 的 stdout / stderr 是分别收集后拼接的（pi 是两条流按到达顺序合并）；
 //   - edit 只做严格匹配，不做 pi 的模糊匹配（NFKC / 智能引号归一）；
 //   - find 用 `rg --files` + 本项目的 glob 匹配器（pi 用 fd），没有 rg 时退回
 //     `@shell.glob`（此时不读 .gitignore）。
+//
+// shell 工具输出是**边跑边读**的：stdout / stderr 指向同一个管道（因此顺序就是
+// 命令实际写的顺序），每 100ms 把尾部截断后的当前全文交给 `on_progress`。
 
 ///|
 /// 一次工具执行的结果。
@@ -51,12 +53,21 @@ fn append_status(text : String, status : String) -> String {
 /// `enabled?` 是本次会话**声明给模型**的工具名。不传则不做启用检查（测试用）；
 /// provider 传 `state.prompt.tools` 的名字，于是「关着的工具」就算模型硬调也只会
 /// 拿到「未知工具」—— 与 pi 的 `getTool()`（按 `selectedBuiltinToolNames` 过滤）一致。
+///
+/// `on_progress?` 只在 shell 工具上有意义：命令输出每 100ms 交一份**当前全文**
+/// （已按尾部截断），provider 把它变成 `ToolProgress` action。
 pub async fn execute(
   cwd : String,
   call : @message.ToolCall,
   env? : Map[String, String],
   enabled? : Array[String],
+  on_progress? : async (Array[@message.Content]) -> Unit,
 ) -> ToolOutcome {
+  let on_progress : async (Array[@message.Content]) -> Unit = match
+    on_progress {
+    Some(callback) => callback
+    None => async fn(_blocks) { () }
+  }
   try {
     let allowed = match enabled {
       Some(names) => names.contains(call.name)
@@ -71,8 +82,8 @@ pub async fn execute(
       "read" => execute_read(cwd, args)
       "write" => execute_write(cwd, args)
       "edit" => execute_edit(cwd, args)
-      "bash" => execute_shell(cwd, args, "bash", env)
-      "powershell" => execute_shell(cwd, args, "powershell", env)
+      "bash" => execute_shell(cwd, args, "bash", env, on_progress)
+      "powershell" => execute_shell(cwd, args, "powershell", env, on_progress)
       "grep" => execute_grep(cwd, args)
       "find" => execute_find(cwd, args)
       "ls" => execute_ls(cwd, args)
@@ -494,11 +505,103 @@ fn count_occurrences(text : String, needle : String) -> Int32 {
 // ─── bash / powershell ───────────────────────────────────────────────────────
 
 ///|
+/// 最多留存多少原始输出（与之前一次性读取时 `@shell` 的默认上限一致）。
+let max_stream_bytes : Int32 = 8 * 1024 * 1024
+
+///|
+/// 进度快照只看尾部这么多字节（`ToolProgress` 本来就是尾部截断的展示）。
+let progress_snapshot_bytes : Int32 = 200 * 1024
+
+///|
+/// 进度节流：最多每 100ms 一条 `ToolProgress`。
+let progress_interval_ms : Int64 = 100L
+
+///|
+/// 跑一条命令并把输出**边跑边**交出去。
+///
+/// stdout / stderr 指向同一个管道（与 pi 的 merged 输出同形），于是读到什么顺序
+/// 就是命令写的什么顺序。每 100ms 把「当前全文的尾部截断」作为一次进度交给
+/// `on_progress`；完整输出累积在 `collected`（上限 8MB），由调用方收尾。
+async fn collect_shell_stream(
+  program : String,
+  arguments : Array[String],
+  cwd : String,
+  extra_env : Map[String, String],
+  collected : Array[Byte],
+  on_progress : async (Array[@message.Content]) -> Unit,
+) -> Int32 {
+  let mut exit_code = -1
+  @async.with_task_group(group => {
+    let (reader, writer) = @process.read_from_process() catch {
+      err => raise Failed("Failed to create output pipe: " + err.to_string())
+    }
+    defer reader.close()
+    let process = @process.spawn(
+      group,
+      program,
+      arguments,
+      extra_env~,
+      stdout=writer,
+      stderr=writer,
+      cwd~,
+    )
+    let mut last_emit = 0L
+    let mut emitted = false
+    let mut reading = true
+    while reading {
+      let chunk = reader.read_some(max_len=8192) catch {
+        error =>
+          if @async.is_cancellation_error(error) {
+            raise error
+          } else {
+            None
+          }
+      }
+      match chunk {
+        None => reading = false
+        Some(bytes) => {
+          for byte in bytes {
+            if collected.length() < max_stream_bytes {
+              collected.push(byte)
+            }
+          }
+          let now = @async.now()
+          if !emitted || now - last_emit >= progress_interval_ms {
+            emitted = true
+            last_emit = now
+            let start = if collected.length() > progress_snapshot_bytes {
+              collected.length() - progress_snapshot_bytes
+            } else {
+              0
+            }
+            let snapshot = @utf8.decode_lossy(
+              Bytes::from_array(collected[start:]),
+            )
+            let snapshot = truncate_tail(snapshot).content
+            if !snapshot.is_empty() {
+              on_progress([@message.Text(snapshot)])
+            }
+          }
+        }
+      }
+    }
+    exit_code = process.wait()
+  })
+  exit_code
+}
+
+///|
+fn decode_bytes(bytes : Array[Byte]) -> String {
+  @utf8.decode_lossy(Bytes::from_array(bytes))
+}
+
+///|
 async fn execute_shell(
   cwd : String,
   args : Map[String, Json],
   kind : String,
   extra_env : Map[String, String],
+  on_progress : async (Array[@message.Content]) -> Unit,
 ) -> ToolOutcome {
   let command = arg_string(args, "command")
   let timeout_seconds = arg_opt_number(args, "timeout")
@@ -532,27 +635,42 @@ async fn execute_shell(
     with_command.push(command)
     with_command
   }
-  let output = @shell.Cmd(program, arguments, cwd~, env=extra_env).output(
-    timeout_ms?,
-  ) catch {
-    @async.TimeoutError =>
+  // 边跑边读：stdout / stderr 走同一个管道，顺序就是命令实际写的顺序（pi 同形）。
+  let collected : Array[Byte] = []
+  let exit_code = try {
+    match timeout_ms {
+      Some(milliseconds) =>
+        @async.with_timeout(milliseconds, async fn() {
+          collect_shell_stream(
+            program, arguments, cwd, extra_env, collected, on_progress,
+          )
+        })
+      None =>
+        collect_shell_stream(
+          program, arguments, cwd, extra_env, collected, on_progress,
+        )
+    }
+  } catch {
+    @async.TimeoutError => {
+      let partial = decode_bytes(collected)
+      let partial_text = if partial.is_empty() {
+        ""
+      } else {
+        truncate_tail(partial).content
+      }
       return error_text(
-        "Command timed out after " +
-        timeout_seconds.unwrap_or(0.0).to_string() +
-        " seconds",
+        append_status(
+          partial_text,
+          "Command timed out after " +
+          timeout_seconds.unwrap_or(0.0).to_string() +
+          " seconds",
+        ),
       )
+    }
     err =>
       return error_text("Failed to run " + program + ": " + err.to_string())
   }
-  let stdout = output.stdout()
-  let stderr = output.stderr()
-  let combined = if stderr.is_empty() {
-    stdout
-  } else if stdout.is_empty() {
-    stderr
-  } else {
-    stdout + stderr
-  }
+  let combined = decode_bytes(collected)
   let truncated = truncate_tail(combined)
   let mut text = if truncated.content.is_empty() {
     "(no output)"
@@ -601,7 +719,6 @@ async fn execute_shell(
     }
     text = text + "\n\n" + notice
   }
-  let exit_code = output.exit_code()
   if exit_code == 0 {
     ok_text(text)
   } else {

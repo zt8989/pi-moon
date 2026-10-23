@@ -15,11 +15,17 @@
 pub(all) struct ProviderHooks {
   on_content : async (String) -> Unit
   on_thinking : async (String) -> Unit
+  /// 工具执行中的增量（工具名，当前**全文**）。只对 shell 工具有意义。
+  on_tool_progress : async (String, Array[@message.Content]) -> Unit
 }
 
 ///|
 pub fn noop_hooks() -> ProviderHooks {
-  { on_content: async fn(_) { () }, on_thinking: async fn(_) { () }, }
+  {
+    on_content: async fn(_) { () },
+    on_thinking: async fn(_) { () },
+    on_tool_progress: async fn(_, _) { () },
+  }
 }
 
 ///|
@@ -240,10 +246,11 @@ async fn run_agent_effect(
 ///
 /// 启用检查读 `state.prompt.tools` —— 那是 `prompt.init` 装进来、**真正声明给模型**
 /// 的那一份。关着的工具（例如默认关的 `powershell`）即使被硬调也只回「未知工具」。
-async fn run_tools_default(
+async fn run_tools_with_hooks(
   state : @state.AgentState,
   calls : Array[@message.ToolCall],
   dispatch : @runtime.Dispatch,
+  hooks : ProviderHooks,
 ) -> Unit {
   let enabled : Array[String] = []
   for definition in state.prompt.tools {
@@ -264,7 +271,14 @@ async fn run_tools_default(
     if !state.model.thinking_level.is_empty() {
       env["PI_REASONING_LEVEL"] = state.model.thinking_level
     }
-    let outcome = @tools.execute(state.cwd, call, env~, enabled~)
+    let outcome = @tools.execute(state.cwd, call, env~, enabled~, on_progress=async fn(
+      blocks,
+    ) {
+      (hooks.on_tool_progress)(call.name, blocks)
+      dispatch.send(
+        @action.ToolProgress({ tool_call_id: call.id, content: blocks, }),
+      )
+    })
     dispatch.send(
       @action.ToolResult({
         tool_call_id: call.id,
@@ -276,6 +290,15 @@ async fn run_tools_default(
     )
   }
   dispatch.send(@action.ToolBatchDone(calls.length()))
+}
+
+///|
+async fn run_tools_default(
+  state : @state.AgentState,
+  calls : Array[@message.ToolCall],
+  dispatch : @runtime.Dispatch,
+) -> Unit {
+  run_tools_with_hooks(state, calls, dispatch, noop_hooks())
 }
 
 ///|
@@ -294,7 +317,9 @@ pub fn effect_table_with_hooks(
   options : ChatOptions,
   hooks : ProviderHooks,
 ) -> @runtime.EffectTable {
-  effect_table_full(config, options, hooks, run_tools_default)
+  effect_table_full(config, options, hooks, async fn(state, calls, dispatch) {
+    run_tools_with_hooks(state, calls, dispatch, hooks)
+  })
 }
 
 ///|

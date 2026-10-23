@@ -26,6 +26,7 @@ let usage : String = "pi-moon — Elm architecture agent core in MoonBit\n" +
   "  -t, --tools <list>       替换默认工具选择（逗号分隔，例如 read,grep,ls）\n" +
   "  -xt, --exclude-tools <list>  从选择里去掉几个工具（逗号分隔）\n" +
   "      --no-tools           关闭全部内置工具\n" +
+  "      --show-tool-progress 把工具输出（取最后一行）实时打到 stderr\n" +
   "      --no-trace           不打印轨迹树\n" +
   "  -h, --help               显示这段文字"
 
@@ -63,6 +64,7 @@ struct CliArgs {
   mut tools : String?
   mut exclude_tools : String?
   mut no_tools : Bool
+  mut show_tool_progress : Bool
   mut list_models : Bool
   mut show_thinking : Bool
   mut no_trace : Bool
@@ -84,6 +86,7 @@ fn default_args() -> CliArgs {
     tools: None,
     exclude_tools: None,
     no_tools: false,
+    show_tool_progress: false,
     list_models: false,
     show_thinking: false,
     no_trace: false,
@@ -203,6 +206,7 @@ fn parse_args(argv : Array[String]) -> CliArgs raise CliError {
         index = next
       }
       "--no-tools" => args.no_tools = true
+      "--show-tool-progress" => args.show_tool_progress = true
       _ => raise UnknownFlag(flag~)
     }
     index = index + 1
@@ -439,6 +443,19 @@ async fn run(args : CliArgs) -> Unit {
         }
       }
     },
+    on_tool_progress: async fn(tool_name, blocks) {
+      if args.show_tool_progress {
+        let text = @message.contents_text(blocks)
+        let line = match text.rev_find("\n") {
+          Some(index) => text[index + 1:].to_owned()
+          None => text
+        }
+        let (line, _) = @tools.truncate_line(line, max_chars=100)
+        @stdio.stderr.write("\r\u{001b}[2K[" + tool_name + "] " + line) catch {
+          _ => ()
+        }
+      }
+    },
   }
   let table = @provider.effect_table_with_hooks(config, options, hooks)
   let agent = @runtime.Agent::new(
@@ -473,6 +490,12 @@ async fn run(args : CliArgs) -> Unit {
     err => {
       runtime_failure(err.to_string())
       return
+    }
+  }
+  // 工具进度是原地刷新的一行；收尾时擦掉它，别把后面的报告弄脏。
+  if args.show_tool_progress {
+    @stdio.stderr.write("\r\u{001b}[2K") catch {
+      _ => ()
     }
   }
   // 模型的回答可能没有结尾换行；这里补一个，但只在 stdout 上。

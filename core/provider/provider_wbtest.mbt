@@ -401,3 +401,70 @@ test "models.json 覆盖内置 provider 时可以省略 baseUrl" {
   assert_eq(resolved.base_url, "https://api.deepseek.com/v1")
   assert_eq(resolved.api_key, "auth-key")
 }
+
+///|
+/// `run_tools` 的流式接线：命令还在跑的时候就要有 `ToolProgress`，
+/// 而不是等结束才一次性给结果。
+async test "run_tools 把 bash 的中间输出变成 ToolProgress" {
+  let base = @state.create_initial_state({
+    system_prompt: "",
+    provider_name: "fake",
+    model_id: "fake-1",
+    thinking_level: "off",
+    tool_names: ["bash"],
+    max_turns: None,
+    max_llm_attempts: 2,
+    llm_timeout_ms: 120000L,
+    session_id: "s-tools",
+    cwd: ".",
+    trace: None,
+  })
+  let (state, _) = @loop.reduce(
+    base,
+    @action.PromptInit({
+      system_prompt: "",
+      tools: @tools.definitions_for(["bash"]),
+    }),
+    0L,
+  )
+  let actions : Array[@action.AgentAction] = []
+  let dispatch : @runtime.Dispatch = { emit: action => actions.push(action), }
+  run_tools_default(
+    state,
+    [
+      {
+        id: "call-1",
+        name: "bash",
+        arguments: "{\"command\":\"printf first; sleep 0.3; printf second\"}",
+      },
+    ],
+    dispatch,
+  )
+  let mut started = 0
+  let mut progress = 0
+  let mut result_text = ""
+  let mut is_error = true
+  for action in actions {
+    match action {
+      @action.ToolStart(call) => {
+        assert_eq(call.name, "bash")
+        started = started + 1
+      }
+      @action.ToolProgress(data) => {
+        assert_eq(data.tool_call_id, "call-1")
+        if @message.contents_text(data.content).contains("first") {
+          progress = progress + 1
+        }
+      }
+      @action.ToolResult(result) => {
+        result_text = @message.contents_text(result.content)
+        is_error = result.is_error
+      }
+      _ => ()
+    }
+  }
+  assert_eq(started, 1)
+  assert_true(progress >= 1)
+  assert_eq(is_error, false)
+  assert_eq(result_text, "firstsecond")
+}

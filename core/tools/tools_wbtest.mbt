@@ -249,6 +249,42 @@ async test "未启用的工具不可执行（与 pi 的执行侧过滤一致）"
 }
 
 ///|
+async test "bash 流式进度：命令结束前就能看到中间输出" {
+  let snapshots : Array[String] = []
+  let outcome = execute(
+    ".",
+    {
+      id: "1",
+      name: "bash",
+      arguments: "{\"command\":\"printf first; printf E >&2; sleep 0.35; printf second\"}",
+    },
+    on_progress=async fn(blocks) {
+      snapshots.push(@message.contents_text(blocks))
+    },
+  )
+  assert_eq(outcome.is_error, false)
+  // stdout / stderr 合并到同一个管道，顺序就是命令写的顺序。
+  assert_eq(@message.contents_text(outcome.content), "firstEsecond")
+  // 第一段在 sleep 之前就应到达，第二段在它之后。
+  assert_true(snapshots.length() >= 2)
+  assert_true(snapshots[0].contains("first"))
+  assert_true(snapshots[snapshots.length() - 1].contains("second"))
+}
+
+///|
+async test "bash 超时：保留已经产生的输出" {
+  let outcome = execute(".", {
+    id: "1",
+    name: "bash",
+    arguments: "{\"command\":\"printf began; sleep 2\",\"timeout\":0.3}",
+  })
+  let text = @message.contents_text(outcome.content)
+  assert_eq(outcome.is_error, true)
+  assert_true(text.contains("began"))
+  assert_true(text.contains("timed out"))
+}
+
+///|
 async test "未知工具与坏参数都落成错误结果" {
   let unknown = execute(".", { id: "1", name: "nope", arguments: "{}", })
   assert_eq(unknown.is_error, true)

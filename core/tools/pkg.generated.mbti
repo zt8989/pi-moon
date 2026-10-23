@@ -32,7 +32,7 @@ pub fn env_get(Map[String, String], String) -> String?
 
 pub fn exclude_tools(Array[String], Array[String]) -> Array[String]
 
-pub async fn execute(String, @message.ToolCall, env? : Map[String, String], enabled? : Array[String]) -> ToolOutcome
+pub async fn execute(String, @message.ToolCall, env? : Map[String, String], enabled? : Array[String], on_progress? : async (Array[@message.Content]) -> Unit) -> ToolOutcome
 
 pub fn format_size(Int32) -> String
 

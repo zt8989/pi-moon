@@ -102,6 +102,7 @@ pub(all) struct PiProviderInfo {
 pub(all) struct ProviderHooks {
   on_content : async (String) -> Unit
   on_thinking : async (String) -> Unit
+  on_tool_progress : async (String, Array[@message.Content]) -> Unit
 }
 
 pub(all) struct ResolvedProvider {
