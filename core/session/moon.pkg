@@ -1,0 +1,23 @@
+// 会话落盘 / 回放：JSONL 追加写 + 重建 messages / trace / 装载段。
+//
+// 只依赖数据层（action / message / state / trace），不碰 provider / runtime。
+
+import {
+  "zhouteng/pi_moon/core/action",
+  "zhouteng/pi_moon/core/message",
+  "zhouteng/pi_moon/core/state",
+  "zhouteng/pi_moon/core/trace",
+  "moonbitlang/async/fs",
+  "moonbitlang/core/json",
+  "moonbitlang/core/encoding/utf8",
+  "moonbitlang/core/immut/hashmap" @ihm,
+}
+
+import {
+  "zhouteng/pi_moon/core/loop",
+  "moonbitlang/async",
+} for "wbtest"
+
+supported_targets = "+native"
+
+warnings = "-79-67"

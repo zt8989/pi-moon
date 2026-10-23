@@ -251,11 +251,11 @@ LLM 被调两遍，第二遍的结果覆盖第一遍，树上就是两个 `llm.r
   详见 [tools](tools.md)。
 - **流式工具输出**：shell 命令边跑边读，`ToolProgress` 每 100ms 回到环上，
   写进 `state.tool_progress`；超时会保留 partial 输出。
+- **会话落盘 / 恢复**：JSONL 追加写（`add` / `close` / `message` / 装载段），
+  `session.restored` 一次性装回 state；详见 [session](session.md)。
 
 ## 尚未接的部分（按计划的顺序）
 
 1. **prompt head 与工具声明**：`with_tool_declarations` 目前是恒等函数。
    工具集变化必须作为**新的 system 消息**追加，不能改 head（前缀缓存）。
-2. **落盘**：`TracePersisted` 与 `persisted_seq` 已在 state 里，写 JSONL 的
-   effect 还没接。
-3. **压缩 / 扩展 / 会话恢复**：action 与迁移都未搬（刻意留在环稳定之后）。
+2. **压缩 / 扩展 / 分支**：action 与迁移都未搬（刻意留在环稳定之后）。

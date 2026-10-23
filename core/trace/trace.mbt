@@ -61,6 +61,32 @@ pub fn TraceNodeKind::name(self : TraceNodeKind) -> String {
 }
 
 ///|
+/// 名字 → 节点类型（JSONL 回放用）。`name()` 的逆运算。
+pub fn TraceNodeKind::from_name(name : String) -> TraceNodeKind? {
+  match name {
+    "user" => Some(User)
+    "turn.start" => Some(TurnStart)
+    "turn.end" => Some(TurnEnd)
+    "step.start" => Some(StepStart)
+    "step.end" => Some(StepEnd)
+    "llm.result" => Some(LlmResult)
+    "tool.call" => Some(ToolCallNode)
+    "tool.result" => Some(ToolResultNode)
+    "error" => Some(ErrorNode)
+    "stop" => Some(StopNode)
+    "compact" => Some(CompactNode)
+    "prompt.base" => Some(PromptBase)
+    "prompt.tools" => Some(PromptTools)
+    "prompt.segment" => Some(PromptSegment)
+    "prompt.skills" => Some(PromptSkills)
+    "model.init" => Some(ModelInit)
+    "model.changed" => Some(ModelChanged)
+    "extension.event" => Some(ExtensionEvent)
+    _ => None
+  }
+}
+
+///|
 /// 节点状态。
 ///
 /// 「闭合」（closed）是最重要的概念：**只有 closed 节点会推进 tip**。
@@ -81,6 +107,17 @@ pub fn TraceNodeStatus::name(self : TraceNodeStatus) -> String {
     Ok => "ok"
     Errored => "error"
     Aborted => "aborted"
+  }
+}
+
+///|
+pub fn TraceNodeStatus::from_name(name : String) -> TraceNodeStatus? {
+  match name {
+    "pending" => Some(Pending)
+    "ok" => Some(Ok)
+    "error" => Some(Errored)
+    "aborted" => Some(Aborted)
+    _ => None
   }
 }
 
@@ -245,6 +282,68 @@ pub fn patch_node(
       tree.tip_id
     },
   }
+}
+
+///|
+/// 从 JSONL 回放一个节点：**保留原 id**（不像 `append_node` 那样重新编号）。
+///
+/// 同 id 再次回放时覆盖（`add` 记录可能先以 pending 落盘、后来带着同一 id
+/// 重新出现，或者由 `close` 补丁修正）。`seq` 是记录里带的自增号，只用来推
+/// `next_seq`，不参与 id 拼接。
+pub fn restore_node(
+  tree : TraceTree,
+  node : TraceNode,
+  seq : Int32,
+) -> TraceTree {
+  let order = match tree.nodes.get(node.id) {
+    Some(_) => tree.order
+    None => tree.order.add([node.id])
+  }
+  {
+    ..tree,
+    nodes: tree.nodes.add(node.id, node),
+    order,
+    next_seq: if seq >= tree.next_seq {
+      seq + 1
+    } else {
+      tree.next_seq
+    },
+  }
+}
+
+///|
+/// 回放完一遍后重算 tip：按插入顺序，最后一个**闭合且会推进 tip** 的节点。
+///
+/// 正常运行时 tip 是在 `append_node` 那一刻推进的；回放时节点可能先以 pending
+/// 落盘、后来才由 `close` 补丁闭合，所以必须最后统一算一次。
+pub fn recompute_tip(tree : TraceTree) -> TraceTree {
+  let mut tip : String? = None
+  for id in tree.order {
+    match tree.nodes.get(id) {
+      Some(node) => if advances_tip(node) { tip = Some(id) }
+      None => ()
+    }
+  }
+  { ..tree, tip_id: tip, }
+}
+
+///|
+/// `"n12"` → `12`。取不到数字时返回 0（坏 id 不会让回放炸掉）。
+pub fn node_seq(id : String) -> Int32 {
+  let mut value = 0
+  let mut index = if id.has_prefix("n") { 1 } else { 0 }
+  while index < id.length() {
+    let digit = match id.get_char(index) {
+      Some(character) => character.to_int() - 48
+      None => break
+    }
+    if digit < 0 || digit > 9 {
+      break
+    }
+    value = value * 10 + digit
+    index = index + 1
+  }
+  value
 }
 
 ///|

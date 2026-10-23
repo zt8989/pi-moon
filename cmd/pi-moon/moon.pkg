@@ -7,6 +7,7 @@ import {
   "zhouteng/pi_moon/core/runtime",
   "zhouteng/pi_moon/core/provider",
   "zhouteng/pi_moon/core/tools",
+  "zhouteng/pi_moon/core/session",
   "moonbitlang/async",
   "moonbitlang/async/stdio",
   "moonbitlang/core/env",

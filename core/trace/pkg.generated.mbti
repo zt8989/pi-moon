@@ -24,11 +24,17 @@ pub fn head_path(TraceTree) -> Array[TraceNode]
 
 pub fn meta_get(TraceNode, String) -> String?
 
+pub fn node_seq(String) -> Int32
+
 pub fn patch_node(TraceTree, String, status? : TraceNodeStatus, label? : String, detail? : String, meta? : Array[(String, String)], ended_at? : Int64) -> TraceTree
 
 pub fn path_to(TraceTree, String) -> Array[TraceNode]
 
+pub fn recompute_tip(TraceTree) -> TraceTree
+
 pub fn render_tree(TraceTree, max_width? : Int32) -> String
+
+pub fn restore_node(TraceTree, TraceNode, Int32) -> TraceTree
 
 pub fn trace_rows(TraceTree, max_width? : Int32) -> Array[TraceRow]
 
@@ -70,6 +76,7 @@ pub(all) enum TraceNodeKind {
   ModelChanged
   ExtensionEvent
 } derive(Eq, @debug.Debug)
+pub fn TraceNodeKind::from_name(String) -> Self?
 pub fn TraceNodeKind::name(Self) -> String
 
 pub(all) enum TraceNodeStatus {
@@ -78,6 +85,7 @@ pub(all) enum TraceNodeStatus {
   Errored
   Aborted
 } derive(Eq, @debug.Debug)
+pub fn TraceNodeStatus::from_name(String) -> Self?
 pub fn TraceNodeStatus::name(Self) -> String
 
 pub(all) struct TraceRow {

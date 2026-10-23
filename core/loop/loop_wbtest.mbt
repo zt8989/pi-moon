@@ -218,3 +218,54 @@ test "超时可重试：容器不重开，第二次失败才收工" {
   })
   assert_eq(errors.length(), 2)
 }
+
+///|
+test "session.restored：一次性装回 messages / trace / 游标，不重放历史" {
+  // 先造一段有历史的状态。
+  let (with_history, _) = reduce(loop_test_loaded(), user("第一句"), 100L)
+  let messages = with_history.messages
+  let trace = with_history.trace
+  let tip = trace.tip_id
+  let restored = @action.SessionRestored({
+    prompt: {
+      system_prompt: "恢复出来的 prompt",
+      tools: [
+        {
+          name: "read",
+          description: "读",
+          parameters: "{\"type\":\"object\"}",
+        },
+      ],
+    },
+    model: {
+      provider: "other",
+      model_id: "other-1",
+      thinking_level: "low",
+      reasoning: true,
+      capabilities: @action.no_capabilities,
+      context_window: 2000,
+    },
+    messages,
+    trace,
+    persisted_seq: 42,
+  })
+  let (next, cmds) = reduce(loop_test_state(), restored, 200L)
+  assert_eq(cmd_names(cmds), [])
+  assert_eq(next.phase, @common.Idle)
+  assert_eq(next.messages, messages)
+  assert_eq(next.trace.order, trace.order)
+  assert_eq(next.trace.tip_id, tip)
+  assert_eq(next.trace_begun, true)
+  assert_eq(next.prompt.system_prompt, "恢复出来的 prompt")
+  assert_eq(next.prompt.seeded, true)
+  assert_eq(next.prompt.head_tools, Some(next.prompt.tools))
+  assert_eq(next.model.provider, "other")
+  assert_eq(next.model.thinking_level, "low")
+  assert_eq(next.provider_name, "other")
+  assert_eq(next.thinking_level, "low")
+  assert_eq(next.persisted_seq, 42)
+  // 下一句用户输入接在历史后面，而不是从空会话开始。
+  let (after, _) = reduce(next, user("第二句"), 300L)
+  assert_eq(after.messages.length(), messages.length() + 1)
+  assert_eq(after.trace.order.length(), trace.order.length() + 1)
+}

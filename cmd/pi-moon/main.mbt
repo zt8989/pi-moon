@@ -1,19 +1,20 @@
 // pi-moon 的命令行入口。
 //
-// v0.3：provider 与工具都是真的 —— pi 配置 → OpenAI 兼容流式接口；八个内置工具
-// 按 pi 的 `defaultTools` 语义开关（默认 read / bash / edit / write）。
-// 命令行开关与 pi 的 `-t` / `-xt` / `--no-tools` 对齐。
+// v0.4：provider / 工具 / 会话都是真的 —— pi 配置 → OpenAI 兼容流式接口；
+// 八个内置工具按 pi 的 `defaultTools` 语义开关；会话以 JSONL 落盘，用 `-s` / `-c`
+// 恢复，`-i` 进多轮 REPL。
 
 ///|
 let usage : String = "pi-moon — Elm architecture agent core in MoonBit\n" +
   "\n" +
   "用法:\n" +
   "  pi-moon -p \"你的问题\"        跑一条就退出\n" +
+  "  pi-moon -i                   多轮 REPL（默认落盘，可 -c 恢复）\n" +
   "  pi-moon --list-models          看 pi 配置里有什么 provider / model\n" +
   "  echo \"问题\" | pi-moon          从 stdin 读 prompt\n" +
   "\n" +
   "选项:\n" +
-  "  -p, --prompt <text>      用户消息；省略则读 stdin\n" +
+  "  -p, --prompt <text>      用户消息；省略且不 -i 则读 stdin\n" +
   "  -P, --provider <name>    覆盖 settings.json 的 defaultProvider\n" +
   "  -m, --model <id>         覆盖 settings.json 的 defaultModel\n" +
   "      --api-key <key>      覆盖 models.json / auth.json / 环境变量\n" +
@@ -27,6 +28,10 @@ let usage : String = "pi-moon — Elm architecture agent core in MoonBit\n" +
   "  -xt, --exclude-tools <list>  从选择里去掉几个工具（逗号分隔）\n" +
   "      --no-tools           关闭全部内置工具\n" +
   "      --show-tool-progress 把工具输出（取最后一行）实时打到 stderr\n" +
+  "  -s, --session <file>     会话文件（存在则恢复，否则新建）\n" +
+  "  -c, --continue           恢复 sessions 目录里最新的会话\n" +
+  "      --no-session         不落盘 / 不恢复\n" +
+  "  -i, --interactive        多轮 REPL（/exit 退出，/continue 续跑）\n" +
   "      --no-trace           不打印轨迹树\n" +
   "  -h, --help               显示这段文字"
 
@@ -65,6 +70,10 @@ struct CliArgs {
   mut exclude_tools : String?
   mut no_tools : Bool
   mut show_tool_progress : Bool
+  mut session : String?
+  mut continue_session : Bool
+  mut no_session : Bool
+  mut interactive : Bool
   mut list_models : Bool
   mut show_thinking : Bool
   mut no_trace : Bool
@@ -87,6 +96,10 @@ fn default_args() -> CliArgs {
     exclude_tools: None,
     no_tools: false,
     show_tool_progress: false,
+    session: None,
+    continue_session: false,
+    no_session: false,
+    interactive: false,
     list_models: false,
     show_thinking: false,
     no_trace: false,
@@ -207,6 +220,14 @@ fn parse_args(argv : Array[String]) -> CliArgs raise CliError {
       }
       "--no-tools" => args.no_tools = true
       "--show-tool-progress" => args.show_tool_progress = true
+      "-s" | "--session" => {
+        let (value, next) = option_value(argv, index, inline, flag)
+        args.session = Some(value)
+        index = next
+      }
+      "-c" | "--continue" => args.continue_session = true
+      "--no-session" => args.no_session = true
+      "-i" | "--interactive" => args.interactive = true
       _ => raise UnknownFlag(flag~)
     }
     index = index + 1
@@ -291,6 +312,7 @@ fn initial_state(
   idle_timeout_ms : Int32,
   system_prompt : String,
   tool_names : Array[String],
+  session_id : String,
 ) -> @state.AgentState {
   let cwd = match @env.current_dir() {
     Some(cwd) => cwd
@@ -305,40 +327,113 @@ fn initial_state(
     max_turns: None,
     max_llm_attempts: 2,
     llm_timeout_ms: idle_timeout_ms.to_int64(),
-    session_id: "s-" + @env.now().to_string(),
+    session_id,
     cwd,
     trace: None,
   })
 }
 
 ///|
+/// 配置解析结果 → `ModelSpec`（`ModelInit` / `SessionRestored` 共用一个形状）。
+fn resolved_model_spec(
+  resolved : @provider.ResolvedProvider,
+) -> @action.ModelSpec {
+  {
+    provider: resolved.provider_name,
+    model_id: resolved.model.id,
+    thinking_level: resolved.thinking_level,
+    reasoning: resolved.model.reasoning,
+    capabilities: {
+      mid_convo_system_messages: false,
+      mid_convo_tool_additions: false,
+      developer_role: resolved.model.compat.supports_developer_role,
+    },
+    context_window: resolved.model.context_window,
+  }
+}
+
+///|
 async fn seed(
   agent : @runtime.Agent,
-  resolved : @provider.ResolvedProvider,
   system_prompt : String,
-  tool_names : Array[String],
+  tools : Array[@action.PromptToolDefinition],
+  model : @action.ModelSpec,
 ) -> Unit {
-  agent.send(
-    @action.PromptInit({
-      system_prompt,
-      tools: @tools.definitions_for(tool_names),
-    }),
-  )
-  let compat = resolved.model.compat
-  agent.send(
-    @action.ModelInit({
-      provider: resolved.provider_name,
-      model_id: resolved.model.id,
-      thinking_level: resolved.thinking_level,
-      reasoning: resolved.model.reasoning,
-      capabilities: {
-        mid_convo_system_messages: false,
-        mid_convo_tool_additions: false,
-        developer_role: compat.supports_developer_role,
-      },
-      context_window: resolved.model.context_window,
-    }),
-  )
+  agent.send(@action.PromptInit({ system_prompt, tools, }))
+  agent.send(@action.ModelInit(model))
+}
+
+///|
+/// 会话目录：与 pi 的配置目录放在一起（`<agent dir>/sessions`）。
+fn session_directory(config : @provider.PiConfig) -> String {
+  config.agent_dir + "/sessions"
+}
+
+///|
+/// 本次用哪个会话文件：
+///
+/// - `--no-session` → None（不读不写）
+/// - `--session <file>` → 就用它（存在则恢复）
+/// - `--continue` → 目录里最新的那份；没有则新建
+/// - 其余 → 新建（时间戳命名，与 `--continue` 的排序一致）
+async fn resolve_session_path(
+  config : @provider.PiConfig,
+  args : CliArgs,
+) -> String? {
+  if args.no_session {
+    return None
+  }
+  match args.session {
+    Some(path) => Some(path)
+    None => {
+      let directory = session_directory(config)
+      if args.continue_session {
+        match @session.latest_session(directory) {
+          Some(path) => Some(path)
+          None =>
+            Some(
+              @session.new_session_path(
+                directory,
+                @env.now().reinterpret_as_int64(),
+              ),
+            )
+        }
+      } else {
+        Some(
+          @session.new_session_path(
+            directory,
+            @env.now().reinterpret_as_int64(),
+          ),
+        )
+      }
+    }
+  }
+}
+
+///|
+/// 把当前 state 里还没落盘的部分追加进会话文件，并把 `TracePersisted` 送回环。
+///
+/// 写失败只报一次到 stderr：游标保留在旧 writer 里，下一次 turn 再重试，
+/// 不让磁盘问题打断对话。
+async fn persist(
+  writer : @session.SessionWriter?,
+  agent : @runtime.Agent,
+) -> @session.SessionWriter? {
+  match writer {
+    None => None
+    Some(writer) => {
+      let (next, cursor) = writer.flush(agent.state) catch {
+        err => {
+          eprintln("[session] " + err.to_string())
+          return Some(writer)
+        }
+      }
+      agent.send(@action.TracePersisted(cursor)) catch {
+        _ => ()
+      }
+      Some(next)
+    }
+  }
 }
 
 ///|
@@ -407,20 +502,6 @@ async fn run(args : CliArgs) -> Unit {
       return
     }
   }
-  let prompt = match args.prompt {
-    Some(prompt) => prompt
-    None => {
-      let text = @stdio.stdin.read_all() catch { _ => "" }
-      text.text() catch {
-        _ => ""
-      }
-    }
-  }
-  let prompt = prompt.trim(chars=" \t\r\n").to_owned()
-  if prompt.is_empty() {
-    usage_failure("missing value for -p/--prompt (or stdin)")
-    return
-  }
   let options : @provider.ChatOptions = {
     api_key: args.api_key,
     thinking_level: args.thinking,
@@ -432,8 +513,49 @@ async fn run(args : CliArgs) -> Unit {
     Some(cwd) => cwd
     None => "."
   }
-  let tool_names = selected_tools(config, args)
-  let system_prompt = build_system_prompt(cwd, tool_names)
+  // 新会话的「默认装载」：当前配置 + 当前工具选择。
+  let fallback_tool_names = selected_tools(config, args)
+  let fallback_prompt : @action.PromptInitData = {
+    system_prompt: build_system_prompt(cwd, fallback_tool_names),
+    tools: @tools.definitions_for(fallback_tool_names),
+  }
+  let fallback_model = resolved_model_spec(resolved)
+  // 会话文件：存在就恢复，不存在就新建。
+  let session_path = resolve_session_path(config, args)
+  let session_id = match session_path {
+    Some(path) => @session.session_id_from_path(path)
+    None => "s-" + @env.now().to_string()
+  }
+  let loaded = match session_path {
+    Some(path) =>
+      @session.load_session(path, session_id) catch {
+        err => {
+          eprintln("[session] " + err.to_string())
+          None
+        }
+      }
+    None => None
+  }
+  let prompt_data = match loaded {
+    Some(loaded) =>
+      match loaded.prompt {
+        Some(prompt) => prompt
+        None => fallback_prompt
+      }
+    None => fallback_prompt
+  }
+  let model_spec = match loaded {
+    Some(loaded) =>
+      match loaded.model {
+        Some(model) => model
+        None => fallback_model
+      }
+    None => fallback_model
+  }
+  let active_tool_names : Array[String] = []
+  for tool in prompt_data.tools {
+    active_tool_names.push(tool.name)
+  }
   let hooks : @provider.ProviderHooks = {
     on_content: async fn(text) { @stdio.stdout.write(text) catch { _ => () } },
     on_thinking: async fn(text) {
@@ -459,7 +581,13 @@ async fn run(args : CliArgs) -> Unit {
   }
   let table = @provider.effect_table_with_hooks(config, options, hooks)
   let agent = @runtime.Agent::new(
-    initial_state(resolved, args.idle_timeout_ms, system_prompt, tool_names),
+    initial_state(
+      resolved,
+      args.idle_timeout_ms,
+      prompt_data.system_prompt,
+      active_tool_names,
+      session_id,
+    ),
     table,
     fn() { @env.now().reinterpret_as_int64() },
   )
@@ -473,23 +601,138 @@ async fn run(args : CliArgs) -> Unit {
       _ => ()
     }
   })
-  seed(agent, resolved, system_prompt, tool_names) catch {
-    err => {
-      runtime_failure(err.to_string())
-      return
+  let mut writer : @session.SessionWriter? = match session_path {
+    Some(path) =>
+      Some(
+        match loaded {
+          Some(loaded) => @session.SessionWriter::restored(path, loaded)
+          None => @session.SessionWriter::new(path)
+        },
+      )
+    None => None
+  }
+  // 恢复或装载。
+  match loaded {
+    Some(loaded) => {
+      agent.send(
+        @action.SessionRestored({
+          prompt: prompt_data,
+          model: model_spec,
+          messages: loaded.messages,
+          trace: loaded.trace,
+          persisted_seq: loaded.persisted_seq,
+        }),
+      ) catch {
+        err => {
+          runtime_failure(err.to_string())
+          return
+        }
+      }
+      eprintln(
+        "[session] 恢复 " +
+        session_path.unwrap_or("(内存)") +
+        "（" +
+        loaded.messages.length().to_string() +
+        " 条消息 / " +
+        loaded.trace.order.length().to_string() +
+        " 个节点）",
+      )
+    }
+    None => {
+      seed(agent, prompt_data.system_prompt, prompt_data.tools, model_spec) catch {
+        err => {
+          runtime_failure(err.to_string())
+          return
+        }
+      }
+      writer = persist(writer, agent)
     }
   }
   eprintln(
     "[" +
-    resolved.describe() +
-    "]  tools=" +
-    (if tool_names.is_empty() { "(none)" } else { tool_names.join(",") }) +
+    agent.state.provider_name +
+    "/" +
+    agent.state.model_id +
+    " (thinking=" +
+    agent.state.thinking_level +
+    ")]  tools=" +
+    (if active_tool_names.is_empty() {
+      "(none)"
+    } else {
+      active_tool_names.join(",")
+    }) +
+    "  session=" +
+    session_path.unwrap_or("(不落盘)") +
     "  按 Ctrl-C 中断（流式输出在 stdout，诊断在 stderr）",
   )
-  agent.send(@action.UserMessage({ text: prompt, content: [], })) catch {
-    err => {
-      runtime_failure(err.to_string())
-      return
+  // 一次性 prompt：`-p` 给了就跑；没给且不是交互模式则把 stdin 整段当 prompt。
+  let one_shot : String? = match args.prompt {
+    Some(prompt) => Some(prompt.trim(chars=" \t\r\n").to_owned())
+    None =>
+      if args.interactive {
+        None
+      } else {
+        let text = @stdio.stdin.read_all() catch { _ => "" }
+        let text = text.text() catch { _ => "" }
+        Some(text.trim(chars=" \t\r\n").to_owned())
+      }
+  }
+  match one_shot {
+    Some(text) =>
+      if text.is_empty() {
+        usage_failure("missing value for -p/--prompt (or stdin)")
+        return
+      } else {
+        agent.send(@action.UserMessage({ text, content: [], })) catch {
+          err => {
+            runtime_failure(err.to_string())
+            return
+          }
+        }
+        @stdio.stdout.write("\n") catch {
+          _ => ()
+        }
+        writer = persist(writer, agent)
+      }
+    None => ()
+  }
+  // 多轮 REPL。
+  if args.interactive {
+    while true {
+      @stdio.stderr.write("\n> ") catch {
+        _ => ()
+      }
+      let line = @stdio.stdin.read_until("\n") catch { _ => None }
+      let line = match line {
+        Some(line) => line
+        None => break
+      }
+      let text = line.trim(chars=" \t\r\n").to_owned()
+      if text.is_empty() {
+        continue
+      }
+      if text == "/exit" || text == "/quit" {
+        break
+      }
+      if text == "/continue" {
+        agent.send(@action.TurnContinue) catch {
+          err => {
+            eprintln("[error] " + err.to_string())
+            break
+          }
+        }
+      } else {
+        agent.send(@action.UserMessage({ text, content: [], })) catch {
+          err => {
+            eprintln("[error] " + err.to_string())
+            break
+          }
+        }
+      }
+      @stdio.stdout.write("\n") catch {
+        _ => ()
+      }
+      writer = persist(writer, agent)
     }
   }
   // 工具进度是原地刷新的一行；收尾时擦掉它，别把后面的报告弄脏。
@@ -498,14 +741,12 @@ async fn run(args : CliArgs) -> Unit {
       _ => ()
     }
   }
-  // 模型的回答可能没有结尾换行；这里补一个，但只在 stdout 上。
-  @stdio.stdout.write("\n") catch {
-    _ => ()
-  }
+  writer = persist(writer, agent)
   for notice in notices {
     eprintln(notice)
   }
   print_report(agent, !args.no_trace)
+  let _ = writer
 }
 
 ///|

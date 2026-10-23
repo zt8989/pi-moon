@@ -41,6 +41,7 @@ pub(all) enum AgentAction {
   ToolResult(@message.ToolResultPart)
   ToolBatchDone(Int32)
   TracePersisted(Int32)
+  SessionRestored(SessionRestoredData)
   ConversationReset(ConversationResetData)
 } derive(Eq, @debug.Debug)
 pub fn AgentAction::name(Self) -> String
@@ -91,6 +92,14 @@ pub(all) struct QueuedInputAction {
   text : String
   content : Array[@message.Content]
   kind : @common.QueueKind
+} derive(Eq, @debug.Debug)
+
+pub(all) struct SessionRestoredData {
+  prompt : PromptInitData
+  model : ModelSpec
+  messages : Array[@message.Message]
+  trace : @trace.TraceTree
+  persisted_seq : Int32
 } derive(Eq, @debug.Debug)
 
 pub(all) struct StepEndData {

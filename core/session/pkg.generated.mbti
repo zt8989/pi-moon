@@ -1,0 +1,66 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "zhouteng/pi_moon/core/session"
+
+import {
+  "moonbitlang/core/immut/hashmap",
+  "zhouteng/pi_moon/core/action",
+  "zhouteng/pi_moon/core/message",
+  "zhouteng/pi_moon/core/state",
+  "zhouteng/pi_moon/core/trace",
+}
+
+// Values
+pub fn decode_message(Json) -> @message.Message?
+
+pub fn decode_model_init(Json) -> @action.ModelSpec?
+
+pub fn decode_node(Json) -> @trace.TraceNode?
+
+pub fn decode_prompt_init(Json) -> @action.PromptInitData?
+
+pub fn encode_message(@message.Message) -> Json
+
+pub fn encode_model_init(@state.ModelState) -> Json
+
+pub fn encode_node(@trace.TraceNode) -> Json
+
+pub fn encode_prompt_init(@state.PromptState) -> Json
+
+pub async fn latest_session(String) -> String?
+
+pub async fn load_session(String, String) -> LoadedSession?
+
+pub fn new_session_path(String, Int64) -> String
+
+pub fn session_id_from_path(String) -> String
+
+// Errors
+pub suberror SessionError {
+  Write(path~ : String, message~ : String)
+}
+pub fn SessionError::to_string(Self) -> String
+
+// Types and methods
+pub(all) struct LoadedSession {
+  messages : Array[@message.Message]
+  trace : @trace.TraceTree
+  prompt : @action.PromptInitData?
+  model : @action.ModelSpec?
+  persisted_seq : Int32
+}
+
+pub(all) struct SessionWriter {
+  path : String
+  node_cursor : Int32
+  message_cursor : Int32
+  prompt_written : Bool
+  model_key : String
+  open_nodes : @hashmap.HashMap[String, Bool]
+}
+pub async fn SessionWriter::flush(Self, @state.AgentState) -> (Self, Int32)
+pub fn SessionWriter::new(String) -> Self
+pub fn SessionWriter::restored(String, LoadedSession) -> Self
+
+// Type aliases
+
+// Traits

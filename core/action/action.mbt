@@ -120,6 +120,20 @@ pub(all) struct ToolProgressData {
 } derive(Eq, Debug)
 
 ///|
+/// 恢复一个已落盘的会话：prompt / model 装载 + 消息 + 轨迹 + 落盘游标，
+/// **一次性**写进 state。
+///
+/// 为什么不拆成 `prompt.init` + 一条条 `user.message`：那样会在轨迹树上重放
+/// 一遍历史（节点重复、tip 错位），而且 `begin_trace` 会把装载节点补到错误的位置。
+pub(all) struct SessionRestoredData {
+  prompt : PromptInitData
+  model : ModelSpec
+  messages : Array[@message.Message]
+  trace : @trace.TraceTree
+  persisted_seq : Int32
+} derive(Eq, Debug)
+
+///|
 /// 清空对话（可选换一个新会话 id）。
 pub(all) struct ConversationResetData {
   session_id : String?
@@ -167,6 +181,8 @@ pub(all) enum AgentAction {
   ToolBatchDone(Int32)
   /// 轨迹节点已落盘（游标推回来）。
   TracePersisted(Int32)
+  /// 从 JSONL 恢复出来的会话。
+  SessionRestored(SessionRestoredData)
   /// 清空对话 / 开新会话。
   ConversationReset(ConversationResetData)
 } derive(Eq, Debug)
@@ -201,6 +217,7 @@ pub fn AgentAction::name(self : AgentAction) -> String {
     ToolResult(_) => "tool.result"
     ToolBatchDone(_) => "tool.batch.done"
     TracePersisted(_) => "trace.persisted"
+    SessionRestored(_) => "session.restored"
     ConversationReset(_) => "conversation.reset"
   }
 }

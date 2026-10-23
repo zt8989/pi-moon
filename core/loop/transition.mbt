@@ -931,6 +931,42 @@ pub fn transition(
           state.persisted_seq
         },
       }
+    // ── 会话恢复 ──
+    @action.SessionRestored(data) => {
+      let tool_names : Array[String] = []
+      for tool in data.prompt.tools {
+        tool_names.push(tool.name)
+      }
+      // 用 create_initial_state 重建一份「干净的」state（流式缓冲 / 队列 /
+      // 打开中的容器 / 临时 hashmap 全是新的），再把恢复出来的字段盖上去。
+      let base = @state.create_initial_state({
+        system_prompt: data.prompt.system_prompt,
+        provider_name: data.model.provider,
+        model_id: data.model.model_id,
+        thinking_level: data.model.thinking_level,
+        tool_names,
+        max_turns: state.max_turns,
+        max_llm_attempts: state.max_llm_attempts,
+        llm_timeout_ms: state.llm_timeout_ms,
+        session_id: data.trace.session_id,
+        cwd: state.cwd,
+        trace: Some(@trace.recompute_tip(data.trace)),
+      })
+      let restored = {
+        ..base,
+        prompt: {
+          system_prompt: data.prompt.system_prompt,
+          tools: data.prompt.tools,
+          head_tools: Some(data.prompt.tools),
+          seeded: true,
+        },
+        messages: data.messages.copy(),
+        trace_begun: true,
+        persisted_seq: data.persisted_seq,
+        total_steps: @trace.trace_stats(data.trace).steps,
+      }
+      apply_model_spec(restored, data.model)
+    }
     // ── 会话 ──
     @action.ConversationReset(data) => {
       let session_id = match data.session_id {
