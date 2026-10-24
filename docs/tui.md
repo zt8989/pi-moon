@@ -174,8 +174,9 @@ provider effect 在下一个分片边界查 `ProviderHooks::should_abort`：
 - 重试次数不增加：`Aborted` 在 `is_retryable` 里是 false。
 
 中断的粒度是「下一个分片 / 下一条工具」，不是即时杀连接：HTTP 流上的
-`read_until` 被取消会丢掉半行 SSE，那比晚几百毫秒更糟。provider 长时间不发
-事件时，Esc 最迟在空闲超时（默认 120s）后才生效 —— 这是 v0.7 的已知边界。
+`read_until` 被取消会丢掉半行 SSE，那比晚几百毫秒更糟。provider 长时间
+不发事件时，Esc 也不用等空闲超时 —— 读行与中断轮询并跑（`read_sse_line_or_abort`，
+每 100ms 查一次 `should_abort`），谁先完成谁赢，Esc 最迟 ~100ms 生效。
 
 ## 面板：模型 / 思考级别 / 会话
 
@@ -270,16 +271,17 @@ ela 里那个「一个键干两件事」的 `app.abort` 默认不绑，这里也
 
 ## 与 ela 的差距（分步补齐）
 
-1. **Windows 输入法**：`_getch` 拿到的是控制台代码页字节，不是 UTF-8；
-   英文与多数符号没问题，中文长句输入建议在别处打好再粘贴（粘贴走的是
-   同一批字节，表现一致）。
-2. **POSIX 粘贴丢字**：vendor 的 `read_key` 把 ESC 后 16 字节内的可打印
+1. **POSIX 粘贴丢字**：vendor 的 `read_key` 把 ESC 后 16 字节内的可打印
    字节都当 CSI 参数吞掉（终止判定 `0x40-0x7e`），粘贴文本撞上转义序列
    时大段正文会被吞成一个 Unknown 事件；且 `parse_input` 对多字符可打印
    输入只取第一个字符。修复应在 vendor 层（照 `io_native.mbt` inline
    input 的「multi-character printable → 整串 Insert」补偿）。
-3. **图片只画占位**：`read` 图片块在对话页显示 `[image <mime>]` 一行，
+2. **图片只画占位**：`read` 图片块在对话页显示 `[image <mime>]` 一行，
    不渲染内容（终端画不了图）；点击 / 悬停等其余鼠标事件未接。
+
+~~Windows 输入法乱码~~ 已修：vendor 的 Windows 输入从 `_getch`（代码页
+字节）换成了 `ReadConsoleInputW`（UTF-16 → UTF-8），中文输入不再依赖
+代码页（vendor `6623b19`）。
 
 ## Windows 终端
 

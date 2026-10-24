@@ -548,3 +548,57 @@ test "中断：还没有任何正文时不产出 aborted 消息" {
   let accumulator = StreamAccumulator::new()
   assert_true(aborted_part(accumulator, test_resolved("high").model) is None)
 }
+
+///|
+/// 中断不再等空闲超时：读行与中断轮询并跑，provider 静默时 Esc 也在
+/// ~100ms 内生效（此前要等满 idle_timeout_ms，默认 120s）。
+async test "read_sse_line_or_abort 在空闲超时前返回中断" {
+  // 本地 server：应答头之后就静默，一行 SSE 都不发。
+  let server = @http.Server(@socket.Addr::parse("127.0.0.1:0"))
+  @async.with_task_group() <| group => {
+    group.spawn_bg(no_wait=true) <| async fn() {
+      server.run_forever() <| ((_request, _body, conn) => {
+        conn.send_response(200, "OK", extra_headers={
+          "Content-Type": "text/event-stream",
+        })
+        // 不写正文也不 end_response：客户端挂在 read_until 上。
+      })
+    }
+    group.add_defer(() => server.close())
+    let client = @http.post_stream("http://127.0.0.1:\{server.addr.port()}")
+    defer client.close()
+    let _ = client.end_request()
+    let started = @async.now()
+    // 超时设 10s（远大于轮询周期），中断立刻立起 —— 若还是老实现，
+    // 这里会挂到 10s 超时才返回。
+    let outcome = read_sse_line_or_abort(client, 10000, fn() { true })
+    let elapsed = @async.now() - started
+    assert_true(outcome is Err(_))
+    assert_true(elapsed < 5000)
+  }
+}
+
+///|
+/// 没有中断时行为不变：server 发一行就关，正常拿到那一行。
+async test "read_sse_line_or_abort 无中断时正常读行" {
+  let server = @http.Server(@socket.Addr::parse("127.0.0.1:0"))
+  @async.with_task_group() <| group => {
+    group.spawn_bg(no_wait=true) <| async fn() {
+      server.run_forever() <| ((_request, _body, conn) => {
+        conn.send_response(200, "OK", extra_headers={
+          "Content-Type": "text/event-stream",
+        })
+        conn.write_string("data: {\"hello\":1}\n\n")
+        conn.end_response()
+      })
+    }
+    group.add_defer(() => server.close())
+    let client = @http.post_stream("http://127.0.0.1:\{server.addr.port()}")
+    defer client.close()
+    let _ = client.end_request()
+    let outcome = read_sse_line_or_abort(client, 10000, fn() { false })
+    assert_true(outcome is Ok(Some(line)) && line.contains("hello"))
+  }
+}
+
+///|

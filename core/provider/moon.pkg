@@ -12,6 +12,7 @@ import {
   "moonbitlang/async/fs",
   "moonbitlang/core/json",
   "moonbitlang/core/env",
+  "moonbitlang/core/ref",
 }
 
 warnings = "-79-67"
@@ -26,6 +27,8 @@ warnings = "-79-67"
 
 import {
   "pi-moon/core/loop",
+  "moonbitlang/async/http",
+  "moonbitlang/async/socket",
 } for "wbtest"
 
 supported_targets = "+native"

@@ -158,7 +158,8 @@ system prompt（state.prompt.system_prompt，放在最前）
 @http.post_stream
   → write(body) + end_request()
   → 非 2xx：读 body → LlmFailed(kind 由状态码分类)
-  → 逐行 read_until("\n")，每行套 @async.with_timeout(idle_timeout_ms)
+  → 逐行 read_sse_line_or_abort：读行（套 idle_timeout_ms 空闲超时）与
+    中断轮询（每 100ms 查 should_abort）并跑，谁先完成谁赢
       → @faceoff.parse_sse_line：content / reasoning / usage / finish / done
       → 额外解析 delta.tool_calls（库把它归进 Ignore）
       → 额外解析搭在 finish chunk 上的 usage（库只认空 choices 的 usage）
@@ -173,6 +174,8 @@ system prompt（state.prompt.system_prompt，放在最前）
 
 **超时是空闲语义**：`idle_timeout_ms` 卡的是「多久没收到一行」，不是总时长。
 长生成跑多久都不受限（原项目踩过总时长闸把合法长回复砍成死循环的坑）。
+空闲超时只决定「多久没数据报错」；中断不走这条闸，见 `read_sse_line_or_abort`
+的并行轮询（`core/provider/effect.mbt`）。
 
 ## 错误分类
 

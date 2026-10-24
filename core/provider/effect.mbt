@@ -128,7 +128,11 @@ async fn stream_completion(
       }
       return
     }
-    let line = read_sse_line(client, options.idle_timeout_ms) catch {
+    let outcome = read_sse_line_or_abort(
+      client,
+      options.idle_timeout_ms,
+      hooks.should_abort,
+    ) catch {
       @async.TimeoutError => {
         dispatch.send(
           @action.LlmFailed({
@@ -154,6 +158,19 @@ async fn stream_completion(
         )
         return
       }
+    }
+    let line = match outcome {
+      Err(_abort) => {
+        // 轮询查到中断：与分片边界同一套收工 —— 半截回复保留，一个字都没
+        // 收到才报 aborted 失败。
+        match aborted_part(accumulator, resolved.model) {
+          Some(part) =>
+            dispatch.send(@action.LlmDone({ message: part, node_id: None, }))
+          None => dispatch.send(abort_failure())
+        }
+        return
+      }
+      Ok(line) => line
     }
     let line = match line {
       Some(line) => line
@@ -226,6 +243,53 @@ fn aborted_part(
 /// 读一行，套**空闲**超时（不是总时长）：长生成跑多久都不受限，卡的是「多久没数据」。
 async fn read_sse_line(client : @http.Client, timeout_ms : Int32) -> String? {
   @async.with_timeout(timeout_ms, async fn() { client.read_until("\n") })
+}
+
+///|
+/// 等一行 SSE，同时轮询中断。
+///
+/// 只在分片边界查 `should_abort` 的话，provider 静默时（长思考、网关缓冲）
+/// Esc 要等到空闲超时才生效。这里把「读一行」与「轮询中断」用 task group
+/// 并起来：谁先完成谁 `return_immediately`（取消另一个并定下返回值），
+/// 轮询每 100ms 查一次。读行被取消可能丢半行 SSE —— 只有在中断 / 超时
+/// 时发生，那时那半行本来就是废弃数据，可接受。
+async fn read_sse_line_or_abort(
+  client : @http.Client,
+  timeout_ms : Int32,
+  should_abort : () -> Bool,
+) -> Result[String?, Unit] {
+  let winner : @ref.Ref[Bool] = @ref.Ref(false)
+  let result : @ref.Ref[Result[String?, Unit]] = @ref.Ref(Err(()))
+  @async.with_task_group() <| group => {
+    group.spawn_bg(async fn() {
+      // 读行：Ok(line) / Ok(None)（EOF）。超时错误从这里抛出。
+      let v = Ok(read_sse_line(client, timeout_ms))
+      if winner.val {
+        return
+      }
+      winner.val = true
+      result.val = v
+      group.return_immediately(())
+      return
+    })
+    group.spawn_bg(async fn() {
+      // 中断轮询：查到就返回 Err（result 初始值）—— 中断时读行那半行是
+      // 废弃数据。
+      while !should_abort() {
+        if winner.val {
+          return
+        }
+        @async.sleep(100)
+      }
+      if winner.val {
+        return
+      }
+      winner.val = true
+      group.return_immediately(())
+      return
+    })
+  }
+  result.val
 }
 
 ///|
