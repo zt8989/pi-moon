@@ -817,6 +817,7 @@ async fn run(args : CliArgs) -> Unit {
         run_tui(
           agent,
           tui,
+          config,
           config.compaction.enabled,
           session_path.unwrap_or("(不落盘)"),
         )

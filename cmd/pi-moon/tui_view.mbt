@@ -706,10 +706,15 @@ fn border_color(level : String) -> String {
 
 ///|
 /// 整个界面。
+///
+/// 面板开着时，它**覆盖 composer 那一块**（ela 的选择器：整行宽、底边落在
+/// composer 底边），对话页相应变矮。队列与 composer 都不画。
 pub fn tui_view(tui : TuiState, state : @state.AgentState) -> @vnode.TuiNode {
   let width = tui.width
   let height = tui.height
-  let mut queue = queue_lines(state, width)
+  let panel = picker_rows(tui, state, width, height)
+  let has_panel = !panel.is_empty()
+  let mut queue = if has_panel { [] } else { queue_lines(state, width) }
   // 太矮的终端：先牺牲队列面板（内容还在环上，不会丢），保证 composer 与
   // 底栏这两块不飞出屏幕。
   let page_budget = height - 1 - fixed_bottom_rows
@@ -722,28 +727,116 @@ pub fn tui_view(tui : TuiState, state : @state.AgentState) -> @vnode.TuiNode {
     trace_lines(state, width)
   }
   let scroll = if tui.page == Chat { tui.chat_scroll } else { tui.trace_scroll }
-  let shown = visible_lines(page, page_height(height, queue.length()), scroll)
+  let page_rows = if has_panel {
+    max_int(height - 1 - 2 - panel.length(), 3)
+  } else {
+    page_height(height, queue.length())
+  }
+  let shown = visible_lines(page, page_rows, scroll)
   let children : Array[@vnode.TuiNode] = []
   children.push(@vnode.row(tab_nodes(state, tui.page, width)))
   for line in shown {
     children.push(line_node(line))
   }
-  for line in queue {
-    children.push(line_node(line))
+  if has_panel {
+    for line in panel {
+      children.push(line_node(line))
+    }
+  } else {
+    for line in queue {
+      children.push(line_node(line))
+    }
+    children.push(@vnode.text(" "))
+    children.push(line_node(editor_top_border(state, width, now_ms())))
+    children.push(
+      line_node(
+        pad_line(render_editor(tui.input, tui.cursor, width), "", None, width),
+      ),
+    )
+    children.push(line_node(pad_line(rule(width), color_dim, None, width)))
   }
-  children.push(@vnode.text(" "))
-  children.push(line_node(editor_top_border(state, width, now_ms())))
-  children.push(
-    line_node(
-      pad_line(render_editor(tui.input, tui.cursor, width), "", None, width),
-    ),
-  )
-  children.push(line_node(pad_line(rule(width), color_dim, None, width)))
   let footer = footer_lines(state, width)
   for line in footer {
     children.push(line_node(line))
   }
   @vnode.column(width=width.to_double(), height=height.to_double(), children)
+}
+
+///|
+/// 选择面板的行（没打开时返回空数组 = 一行不占）。
+///
+/// 形状：顶边框（带标题）/ 提示行 / 列表 / 底边框 —— 与 pi 的 selector 同构。
+fn picker_rows(
+  tui : TuiState,
+  state : @state.AgentState,
+  width : Int32,
+  height : Int32,
+) -> Array[StyledLine] {
+  let picker = match tui.picker {
+    Some(picker) => picker
+    None => return []
+  }
+  let items = picker.items
+  // 顶/底边框 + 提示 = 3 行；中间至少给对话页留 3 行。
+  let max_items = max_int(height - 1 - 2 - 3 - 3, 1)
+  let visible = min_int(items.length(), max_items)
+  let rows : Array[StyledLine] = []
+  let title_width = display_width(picker.title)
+  rows.push(
+    pad_line(
+      "── " + picker.title + " " + rule(max_int(width - title_width - 4, 0)),
+      color_dim,
+      None,
+      width,
+    ),
+  )
+  rows.push(dim_line("  ↑/↓ 选择 · Enter 确认 · Esc 取消"))
+  let start = clamp_int(
+    picker.selected - visible / 2,
+    0,
+    max_int(items.length() - visible, 0),
+  )
+  let mut index = start
+  while index < start + visible {
+    let item = items[index]
+    let current = match picker.kind {
+      ModelPicker =>
+        item.provider == state.provider_name && item.model_id == state.model_id
+      ThinkingPicker => item.level == state.thinking_level
+    }
+    let marker = if index == picker.selected { "› " } else { "  " }
+    let suffix = if current { "  ●" } else { "" }
+    let detail = if item.detail.is_empty() { "" } else { "  " + item.detail }
+    let text = " " + marker + item.label + detail + suffix
+    if index == picker.selected {
+      rows.push(styled_line(truncate_to(text, width), "cyan", bold=true))
+    } else if current {
+      rows.push(styled_line(truncate_to(text, width), "green"))
+    } else {
+      rows.push(plain_line(truncate_to(text, width)))
+    }
+    index = index + 1
+  }
+  // 列表比窗口长时，在提示行里说一声还有多少。
+  if items.length() > visible {
+    let more = items.length() - visible
+    rows[1] = dim_line(
+      "  ↑/↓ 选择 · Enter 确认 · Esc 取消 · 还有 " +
+      more.to_string() +
+      " 项",
+    )
+  }
+  rows.push(pad_line(rule(width), color_dim, None, width))
+  rows
+}
+
+///|
+fn min_int(a : Int32, b : Int32) -> Int32 {
+  if a < b {
+    a
+  } else {
+    b
+  }
 }
 
 ///|

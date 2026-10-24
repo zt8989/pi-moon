@@ -24,8 +24,41 @@ pub(all) enum TuiCommand {
   Compact
   Tools(Array[String])
   ListTools
+  /// `/thinking <级别>`：直接切一档（不开面板）。
+  ThinkingLevel(String)
+  /// Ctrl+L / `/model`：开模型面板。
+  OpenModels
+  /// `/thinking`：开思考级别面板。
+  OpenThinking
   Exit
 } derive(Debug)
+
+///|
+pub(all) enum PickerKind {
+  ModelPicker
+  ThinkingPicker
+} derive(Eq, Debug)
+
+///|
+/// 面板里的一项。模型项用 provider / model_id，思考项用 level —— 两者共一个
+/// 形状，面板的绘制与选中逻辑就能共用一份。
+pub(all) struct PickerItem {
+  label : String
+  detail : String
+  provider : String
+  model_id : String
+  level : String
+} derive(Eq, Debug)
+
+///|
+/// 覆盖 composer 的面板（ela 的 selector：整行宽、无左右边框、底边落在
+/// composer 的位置）。
+pub(all) struct Picker {
+  kind : PickerKind
+  title : String
+  items : Array[PickerItem]
+  mut selected : Int32
+}
 
 ///|
 /// 界面自己的可变状态。
@@ -56,6 +89,10 @@ pub(all) struct TuiState {
   /// 请求把队列取回输入框（`Ctrl+U` / 闲时 `Esc`）。
   /// 拿到 agent 状态的时机在 driver / on_tick 那一侧。
   mut take_back : Bool
+  /// 打开中的选择面板（模型 / 思考级别）。
+  mut picker : Picker?
+  /// 面板里按了 Enter：driver 去应用选中的那一项。
+  mut picker_confirm : Bool
   mut last_ctrl_c : Int64
   mut writer : @session.SessionWriter?
 }
@@ -97,6 +134,8 @@ pub fn TuiState::new() -> TuiState {
     commands: [],
     pending_actions: [],
     take_back: false,
+    picker: None,
+    picker_confirm: false,
     last_ctrl_c: 0L,
     writer: None,
   }
@@ -164,6 +203,7 @@ fn scroll_set(tui : TuiState, value : Int32) -> Unit {
 pub async fn run_tui(
   agent : @runtime.Agent,
   tui : TuiState,
+  config : @provider.PiConfig,
   compact_enabled : Bool,
   session_label : String,
 ) -> Unit {
@@ -178,7 +218,7 @@ pub async fn run_tui(
     @async.with_task_group(async fn(group) {
       group.spawn_bg(async fn() { tui_render_loop(app, tui, agent) })
       group.spawn_bg(async fn() { tui_key_loop(tui) })
-      tui_driver(agent, tui, compact_enabled)
+      tui_driver(agent, tui, config, compact_enabled)
     })
     None
   } catch {
@@ -229,6 +269,18 @@ async fn tui_key_loop(tui : TuiState) -> Unit {
 ///|
 fn handle_key(tui : TuiState, key : String) -> Unit {
   tui.dirty = true
+  // 面板开着时键盘归面板：Enter 确认、Esc 取消、↑↓ 选项。
+  match tui.picker {
+    Some(_) => {
+      let event = @events.parse_input(key)
+      match event {
+        @events.InputEvent::Key(key_event) => handle_picker_key(tui, key_event)
+        _ => ()
+      }
+      return
+    }
+    None => ()
+  }
   // Alt+Enter 在 Windows 终端上是 ESC + CR；`parse_input` 只把它当未知序列。
   // ela 的默认键位：Enter = steer，Option+Enter = followUp。
   if key == "\u{001b}\r" || key == "\u{001b}\n" {
@@ -340,6 +392,15 @@ fn handle_ctrl(tui : TuiState, c : Char) -> Unit {
       tui.page = if tui.page == Chat { Trace } else { Chat }
       set_notice(tui, if tui.page == Chat { "对话" } else { "轨迹" })
     }
+    // pi 的 `app.model.select`（Ctrl+L）：覆盖 composer 的面板。
+    'l' =>
+      if tui.busy {
+        set_notice(
+          tui, "上一回合还没结束：先按 Esc 中断再换模型",
+        )
+      } else {
+        tui.commands.push(OpenModels)
+      }
     // ela 的取回是 Option+Up；Windows 控制台的 `_getch` 拿不到 Alt+方向键
     // （`translate_special_key` 只留下方向键本身），所以这里改用 Ctrl+U。
     'u' => {
@@ -433,6 +494,12 @@ fn submit_command(tui : TuiState, text : String) -> Unit {
   } else if text.has_prefix("/tools ") {
     let names = split_tool_list(text[7:].trim().to_owned())
     tui.commands.push(Tools(names))
+  } else if text == "/model" {
+    tui.commands.push(OpenModels)
+  } else if text == "/thinking" {
+    tui.commands.push(OpenThinking)
+  } else if text.has_prefix("/thinking ") {
+    tui.commands.push(ThinkingLevel(text[10:].trim().to_owned()))
   } else {
     set_notice(tui, "未知命令：" + text)
   }
@@ -442,11 +509,15 @@ fn submit_command(tui : TuiState, text : String) -> Unit {
 async fn tui_driver(
   agent : @runtime.Agent,
   tui : TuiState,
+  config : @provider.PiConfig,
   compact_enabled : Bool,
 ) -> Unit {
   while !tui.quit {
     if tui.take_back {
       take_back_now(agent, tui)
+    }
+    if tui.picker_confirm {
+      apply_picker(agent, tui, config)
     }
     if tui.commands.is_empty() {
       @async.sleep(15)
@@ -514,6 +585,9 @@ async fn tui_driver(
           (if names.is_empty() { "(none)" } else { names.join(",") }),
         )
       }
+      OpenModels => open_model_picker(tui, agent.state, config)
+      OpenThinking => open_thinking_picker(tui, agent.state, config)
+      ThinkingLevel(level) => apply_thinking(agent, tui, config, level)
       Exit => tui.quit = true
     }
   }
@@ -726,4 +800,298 @@ fn max_int(a : Int32, b : Int32) -> Int32 {
   } else {
     b
   }
+}
+
+// ─── 面板：模型 / 思考级别 ──────────────────────────────────────────────────
+//
+// ela 的面板是「覆盖 composer 矩形」的选择器（顶边框 + 提示行 + 列表 + 底边框），
+// 不是居中浮窗。这里只做列表与选中：Enter 确认、Esc 取消、↑↓ 移动。
+
+///|
+fn handle_picker_key(tui : TuiState, key : @events.KeyEvent) -> Unit {
+  match tui.picker {
+    None => ()
+    Some(picker) =>
+      match key {
+        @events.KeyEvent::Char('c', @events.KeyModifier::Ctrl) =>
+          tui.picker = None
+        @events.KeyEvent::Char(_, _) => ()
+        @events.KeyEvent::Special(special, _) =>
+          match special {
+            @events.SpecialKey::Escape => tui.picker = None
+            @events.SpecialKey::Enter => tui.picker_confirm = true
+            @events.SpecialKey::Up => picker_move(tui, picker, -1)
+            @events.SpecialKey::Down => picker_move(tui, picker, 1)
+            @events.SpecialKey::PageUp => picker_move(tui, picker, -5)
+            @events.SpecialKey::PageDown => picker_move(tui, picker, 5)
+            @events.SpecialKey::Home => picker.selected = 0
+            @events.SpecialKey::End =>
+              picker.selected = max_int(picker.items.length() - 1, 0)
+            _ => ()
+          }
+      }
+  }
+}
+
+///|
+fn picker_move(tui : TuiState, picker : Picker, delta : Int32) -> Unit {
+  picker.selected = clamp_int(
+    picker.selected + delta,
+    0,
+    max_int(picker.items.length() - 1, 0),
+  )
+  tui.dirty = true
+}
+
+///|
+fn open_model_picker(
+  tui : TuiState,
+  state : @state.AgentState,
+  config : @provider.PiConfig,
+) -> Unit {
+  let items : Array[PickerItem] = []
+  for provider in config.providers {
+    for model in provider.models {
+      let mut detail = ""
+      if model.reasoning {
+        detail = "reasoning"
+      }
+      if model.context_window > 0 {
+        let ctx = "ctx " + format_tokens(model.context_window)
+        detail = if detail.is_empty() { ctx } else { detail + " · " + ctx }
+      }
+      items.push({
+        label: provider.name + " / " + model.id,
+        detail,
+        provider: provider.name,
+        model_id: model.id,
+        level: "",
+      })
+    }
+  }
+  if items.is_empty() {
+    set_notice(tui, "配置里没有可选的模型（models.json）")
+    return
+  }
+  let mut selected = 0
+  for index in 0..<items.length() {
+    if items[index].provider == state.provider_name &&
+      items[index].model_id == state.model_id {
+      selected = index
+    }
+  }
+  tui.picker = Some({
+    kind: ModelPicker,
+    title: "选择模型",
+    items,
+    selected,
+  })
+  tui.dirty = true
+}
+
+///|
+fn open_thinking_picker(
+  tui : TuiState,
+  state : @state.AgentState,
+  config : @provider.PiConfig,
+) -> Unit {
+  let model = match find_model(config, state.provider_name, state.model_id) {
+    Some(model) => model
+    None => {
+      set_notice(tui, "当前模型不在目录里，改不了思考级别")
+      return
+    }
+  }
+  if !model.reasoning {
+    set_notice(tui, "当前模型不支持思考级别")
+    return
+  }
+  let levels = thinking_levels(model)
+  if levels.is_empty() {
+    set_notice(tui, "当前模型不支持思考级别")
+    return
+  }
+  let items : Array[PickerItem] = []
+  let mut selected = 0
+  for index in 0..<levels.length() {
+    let level = levels[index]
+    if level == state.thinking_level {
+      selected = index
+    }
+    items.push({
+      label: level,
+      detail: if level == "off" {
+        "不思考"
+      } else {
+        "思考预算：" + level
+      },
+      provider: state.provider_name,
+      model_id: state.model_id,
+      level,
+    })
+  }
+  tui.picker = Some({
+    kind: ThinkingPicker,
+    title: "思考级别",
+    items,
+    selected,
+  })
+  tui.dirty = true
+}
+
+///|
+fn find_model(
+  config : @provider.PiConfig,
+  provider_name : String,
+  model_id : String,
+) -> @provider.PiModelInfo? {
+  for provider in config.providers {
+    if provider.name == provider_name {
+      for model in provider.models {
+        if model.id == model_id {
+          return Some(model)
+        }
+      }
+    }
+  }
+  None
+}
+
+///|
+fn thinking_levels(model : @provider.PiModelInfo) -> Array[String] {
+  let all = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+  let out : Array[String] = []
+  for level in all {
+    // 显式 null = 这家不支持这一档；没有映射项 = 按原级别发。
+    match model.thinking_level_map.get(level) {
+      Some(None) => ()
+      _ => out.push(level)
+    }
+  }
+  out
+}
+
+///|
+fn clamp_thinking(
+  config : @provider.PiConfig,
+  provider_name : String,
+  model_id : String,
+  level : String,
+) -> String {
+  match find_model(config, provider_name, model_id) {
+    None => "off"
+    Some(model) =>
+      if !model.reasoning {
+        "off"
+      } else {
+        match model.thinking_level_map.get(level) {
+          Some(None) => "off"
+          _ => level
+        }
+      }
+  }
+}
+
+///|
+/// Enter 确认后由 driver 调用：改模型 / 改思考级别，然后落盘。
+async fn apply_picker(
+  agent : @runtime.Agent,
+  tui : TuiState,
+  config : @provider.PiConfig,
+) -> Unit {
+  tui.picker_confirm = false
+  let picker = match tui.picker {
+    Some(picker) => picker
+    None => return
+  }
+  if agent.state.phase != @common.Idle || agent.state.compacting {
+    set_notice(tui, "上一回合还没结束，先按 Esc 中断再改")
+    tui.picker = None
+    return
+  }
+  let item = picker.items[picker.selected]
+  match picker.kind {
+    ModelPicker => {
+      let level = clamp_thinking(
+        config,
+        item.provider,
+        item.model_id,
+        agent.state.thinking_level,
+      )
+      let resolved = config.resolve(
+        provider=item.provider,
+        model=item.model_id,
+        thinking=level,
+      ) catch {
+        err => {
+          set_notice(tui, "换模型失败：" + err.to_string())
+          tui.picker = None
+          return
+        }
+      }
+      agent.send(@action.ModelChanged(resolved_model_spec(resolved))) catch {
+        err => set_notice(tui, "error: " + err.to_string())
+      }
+      set_notice(tui, "模型：" + item.label)
+      tui.picker = None
+      persist_tui(agent, tui)
+    }
+    ThinkingPicker => {
+      agent.send(@action.ThinkingChanged(item.level)) catch {
+        err => set_notice(tui, "error: " + err.to_string())
+      }
+      set_notice(tui, "思考级别：" + item.level)
+      tui.picker = None
+      persist_tui(agent, tui)
+    }
+  }
+  tui.dirty = true
+}
+
+///|
+/// `/thinking <级别>`：不开面板，直接切（与 ela 的 handleThinkingCommand 同形）。
+async fn apply_thinking(
+  agent : @runtime.Agent,
+  tui : TuiState,
+  config : @provider.PiConfig,
+  wanted : String,
+) -> Unit {
+  if agent.state.phase != @common.Idle || agent.state.compacting {
+    set_notice(
+      tui, "上一回合还没结束：先按 Esc 中断再改思考级别",
+    )
+    return
+  }
+  let model = match
+    find_model(config, agent.state.provider_name, agent.state.model_id) {
+    Some(model) => model
+    None => {
+      set_notice(tui, "当前模型不在目录里，改不了思考级别")
+      return
+    }
+  }
+  if !model.reasoning {
+    set_notice(tui, "当前模型不支持思考级别")
+    return
+  }
+  let levels = thinking_levels(model)
+  let mut matched = ""
+  for level in levels {
+    if level.to_lower() == wanted.to_lower() {
+      matched = level
+    }
+  }
+  if matched.is_empty() {
+    set_notice(
+      tui,
+      "未知思考级别 \"" + wanted + "\"；可选：" + levels.join(", "),
+    )
+    return
+  }
+  agent.send(@action.ThinkingChanged(matched)) catch {
+    err => set_notice(tui, "error: " + err.to_string())
+  }
+  set_notice(tui, "思考级别：" + matched)
+  persist_tui(agent, tui)
+  tui.dirty = true
 }

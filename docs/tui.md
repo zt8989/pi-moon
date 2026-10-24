@@ -102,22 +102,48 @@ provider effect 在下一个分片边界查 `ProviderHooks::should_abort`：
 `read_until` 被取消会丢掉半行 SSE，那比晚几百毫秒更糟。provider 长时间不发
 事件时，Esc 最迟在空闲超时（默认 120s）后才生效 —— 这是 v0.7 的已知边界。
 
+## 面板：模型 / 思考级别
+
+`Ctrl+L`（或 `/model`）开模型面板；`/thinking` 开思考级别面板，
+`/thinking <级别>` 直接切。面板**覆盖 composer 那一块**（与 ela 的 selector
+同形：整行宽、顶边框带标题、底边落在 composer 底边），中间页相应变短：
+
+```text
+── 选择模型 ─────────────────────────────────────
+  ↑/↓ 选择 · Enter 确认 · Esc 取消
+ › workbuddy / cn:deepseek-v4.1-flash  reasoning · ctx 1.0M  ●
+   workbuddy / cn:glm-5.3-flash  reasoning · ctx 1.0M
+────────────────────────────────────────────────
+```
+
+- 模型列表来自 `models.json` 的 provider × model；`●` 是当前模型；
+  Enter 走 `ModelChanged`，并把思考级别按新模型夹紧（不支持思考的模型回到
+  `off`，显式禁用的档位也回到 `off`）；
+- `/thinking` 只列当前模型**支持**的档位（`thinking_level_map` 里显式 `null`
+  的不出现）；Enter 走 `ThinkingChanged`；
+- 面板只在空闲时能开（生成中按 `Ctrl+L` 会提示先中断）；Esc 关闭。
+- 选完会 flush 一次会话（`model.init` / 后续请求的模型就是新的）。
+
 ## 键位
 
 | 键 | 行为 |
 | --- | --- |
-| `Enter` | 空闲：提交；生成中：进 steer 队列 |
+| `Enter` | 空闲：提交；生成中：进 steer 队列；面板中：确认当前项 |
 | `Alt+Enter` | 生成中：进 followUp 队列 |
-| `Esc` | 生成中：中断；空闲：取回排队消息（没有就清空输入） |
+| `Esc` | 生成中：中断；空闲：取回排队消息；面板中：关闭 |
 | `Ctrl+U` | 取回排队消息（生成中也能用） |
-| `Ctrl+C` | 有输入先清空；空输入连按两次退出；生成中先中断 |
+| `Ctrl+L` | 模型面板 |
+| `Ctrl+C` | 有输入先清空；空输入连按两次退出；生成中先中断；面板中：关闭 |
 | `Ctrl+D` | 退出（先立中断标志，等环收工） |
 | `Ctrl+R` | 对话页 / 轨迹页切换 |
 | `Ctrl+O` | 展开 / 折叠工具输出与压缩摘要 |
-| `↑` / `↓` | 历史输入 |
+| `↑` / `↓` | 历史输入；面板中：移动选中 |
 | `←` / `→` / `Home` / `End` | 光标移动（按字符，不按字节） |
-| `PgUp` / `PgDn` | 翻当前页（对话与轨迹各记各的滚动位置） |
+| `PgUp` / `PgDn` | 翻当前页；面板中：跳 5 项 |
 | `Ctrl+Home` / `Ctrl+End` | 到顶 / 回到底部跟随 |
+| `/model` | 模型面板（同 `Ctrl+L`） |
+| `/thinking` | 思考级别面板 |
+| `/thinking <级别>` | 直接切到那一档（大小写不敏感） |
 | `/compact` | 手动压缩上下文 |
 | `/continue` | 修复尾消息后继续未完成的回合 |
 | `/tools` | 显示当前工具集 |
@@ -129,8 +155,8 @@ ela 里那个「一个键干两件事」的 `app.abort` 默认不绑，这里也
 
 ## 与 ela 的差距（分步补齐）
 
-1. **模型 / 思考档位 / 会话选择器**（`Ctrl+L` 等）：ela 用覆盖 composer 矩形
-   的面板，这里还没有面板层。
+1. **会话选择器**（ela 的 `/resume`）：模型与思考级别有了面板，会话列表还没接
+   （它要把一个 JSONL 整体装回环上，与 `SessionRestored` 一起做）。
 2. **markdown 高亮与逐字排版**：现在 assistant 文本是纯文本折行；工具块也
    没有 pi 的各工具专用渲染器（bash 的尾部保留、edit 的彩色 diff）。
 3. **状态卡锚点**：ela 的 `notify` 卡钉在「第 N 条消息之后」，随对话滚走；

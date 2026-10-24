@@ -6,6 +6,7 @@ import {
   "mizchi/tui/vnode",
   "moonbitlang/core/debug",
   "pi-moon/core/action",
+  "pi-moon/core/provider",
   "pi-moon/core/runtime",
   "pi-moon/core/session",
   "pi-moon/core/state",
@@ -64,7 +65,7 @@ pub fn render_editor(String, Int32, Int32) -> String
 
 pub fn rule(Int32) -> String
 
-pub async fn run_tui(@runtime.Agent, TuiState, Bool, String) -> Unit
+pub async fn run_tui(@runtime.Agent, TuiState, @provider.PiConfig, Bool, String) -> Unit
 
 pub fn shorten_home(String, String) -> String
 
@@ -103,6 +104,26 @@ type CliArgs
 
 type CompactSnapshot
 
+pub(all) struct Picker {
+  kind : PickerKind
+  title : String
+  items : Array[PickerItem]
+  mut selected : Int32
+}
+
+pub(all) struct PickerItem {
+  label : String
+  detail : String
+  provider : String
+  model_id : String
+  level : String
+} derive(Eq, @debug.Debug)
+
+pub(all) enum PickerKind {
+  ModelPicker
+  ThinkingPicker
+} derive(Eq, @debug.Debug)
+
 pub(all) struct StyledLine {
   text : String
   fg : String?
@@ -121,6 +142,9 @@ pub(all) enum TuiCommand {
   Compact
   Tools(Array[String])
   ListTools
+  ThinkingLevel(String)
+  OpenModels
+  OpenThinking
   Exit
 } derive(@debug.Debug)
 
@@ -149,6 +173,8 @@ pub(all) struct TuiState {
   mut commands : Array[TuiCommand]
   mut pending_actions : Array[@action.AgentAction]
   mut take_back : Bool
+  mut picker : Picker?
+  mut picker_confirm : Bool
   mut last_ctrl_c : Int64
   mut writer : @session.SessionWriter?
 }

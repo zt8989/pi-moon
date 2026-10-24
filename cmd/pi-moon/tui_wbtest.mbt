@@ -292,3 +292,154 @@ test "tui_view 能画出一整帧（顶行 / 对话区 / composer / 底栏）" {
   assert_true(frame.contains("对话"))
   assert_true(frame.contains("轨迹"))
 }
+
+///|
+fn test_model(
+  id : String,
+  reasoning : Bool,
+  disabled : Array[String],
+) -> @provider.PiModelInfo {
+  let levels : Map[String, String?] = Map([])
+  for level in disabled {
+    levels[level] = None
+  }
+  {
+    id,
+    name: id,
+    api: "openai-completions",
+    base_url: None,
+    reasoning,
+    context_window: 1000,
+    max_tokens: None,
+    thinking_level_map: levels,
+    cost_input: 0.0,
+    cost_output: 0.0,
+    compat: @provider.default_compat,
+  }
+}
+
+///|
+fn test_pi_config() -> @provider.PiConfig {
+  {
+    providers: [
+      {
+        name: "demo",
+        base_url: "http://localhost/v1",
+        api: "openai-completions",
+        api_key: None,
+        models: [
+          test_model("demo-1", true, ["xhigh"]),
+          test_model("plain", false, []),
+        ],
+      },
+    ],
+    default_provider: Some("demo"),
+    default_model: Some("demo-1"),
+    default_thinking_level: "off",
+    default_tools: None,
+    compaction: @compact.default_settings(),
+    auth: Map([]),
+    env: Map([]),
+    agent_dir: "/tmp/pi",
+    diagnostics: [],
+  }
+}
+
+///|
+test "面板：Ctrl+L 打开模型列表，上下移动、Enter 确认、Esc 取消" {
+  let tui = TuiState::new()
+  let state = test_state()
+  let config = test_pi_config()
+  // Ctrl+L 在按键层只排队；driver 打开面板。
+  handle_key(tui, "\u{000c}")
+  match tui.commands[0] {
+    OpenModels => ()
+    _ => abort("expected open-models command")
+  }
+  open_model_picker(tui, state, config)
+  let picker = tui.picker.unwrap()
+  assert_eq(picker.kind, ModelPicker)
+  assert_eq(picker.items.length(), 2)
+  assert_eq(picker.selected, 0)
+  handle_key(tui, "\u{001b}[B")
+  assert_eq(tui.picker.unwrap().selected, 1)
+  handle_key(tui, "\r")
+  assert_true(tui.picker_confirm)
+  // Esc 关面板；确认标志留着也没关系（driver 会清）。
+  handle_key(tui, "\u{001b}")
+  assert_true(tui.picker is None)
+  // 重开一次，检查列表渲染。
+  tui.picker_confirm = false
+  open_model_picker(tui, state, config)
+  let rows = picker_rows(tui, state, 80, 30)
+  let mut text = ""
+  for row in rows {
+    text = text + row.text + "\n"
+  }
+  assert_true(text.contains("选择模型"))
+  assert_true(text.contains("demo / plain"))
+}
+
+///|
+test "面板：思考级别只列模型支持的档位" {
+  let state = {
+    ..test_state(),
+    provider_name: "demo",
+    model_id: "demo-1",
+    thinking_level: "high",
+    model: {
+      ..test_state().model,
+      provider: "demo",
+      model_id: "demo-1",
+      thinking_level: "high",
+      reasoning: true,
+      context_window: 1000,
+    },
+  }
+  let tui = TuiState::new()
+  open_thinking_picker(tui, state, test_pi_config())
+  let picker = tui.picker.unwrap()
+  assert_eq(picker.kind, ThinkingPicker)
+  assert_eq(picker.items.length(), 6)
+  let mut levels = ""
+  for item in picker.items {
+    levels = levels + item.level + ","
+  }
+  assert_false(levels.contains("xhigh"))
+  assert_eq(picker.items[picker.selected].level, "high")
+  // 不支持的模型：不开面板，只给一句通知。
+  let plain = {
+    ..state,
+    model_id: "plain",
+    model: { ..state.model, model_id: "plain", reasoning: false, },
+  }
+  let tui2 = TuiState::new()
+  open_thinking_picker(tui2, plain, test_pi_config())
+  assert_true(tui2.picker is None)
+  assert_true(tui2.notice.contains("不支持"))
+}
+
+///|
+test "面板：换模型时思考级别按新模型夹紧" {
+  let config = test_pi_config()
+  assert_eq(clamp_thinking(config, "demo", "plain", "high"), "off")
+  assert_eq(clamp_thinking(config, "demo", "demo-1", "xhigh"), "off")
+  assert_eq(clamp_thinking(config, "demo", "demo-1", "high"), "high")
+}
+
+///|
+test "斜杠命令：/model 与 /thinking [级别]" {
+  let tui = TuiState::new()
+  type_text(tui, "/model")
+  handle_key(tui, "\r")
+  match tui.commands[0] {
+    OpenModels => ()
+    _ => abort("expected open-models")
+  }
+  type_text(tui, "/thinking high")
+  handle_key(tui, "\r")
+  match tui.commands[1] {
+    ThinkingLevel(level) => assert_eq(level, "high")
+    _ => abort("expected thinking-level")
+  }
+}
