@@ -63,24 +63,25 @@ driver       await agent.send(...)：模型流、工具、压缩都在这条 awa
 每条工具之前** dispatch 进环里。那条路与 driver 同上下文，不会在别人 await
 时把 deferred 队列里的 effect 拉起来并发跑。
 
-## 队列与 Esc
+## 队列与取回（键位照 ela）
 
 - 空闲时 Enter：`UserMessage`，开新回合；
-- **生成中 Enter：进 `follow_up_queue`**（ela 里这是 `Option+Enter` 的语义），
-  队列面板显示 `Follow-up: ...`，回合收口时投递并接着跑；
-- **空闲时 Esc：把排队消息取回输入框**（ela 的 `app.interrupt`：「有队列就把
-  队列还回编辑器」）；没有队列时就是清空输入；
-- **生成中 Esc：中断当前回合**。
+- **生成中 Enter：steer** —— 当前 step 的工具批次结束后投递，模型下一步就能看到；
+  若模型直接说完（没有工具批次），`TurnEnd` 会投递它并开新回合；
+- **生成中 Alt+Enter：followUp** —— 回合收口后再投递；
+- 队列面板分别显示 `Steering:` / `Follow-up:` 行；
+- **Ctrl+U：把排队消息取回输入框**（生成中也能用）；
+- 空闲时 Esc：同样取回；没有队列就是清空输入；
+- 生成中 Esc：中断当前回合。
 
-和 ela 的差别有两个：
+取回在生成中能用，靠的是 `ProviderHooks::on_tick` 里那个安全点：effect 在分片
+边界把请求读走 —— 读 `bridge.agent.state` 里的两条队列、填进输入框，再
+`dispatch(QueueClear)`。driver 此刻正卡在 effect 里，按键任务碰不到 agent，
+所以这个引用由 `TuiBridge` 后填进去。
 
-- ela 的 Enter 是 `steer`（在当前 step 的工具批次结束后投递，模型下一步就能看到）；
-  这里先用 followUp。原因是 steer 在「模型直接说完、没有工具批次」那一轮会
-  留在队列里没人投递 —— 那是内核的投递时机问题，要在 `TurnEnd` 一并处理。
-- ela 的队列面板挂着 `Option+Up to edit all queued messages`；这里没有这个键：
-  生成中 driver 正在 `await agent.send()`，按键任务碰不到队列（要能取回，得让
-  effect 多一条「把 QueueInput 读回去」的 action）。面板上写的是「回合结束后
-  自动发送」—— 写一个按不动的键名比不写更糟。
+与 ela 的唯一键位差异：取回是 `Ctrl+U`，不是 `Option+Up`。Windows 控制台的
+`_getch` 拿不到 Alt+方向键（`translate_special_key` 只留下方向键本身），语义
+一致、键不同。队列面板上的提示写的就是能按的那个键。
 
 ## 中断：Esc 走一条更短的路
 
@@ -102,8 +103,10 @@ provider effect 在下一个分片边界查 `ProviderHooks::should_abort`：
 
 | 键 | 行为 |
 | --- | --- |
-| `Enter` | 空闲：提交；生成中：进 followUp 队列 |
+| `Enter` | 空闲：提交；生成中：进 steer 队列 |
+| `Alt+Enter` | 生成中：进 followUp 队列 |
 | `Esc` | 生成中：中断；空闲：取回排队消息（没有就清空输入） |
+| `Ctrl+U` | 取回排队消息（生成中也能用） |
 | `Ctrl+C` | 有输入先清空；空输入连按两次退出；生成中先中断 |
 | `Ctrl+D` | 退出（先立中断标志，等环收工） |
 | `Ctrl+R` | 对话页 / 轨迹页切换 |
@@ -123,18 +126,15 @@ ela 里那个「一个键干两件事」的 `app.abort` 默认不绑，这里也
 
 ## 与 ela 的差距（分步补齐）
 
-1. **steer 与取回**：见「队列与 Esc」。要把 Enter 改成 steer，得先让 `TurnEnd`
-   在没有 followUp 时也投递 steer；要支持 ela 的 `Option+Up` 取回，得给内核
-   一条能在 effect 里读回队列的 action。
-2. **中断时半截文本的去处**：现在只留在界面上（`streaming_text`），**不进
+1. **中断时半截文本的去处**：现在只留在界面上（`streaming_text`），**不进
    messages**；ela 会作为 `stop_reason=aborted` 的 assistant 消息保留。
-3. **模型 / 思考档位 / 会话选择器**（`Ctrl+L` 等）：ela 用覆盖 composer 矩形
+2. **模型 / 思考档位 / 会话选择器**（`Ctrl+L` 等）：ela 用覆盖 composer 矩形
    的面板，这里还没有面板层。
-4. **markdown 高亮与逐字排版**：现在 assistant 文本是纯文本折行；工具块也
+3. **markdown 高亮与逐字排版**：现在 assistant 文本是纯文本折行；工具块也
    没有 pi 的各工具专用渲染器（bash 的尾部保留、edit 的彩色 diff）。
-5. **状态卡锚点**：ela 的 `notify` 卡钉在「第 N 条消息之后」，随对话滚走；
+4. **状态卡锚点**：ela 的 `notify` 卡钉在「第 N 条消息之后」，随对话滚走；
    这里只有一张尾部卡，下一条消息提交时清掉。
-6. **Windows 输入法**：`_getch` 拿到的是控制台代码页字节，不是 UTF-8；
+5. **Windows 输入法**：`_getch` 拿到的是控制台代码页字节，不是 UTF-8；
    英文与多数符号没问题，中文长句输入建议在别处打好再粘贴（粘贴走的是
    同一批字节，表现一致）。
 

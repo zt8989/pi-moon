@@ -661,6 +661,9 @@ async fn run(args : CliArgs) -> Unit {
   // 界面状态要在 hooks **之前**建：Esc 的中断标志就住在它里面。
   let tui_mode = wants_tui(args)
   let tui : TuiState? = if tui_mode { Some(TuiState::new()) } else { None }
+  // `on_tick` 需要读 agent 的队列（取回排队消息），而 agent 要等 effect 表建好
+  // 才能建 —— 先留一个可后填的引用格。
+  let bridge = TuiBridge::new()
   let hooks : @provider.ProviderHooks = {
     on_content: async fn(text) {
       // TUI 下不往 stdout 写字：整帧由渲染循环统一画，这里再写就成两路输出。
@@ -698,7 +701,7 @@ async fn run(args : CliArgs) -> Unit {
     },
     on_tick: async fn(dispatch) {
       match tui {
-        Some(tui) => flush_ui_actions(tui, dispatch)
+        Some(tui) => flush_ui_actions(tui, dispatch, bridge)
         None => ()
       }
     },
@@ -715,6 +718,7 @@ async fn run(args : CliArgs) -> Unit {
     table,
     fn() { @env.now().reinterpret_as_int64() },
   )
+  bridge.agent = Some(agent)
   // stdout 只留给模型回答：诊断与工具日志全走 stderr（先收集，跑完再打）。
   let notices : Array[String] = []
   agent.observe(action => {

@@ -352,7 +352,18 @@ pub fn transition(
       // **关回合后 followUp 直接开新回合 —— 在这条迁移里做，不是接线里。**
       // 这条路是被 llm.done / llm.failed / tool.batch.done 触发的，
       // 从那几个 effect 回来的时刻，从这里 redispatch 出去的 action 没人冲刷。
-      match queue_head(state.follow_up_queue) {
+      // followUp 优先；**没有 followUp 时也要投递 steer**：steer 的正常时机是
+      // `tool.batch.done`，但模型可能直接说完（没有工具批次），那条话就永远卡在
+      // 队列里。对用户来说它是「生成中说的下一句」，与 followUp 同一个落点。
+      let kind = match queue_head(state.follow_up_queue) {
+        Some(_) => @common.FollowUp
+        None => @common.Steer
+      }
+      let next = match queue_head(state.follow_up_queue) {
+        Some(queued) => Some(queued)
+        None => queue_head(state.steer_queue)
+      }
+      match next {
         None => { ..closed, step_index: 0, turn_steps: state.turn_steps, }
         Some(queued) => {
           let flushed = flush_model_change(closed, now)
@@ -367,18 +378,23 @@ pub fn transition(
             compaction_summary: false,
             tokens_before: 0,
           })
-          // 先把 followUp 那句话作为 user 消息插进去（它开启新回合），
-          // 再开回合容器 —— 于是 user 节点在树上排在 turn.start 之前。
+          let label = if kind == @common.Steer {
+            "steer: "
+          } else {
+            "followUp: "
+          }
+          // 先把那句话作为 user 消息插进去（它开启新回合），再开回合容器 ——
+          // 于是 user 节点在树上排在 turn.start 之前。
           let (user_tree, _user_node) = @trace.append_node(
             flushed.trace,
             flushed.trace.tip_id,
             @trace.User,
             @trace.Ok,
-            "followUp: " + @common.summarize(queued.text),
+            label + @common.summarize(queued.text),
             now,
             detail=queued.text,
             message~,
-            meta=[("queued", "followUp")],
+            meta=[("queued", kind.name())],
             ended_at=now,
           )
           let (opened_tree, opened_node) = @trace.append_node(
@@ -402,7 +418,16 @@ pub fn transition(
             step_index: counters.step_index,
             turn_steps: counters.turn_steps,
             messages: closed.messages.add([message]),
-            follow_up_queue: drop_first(closed.follow_up_queue),
+            follow_up_queue: if kind == @common.FollowUp {
+              drop_first(closed.follow_up_queue)
+            } else {
+              closed.follow_up_queue
+            },
+            steer_queue: if kind == @common.Steer {
+              drop_first(closed.steer_queue)
+            } else {
+              closed.steer_queue
+            },
             // 新的一句话 = 上一回合的收工理由作废。
             stop_reason: None,
             stop_cause: None,

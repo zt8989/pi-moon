@@ -585,3 +585,51 @@ test "decide_compaction：手动不看 enabled，阈值看占用，溢出看错�
   assert_true(overflow.should)
   assert_eq(overflow.reason, Some(@compact.Overflow))
 }
+
+///|
+test "steer 在回合结束时也要投递（模型没调工具、直接说完那条路）" {
+  let state = loop_test_state()
+  let (state, _) = reduce(state, user("写点什么"), 100L)
+  let (state, _) = reduce(state, @action.TurnStart, 101L)
+  let (state, _) = reduce(state, @action.StepStart, 102L)
+  let (state, _) = reduce(state, @action.AgentRun(None), 103L)
+  // 生成中敲一句 steer：进队列，本回合继续跑。
+  let (state, _) = reduce(
+    state,
+    @action.QueueInput({
+      text: "顺便说一句",
+      content: [],
+      kind: @common.Steer,
+    }),
+    104L,
+  )
+  assert_eq(state.steer_queue.length(), 1)
+  assert_eq(state.phase, @common.Thinking)
+  // 模型直接说完（没有工具批次）→ llm.done 关 step、idle。
+  let (state, cmds) = reduce(
+    state,
+    @action.LlmDone({
+      message: {
+        content: [@message.Text("说完了")],
+        stop_reason: "stop",
+        error_message: None,
+        usage: None,
+        timestamp: 105L,
+      },
+      node_id: None,
+    }),
+    106L,
+  )
+  assert_eq(cmd_names(cmds), ["action:turn.end"])
+  // turn.end 必须把 steer 投递出去并开新回合 —— 否则它永远卡在队列里。
+  let (state, _) = reduce(state, @action.TurnEnd, 107L)
+  assert_eq(state.steer_queue.length(), 0)
+  assert_eq(state.phase, @common.Thinking)
+  assert_true(state.open_turn_node_id is Some(_))
+  assert_eq(state.turn_index, 2)
+  match state.messages[state.messages.length() - 1] {
+    @message.UserMsg(part) =>
+      assert_eq(@message.contents_text(part.content), "顺便说一句")
+    _ => abort("expected the steer message at the tail")
+  }
+}

@@ -51,17 +51,17 @@ reducer 里没有一个 `await`、没有一个 `fetch`、也没有 while。真�
   落盘后可恢复（见 [docs/compact.md](docs/compact.md)）；
 - **全屏 TUI**：默认交互模式（不带 `-p`，stdin / stdout 都是终端）。布局与
   ela 同形：顶行页签 + 统计 / 中间页（对话或轨迹，`Ctrl+R`）/ 队列面板 + 空隙 +
-  composer（工作状态嵌在上框线）+ 两行底栏；Esc 中断或取回排队、Ctrl+C×2 退出、
-  工具块折叠；生成中 Enter 进 followUp 队列。一次性与管道行为不变
-  （见 [docs/tui.md](docs/tui.md)）。
+  composer（工作状态嵌在上框线）+ 两行底栏；生成中 Enter 进 steer、Alt+Enter
+  followUp、Ctrl+U 取回队列，Esc 中断或取回，Ctrl+C×2 退出，工具块折叠。
+  一次性与管道行为不变（见 [docs/tui.md](docs/tui.md)）。
 
-**还没有**（下一步逐步接）：Web 界面、pi 扩展、TUI 的 steer / 选择器 /
-markdown（见 [docs/tui.md](docs/tui.md) 的「与 ela 的差距」）。
+**还没有**（下一步逐步接）：Web 界面、pi 扩展、TUI 的选择器 / markdown
+（见 [docs/tui.md](docs/tui.md) 的「与 ela 的差距」）。
 
 ## 跑起来
 
 ```bash
-moon test                        # 87 个测试：纯表 + 整环 + 轨迹树 + provider + 工具 + 会话 + 压缩 + TUI
+moon test                        # 89 个测试：纯表 + 整环 + 轨迹树 + provider + 工具 + 会话 + 压缩 + TUI
 
 # 真实模型：读 ~/.pi/agent/ 下与 pi 同一份配置
 moon run cmd/pi-moon                    # 全屏 TUI（默认落盘，可 -c 恢复）
@@ -179,7 +179,7 @@ common → message → compact → trace → action → state → loop → runti
 | `ToolBatchDone` | **关掉 step**，相位 → thinking（撞上限 → idle + stop 节点） | steer 有货：`QueueDelivered`；否则 `StepStart` + `AgentRun` |
 | `LlmFailed`（可重试） | 开 error 节点，**容器保持开着**，尝试 +1，相位留在 thinking | `AgentRun`（同一容器内重试） |
 | `LlmFailed`（不可重试 / 用尽） | 开 error 节点，关掉 step，相位 → idle | `TurnEnd` |
-| `TurnEnd` | 关回合容器（**推进 tip**）；有 followUp 则直接开新回合 | 容器开着就 `StepStart` + `AgentRun` |
+| `TurnEnd` | 关回合容器（**推进 tip**）；队列里有话（followUp 优先，其次 steer）就直接开新回合 | 容器开着就 `StepStart` + `AgentRun` |
 | `CompactRequest` | 守卫（idle / 未在压）；开 pending `compact` 节点、算好切点 | `RunCompact`（没什么可压时直接 `CompactDone`） |
 | `CompactDone` | 整份换 messages、闭合节点（推进 tip）、`compaction_epoch` +1 | 无 |
 | `CompactFailed` | 节点标 error、挂 error 子节点，**messages 不动** | 无 |
@@ -249,8 +249,8 @@ common → message → compact → trace → action → state → loop → runti
 
 ## 下一步（按顺序）
 
-1. **TUI 迭代**：Enter 改回 steer（要先在 `TurnEnd` 投递 steer）、模型 / 思考 /
-   会话选择器、markdown 与各工具专用渲染器（差距清单见 [docs/tui.md](docs/tui.md)）。
+1. **TUI 迭代**：模型 / 思考 / 会话选择器、markdown 与各工具专用渲染器、
+   中断时半截文本进 messages（差距清单见 [docs/tui.md](docs/tui.md)）。
 2. **Web 界面**：rabbita 与终端共用同一份 state；跨包只碰 `Agent` 的
    `state` / `send`。
 3. **pi 扩展**：`extension.event` / 扩展命令 / 生命周期。

@@ -424,7 +424,7 @@ pub fn queue_lines(
   for item in state.follow_up_queue {
     out.push(dim_line(queue_row("Follow-up: ", item.text, width)))
   }
-  out.push(dim_line(" ↳ 回合结束后自动发送"))
+  out.push(dim_line(" ↳ Ctrl+U 取回排队消息"))
   out
 }
 

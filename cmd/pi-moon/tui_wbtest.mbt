@@ -172,13 +172,10 @@ test "键位：Enter 提交、斜杠命令、Esc 两种语义" {
     _ => abort("expected compact")
   }
 
-  // 空闲时 Esc 不是直接清输入，而是把「取回排队消息」交给 driver。
+  // 空闲时 Esc 不是直接清输入，而是请求取回排队消息（driver / on_tick 去读队列）。
   type_text(tui, "abc")
   handle_key(tui, "\u{001b}")
-  match tui.commands[2] {
-    Dequeue => ()
-    _ => abort("expected dequeue")
-  }
+  assert_true(tui.take_back)
   assert_eq(tui.input, "abc")
   assert_false(tui.abort)
 
@@ -199,7 +196,7 @@ test "键位：Ctrl+C 第一次提示、第二次退出" {
 }
 
 ///|
-test "键位：生成中 Enter 进 followUp 队列而不是丢消息" {
+test "键位：生成中 Enter = steer，Alt+Enter = followUp" {
   let tui = TuiState::new()
   tui.busy = true
   type_text(tui, "排队一句")
@@ -208,9 +205,27 @@ test "键位：生成中 Enter 进 followUp 队列而不是丢消息" {
   assert_eq(tui.pending_actions.length(), 1)
   assert_eq(tui.notice, "")
   match tui.pending_actions[0] {
-    @action.QueueInput(input) => assert_eq(input.text, "排队一句")
+    @action.QueueInput(input) => {
+      assert_eq(input.text, "排队一句")
+      assert_eq(input.kind, @common.Steer)
+    }
     _ => abort("expected queue.input")
   }
+  // Alt+Enter（ESC + CR）走 followUp 队列。
+  type_text(tui, "待会儿再说")
+  handle_key(tui, "\u{001b}\r")
+  assert_eq(tui.pending_actions.length(), 2)
+  match tui.pending_actions[1] {
+    @action.QueueInput(input) => assert_eq(input.kind, @common.FollowUp)
+    _ => abort("expected followUp queue.input")
+  }
+}
+
+///|
+test "键位：Ctrl+U 请求取回排队消息" {
+  let tui = TuiState::new()
+  handle_key(tui, "\u{0015}")
+  assert_true(tui.take_back)
 }
 
 ///|
@@ -229,7 +244,7 @@ test "队列面板：只在有排队时占行，形状与 ela 一致" {
   }
   assert_true(text.contains("Steering: 顺便看下版本"))
   assert_true(text.contains("Follow-up: 待会儿再说"))
-  assert_true(text.contains("自动发送"))
+  assert_true(text.contains("Ctrl+U"))
 }
 
 ///|

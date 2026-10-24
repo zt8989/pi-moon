@@ -36,7 +36,7 @@ pub fn editor_top_border(@state.AgentState, Int32, Int64) -> StyledLine
 
 pub fn first_lines(String, Int32) -> Array[String]
 
-pub fn flush_ui_actions(TuiState, @runtime.Dispatch) -> Unit
+pub fn flush_ui_actions(TuiState, @runtime.Dispatch, TuiBridge) -> Unit
 
 pub fn footer_lines(@state.AgentState, Int32) -> Array[StyledLine]
 
@@ -110,13 +110,17 @@ pub(all) struct StyledLine {
   bold : Bool
 } derive(Eq, @debug.Debug)
 
+pub(all) struct TuiBridge {
+  mut agent : @runtime.Agent?
+}
+pub fn TuiBridge::new() -> Self
+
 pub(all) enum TuiCommand {
   Submit(String)
   Continue
   Compact
   Tools(Array[String])
   ListTools
-  Dequeue
   Exit
 } derive(@debug.Debug)
 
@@ -144,6 +148,7 @@ pub(all) struct TuiState {
   mut notice_at : Int64
   mut commands : Array[TuiCommand]
   mut pending_actions : Array[@action.AgentAction]
+  mut take_back : Bool
   mut last_ctrl_c : Int64
   mut writer : @session.SessionWriter?
 }
