@@ -111,14 +111,14 @@ test "chat_lines：工具块折叠与展开" {
       ),
     ],
   }
-  let collapsed = chat_lines(state, false, 60, "")
+  let collapsed = chat_lines(state, false, 60, [])
   let mut collapsed_text = ""
   for line in collapsed {
     collapsed_text = collapsed_text + line.text + "\n"
   }
   assert_true(collapsed_text.contains("还有 3 行"))
   assert_true(collapsed_text.contains("看一下"))
-  let expanded = chat_lines(state, true, 60, "")
+  let expanded = chat_lines(state, true, 60, [])
   let mut expanded_text = ""
   for line in expanded {
     expanded_text = expanded_text + line.text + "\n"
@@ -135,13 +135,23 @@ test "chat_lines：流式文本与思考各占一段" {
     streaming_text: "正在说",
     thinking_text: "想一下",
   }
-  let lines = chat_lines(state, false, 60, "")
+  let lines = chat_lines(state, false, 60, [])
   let mut text = ""
   for line in lines {
     text = text + line.text + "\n"
   }
   assert_true(text.contains("想一下"))
   assert_true(text.contains("正在说▌"))
+}
+
+///|
+/// 最后一张反馈卡的文本（没有卡就是空串）。
+fn last_card_text(tui : TuiState) -> String {
+  if tui.cards.is_empty() {
+    ""
+  } else {
+    tui.cards[tui.cards.length() - 1].text
+  }
 }
 
 ///|
@@ -190,7 +200,7 @@ test "键位：Ctrl+C 第一次提示、第二次退出" {
   let tui = TuiState::new()
   handle_key(tui, "\u{0003}")
   assert_false(tui.quit)
-  assert_true(tui.notice.contains("Ctrl+C"))
+  assert_true(last_card_text(tui).contains("Ctrl+C"))
   handle_key(tui, "\u{0003}")
   assert_true(tui.quit)
 }
@@ -203,7 +213,7 @@ test "键位：生成中 Enter = steer，Alt+Enter = followUp" {
   handle_key(tui, "\r")
   assert_eq(tui.commands.length(), 0)
   assert_eq(tui.pending_actions.length(), 1)
-  assert_eq(tui.notice, "")
+  assert_eq(tui.cards.length(), 0)
   match tui.pending_actions[0] {
     @action.QueueInput(input) => {
       assert_eq(input.text, "排队一句")
@@ -416,7 +426,7 @@ test "面板：思考级别只列模型支持的档位" {
   let tui2 = TuiState::new()
   open_thinking_picker(tui2, plain, test_pi_config())
   assert_true(tui2.picker is None)
-  assert_true(tui2.notice.contains("不支持"))
+  assert_true(last_card_text(tui2).contains("不支持"))
 }
 
 ///|
@@ -504,4 +514,81 @@ async test "会话面板：列出 sessions 目录，新的在前，当前会话�
   @fs.rmdir(root, recursive=true) catch {
     _ => ()
   }
+}
+
+///|
+test "反馈卡钉在创建时的消息位置，同位置就地替换" {
+  let tui = TuiState::new()
+  tui.message_count = 1
+  set_notice(tui, "第一条提示")
+  tui.message_count = 3
+  set_notice(tui, "第二条提示")
+  assert_eq(tui.cards.length(), 2)
+  // 尾部还在同一位置 → 替换，不新开一张。
+  set_notice(tui, "第二条提示（改）")
+  assert_eq(tui.cards.length(), 2)
+  assert_eq(tui.cards[1].text, "第二条提示（改）")
+  // 渲染位置：第 1 张在第 1 条消息后，第 2 张在第 3 条消息后。
+  let state = {
+    ..test_state(),
+    messages: [
+      @message.user_message("甲", 1L),
+      @message.assistant_message("乙", "stop", 2L),
+      @message.user_message("丙", 3L),
+    ],
+  }
+  let lines = chat_lines(state, false, 60, tui.cards)
+  let mut text = ""
+  for line in lines {
+    text = text + line.text + "\n"
+  }
+  let first = match text.find("第一条提示") {
+    Some(index) => index
+    None => abort("first card missing")
+  }
+  let second = match text.find("第二条提示") {
+    Some(index) => index
+    None => abort("second card missing")
+  }
+  let jia = match text.find("甲") {
+    Some(index) => index
+    None => abort("first message missing")
+  }
+  let bing = match text.find("丙") {
+    Some(index) => index
+    None => abort("third message missing")
+  }
+  assert_true(jia < first)
+  assert_true(first < second)
+  assert_true(bing < second)
+}
+
+///|
+/// 一段文本里出现 needle 的次数（反馈卡不能被画两遍）。
+fn occurrences(text : String, needle : String) -> Int32 {
+  text.split(needle).collect().length() - 1
+}
+
+///|
+test "反馈卡不会因为「锚点等于消息数」被画两遍" {
+  // 没有消息时，卡锚定在 0：消息循环里画一次，兜底不能再画。
+  let tui = TuiState::new()
+  tui.message_count = 0
+  set_notice(tui, "空的会话也有一张卡")
+  let empty = chat_lines(test_state(), false, 60, tui.cards)
+  let mut empty_text = ""
+  for line in empty {
+    empty_text = empty_text + line.text + "\n"
+  }
+  assert_eq(occurrences(empty_text, "空的会话也有一张卡"), 1)
+  // 有消息时，锚点等于消息数（卡在最后一条消息之后）也只画一次。
+  let state = { ..test_state(), messages: [@message.user_message("甲", 1L)], }
+  tui.message_count = 1
+  set_notice(tui, "最后一条之后")
+  let lines = chat_lines(state, false, 60, tui.cards)
+  let mut text = ""
+  for line in lines {
+    text = text + line.text + "\n"
+  }
+  assert_eq(occurrences(text, "最后一条之后"), 1)
 }

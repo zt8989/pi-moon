@@ -51,17 +51,21 @@ pub fn page_height(height : Int32, queue_rows : Int32) -> Int32 {
 }
 
 ///|
-/// 对话页的行。`notice` 是命令反馈卡（ela 的 `statusCards`：钉在对话流里，
-/// 不在底栏）。
+/// 对话页的行。`cards` 是命令反馈卡（ela 的 `statusCards`：钉在对话流里，
+/// 不在底栏）；每张卡的 `at` 说它插在第几条消息之后。
 pub fn chat_lines(
   state : @state.AgentState,
   expanded : Bool,
   width : Int32,
-  notice : String,
+  cards : Array[StatusCard],
 ) -> Array[StyledLine] {
   let out : Array[StyledLine] = []
+  push_cards(out, cards, 0, width)
+  let mut index = 0
   for message in state.messages {
     message_lines(message, state, expanded, width, out)
+    index = index + 1
+    push_cards(out, cards, index, width)
   }
   // 正在流的那一轮：思考在上、正文在下（与模型说出来之前的顺序一致）。
   if state.phase != @common.Idle {
@@ -75,13 +79,45 @@ pub fn chat_lines(
   if state.compacting {
     push_inset_block(out, "压缩中…", width, color_muted)
   }
-  if !notice.is_empty() {
-    out.push(blank_line())
-    for line in wrap_text(notice, width - 2) {
-      out.push(dim_line(" " + line))
+  // 锚点超过当前消息数的卡（理论上不该有）兜底画在最后，总比消失强。
+  push_cards_beyond(out, cards, state.messages.length(), width)
+  out
+}
+
+///|
+/// `at == 当前条数` 的卡已经在消息循环里画过了；这里只补「锚点更靠后」的，
+/// 否则消息为空 / 刚结束时同一张卡会画两遍。
+fn push_cards_beyond(
+  out : Array[StyledLine],
+  cards : Array[StatusCard],
+  at : Int32,
+  width : Int32,
+) -> Unit {
+  for card in cards {
+    if card.at > at {
+      out.push(blank_line())
+      for line in wrap_text(card.text, width - 2) {
+        out.push(dim_line(" " + line))
+      }
     }
   }
-  out
+}
+
+///|
+fn push_cards(
+  out : Array[StyledLine],
+  cards : Array[StatusCard],
+  at : Int32,
+  width : Int32,
+) -> Unit {
+  for card in cards {
+    if card.at == at {
+      out.push(blank_line())
+      for line in wrap_text(card.text, width - 2) {
+        out.push(dim_line(" " + line))
+      }
+    }
+  }
 }
 
 ///|
@@ -722,7 +758,7 @@ pub fn tui_view(tui : TuiState, state : @state.AgentState) -> @vnode.TuiNode {
     queue = []
   }
   let page = if tui.page == Chat {
-    chat_lines(state, tui.expanded, width, tui.notice)
+    chat_lines(state, tui.expanded, width, tui.cards)
   } else {
     trace_lines(state, width)
   }

@@ -723,8 +723,12 @@ async fn run(args : CliArgs) -> Unit {
   let notices : Array[String] = []
   agent.observe(action => {
     // 每归约一条 action 就标脏：流式 token 到达时下一帧就会带上它。
+    // 同时记下消息条数 —— 反馈卡的锚点（`at`）用它。
     match tui {
-      Some(tui) => tui.dirty = true
+      Some(tui) => {
+        tui.dirty = true
+        tui.message_count = agent.state.messages.length()
+      }
       None => ()
     }
     match action {

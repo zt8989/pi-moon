@@ -19,7 +19,7 @@ pub fn blank_line() -> StyledLine
 
 pub fn char_count(String) -> Int32
 
-pub fn chat_lines(@state.AgentState, Bool, Int32, String) -> Array[StyledLine]
+pub fn chat_lines(@state.AgentState, Bool, Int32, Array[StatusCard]) -> Array[StyledLine]
 
 pub fn clamp_cursor(Int32, Int32) -> Int32
 
@@ -128,6 +128,11 @@ pub(all) enum PickerKind {
 
 type SessionFile
 
+pub(all) struct StatusCard {
+  text : String
+  at : Int32
+} derive(Eq, @debug.Debug)
+
 pub(all) struct StyledLine {
   text : String
   fg : String?
@@ -173,8 +178,8 @@ pub(all) struct TuiState {
   mut abort : Bool
   mut quit : Bool
   mut dirty : Bool
-  mut notice : String
-  mut notice_at : Int64
+  mut cards : Array[StatusCard]
+  mut message_count : Int32
   mut commands : Array[TuiCommand]
   mut pending_actions : Array[@action.AgentAction]
   mut take_back : Bool

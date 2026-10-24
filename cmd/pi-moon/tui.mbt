@@ -86,8 +86,10 @@ pub(all) struct TuiState {
   mut abort : Bool
   mut quit : Bool
   mut dirty : Bool
-  mut notice : String
-  mut notice_at : Int64
+  /// 钉在对话流里的命令反馈卡（ela 的 `statusCards`）。
+  mut cards : Array[StatusCard]
+  /// 当前 messages 条数 —— 反馈卡的锚点用它（`at` = 创建时的条数）。
+  mut message_count : Int32
   mut commands : Array[TuiCommand]
   /// 生成中敲下的话：由 effect 的 `on_tick` 在安全点 dispatch 进环里。
   mut pending_actions : Array[@action.AgentAction]
@@ -104,6 +106,14 @@ pub(all) struct TuiState {
   mut last_ctrl_c : Int64
   mut writer : @session.SessionWriter?
 }
+
+///|
+/// 一张命令反馈卡。`at` 是创建时的消息条数：渲染时插在第 `at` 条消息之后，
+/// 于是新消息会把它往上顶 —— 与 ela 的 `statusCards` 同一个形状。
+pub(all) struct StatusCard {
+  text : String
+  at : Int32
+} derive(Eq, Debug)
 
 ///|
 /// 把 agent 的引用交给 effect 钩子。
@@ -137,8 +147,8 @@ pub fn TuiState::new() -> TuiState {
     abort: false,
     quit: false,
     dirty: true,
-    notice: "",
-    notice_at: 0L,
+    cards: [],
+    message_count: 0,
     commands: [],
     pending_actions: [],
     take_back: false,
@@ -183,9 +193,24 @@ fn now_ms() -> Int64 {
 }
 
 ///|
+
+///|
+/// 一张反馈卡：尾部还是同一位置那张就**就地替换**（连续提示不刷屏），否则
+/// 新开一张。卡不过期 —— 它随对话滚走，不在底栏抢位置。
 fn set_notice(tui : TuiState, text : String) -> Unit {
-  tui.notice = text
-  tui.notice_at = now_ms()
+  if !tui.cards.is_empty() {
+    let last = tui.cards[tui.cards.length() - 1]
+    if last.at == tui.message_count {
+      tui.cards[tui.cards.length() - 1] = { text, at: last.at, }
+      tui.dirty = true
+      return
+    }
+  }
+  tui.cards.push({ text, at: tui.message_count, })
+  // 长会话里的上限：旧卡已经滚得很远了，没必要全留着。
+  if tui.cards.length() > 50 {
+    tui.cards = tui.cards[25:].to_owned()
+  }
   tui.dirty = true
 }
 
@@ -481,7 +506,6 @@ fn submit_input(tui : TuiState, kind : @common.QueueKind) -> Unit {
   tui.history.push(text)
   tui.history_pos = -1
   clear_input(tui)
-  tui.notice = ""
   if text.has_prefix("/") {
     submit_command(tui, text)
     return
@@ -547,7 +571,6 @@ async fn tui_driver(
         tui.busy = true
         tui.abort = false
         tui.chat_scroll = 0
-        tui.notice = ""
         tui.dirty = true
         agent.send(@action.UserMessage({ text, content: [], })) catch {
           err => set_notice(tui, "error: " + err.to_string())
@@ -562,7 +585,6 @@ async fn tui_driver(
       Continue => {
         tui.busy = true
         tui.abort = false
-        tui.notice = ""
         tui.dirty = true
         agent.send(@action.TurnContinue) catch {
           err => set_notice(tui, "error: " + err.to_string())
@@ -1294,6 +1316,8 @@ async fn restore_session(
   tui.busy = false
   tui.abort = false
   tui.chat_scroll = 0
+  // 旧会话的反馈卡属于旧对话，不能跟着漂到刚恢复的会话里（ela 换会话时也清）。
+  tui.cards = []
   set_notice(
     tui,
     "已恢复：" +
