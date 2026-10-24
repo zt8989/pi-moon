@@ -22,8 +22,10 @@ description = "Elm-architecture code agent core with a pi-compatible OpenAI prov
 import {
   "conglinyizhi/moonbit-llm-faceoff@0.2.0",
   "moonbitlang/async@0.21.3",
-  // TUI：mizchi/tui 0.10.2 钉的传递依赖里有三个还是旧的 moon.mod.json 格式，
-  // 当前 moon 拒绝安装。显式列成已迁移的版本，解析器就会用能装的那一份。
+  // TUI：实际编译用的是 vendor/tui（moon.work 的成员，0.10.2 + 24-bit 颜色的
+  // fork）；registry 这一份只提供模块名与传递依赖的版本约束。
+  // 它 0.10.2 钉的传递依赖里还有三个是旧的 moon.mod.json 格式，当前 moon
+  // 拒绝安装。显式列成已迁移的版本，解析器就会用能装的那一份。
   // 上游换成新清单后，这一整段可以缩成 "mizchi/tui@0.10.2" 一行。
   "mizchi/tui@0.10.2",
   "mizchi/tui-terminal-buffer@0.1.4",

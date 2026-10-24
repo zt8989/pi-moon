@@ -1,0 +1,4 @@
+[submodule "vendor/tui"]
+	path = vendor/tui
+	url = https://github.com/zt8989/tui.mbt.git
+	branch = zt8989/true-color
