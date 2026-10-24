@@ -220,6 +220,7 @@ provider effect 在下一个分片边界查 `ProviderHooks::should_abort`：
 | `↑` / `↓` | 历史输入；面板中：移动选中 |
 | `←` / `→` / `Home` / `End` | 光标移动（按字符，不按字节） |
 | `PgUp` / `PgDn` | 翻当前页；面板中：跳 5 项 |
+| 滚轮 | 翻当前页（±3 行，SGR 鼠标，`init_vnode_terminal(mouse=true)`） |
 | `Ctrl+Home` / `Ctrl+End` | 到顶 / 回到底部跟随 |
 | `/model` | 模型面板（同 `Ctrl+L`） |
 | `/thinking` | 思考级别面板 |
@@ -272,6 +273,13 @@ ela 里那个「一个键干两件事」的 `app.abort` 默认不绑，这里也
 1. **Windows 输入法**：`_getch` 拿到的是控制台代码页字节，不是 UTF-8；
    英文与多数符号没问题，中文长句输入建议在别处打好再粘贴（粘贴走的是
    同一批字节，表现一致）。
+2. **POSIX 粘贴丢字**：vendor 的 `read_key` 把 ESC 后 16 字节内的可打印
+   字节都当 CSI 参数吞掉（终止判定 `0x40-0x7e`），粘贴文本撞上转义序列
+   时大段正文会被吞成一个 Unknown 事件；且 `parse_input` 对多字符可打印
+   输入只取第一个字符。修复应在 vendor 层（照 `io_native.mbt` inline
+   input 的「multi-character printable → 整串 Insert」补偿）。
+3. **图片只画占位**：`read` 图片块在对话页显示 `[image <mime>]` 一行，
+   不渲染内容（终端画不了图）；点击 / 悬停等其余鼠标事件未接。
 
 ## Windows 终端
 

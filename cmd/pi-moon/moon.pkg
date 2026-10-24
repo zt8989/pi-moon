@@ -10,6 +10,7 @@ import {
   "pi-moon/core/provider",
   "pi-moon/core/tools",
   "pi-moon/core/session",
+  "moonbitlang/core/immut/hashmap" @ihm,
   "NoahLiu/mdparse" @md,
   "mizchi/tui/core",
   "mizchi/tui/render",

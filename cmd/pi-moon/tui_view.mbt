@@ -141,7 +141,21 @@ fn message_lines(
               out,
               palette,
             )
-          @message.Image(_) => ()
+          @message.Image(url) => {
+            // 终端里画不了图，但不能整块消失：给一行占位（回放带附件的
+            // 会话时尤其重要，否则历史里那部分结果看起来像被裁掉）。
+            out.push(blank_line())
+            let label = if url.has_prefix("data:") {
+              let mime = match url.find(";") {
+                Some(at) => url[5:at]
+                None => "data"
+              }
+              "[image " + mime.to_owned() + "]"
+            } else {
+              "[image " + url + "]"
+            }
+            push_inset_block(out, label, width, palette.muted)
+          }
         }
       }
       // 用户中断：ela 的 `stopNoticeLine` 在正文后面补一行错误色。

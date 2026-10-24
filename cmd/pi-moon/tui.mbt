@@ -262,6 +262,7 @@ pub async fn run_tui(
     width,
     height,
     fn(raw) { @io.print_raw(raw) },
+    mouse=true,
     color_mode~,
   )
   let failure = try {
@@ -340,6 +341,19 @@ fn handle_key(tui : TuiState, key : String) -> Unit {
   let event = @events.parse_input(key)
   match event {
     @events.InputEvent::Key(key_event) => handle_key_event(tui, key_event)
+    @events.InputEvent::Mouse(mouse) => handle_mouse(tui, mouse)
+    _ => ()
+  }
+}
+
+///|
+/// 滚轮翻页（±3 行）：与 PgUp / PgDn 同一条路。点击不处理 —— 界面上没有
+/// 可点的东西，面板选中靠键盘。
+fn handle_mouse(tui : TuiState, mouse : @events.MouseEvent) -> Unit {
+  match mouse.button {
+    @events.MouseButton::ScrollUp => scroll_set(tui, scroll_get(tui) + 3)
+    @events.MouseButton::ScrollDown =>
+      scroll_set(tui, max_int(scroll_get(tui) - 3, 0))
     _ => ()
   }
 }
