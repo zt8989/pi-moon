@@ -100,7 +100,7 @@ test "visible_lines 默认贴底，scroll 往上翻" {
 }
 
 ///|
-test "chat_lines：工具块折叠与展开" {
+test "chat_lines：工具块折叠与展开（read 折叠时只留标题，pi 同款）" {
   let call : @message.ToolCall = { id: "c1", name: "read", arguments: "{}", }
   let state = {
     ..test_state(),
@@ -116,15 +116,16 @@ test "chat_lines：工具块折叠与展开" {
   for line in collapsed {
     collapsed_text = collapsed_text + line.text + "\n"
   }
-  assert_true(collapsed_text.contains("还有 3 行"))
-  assert_true(collapsed_text.contains("看一下"))
+  assert_true(collapsed_text.contains("read"))
+  assert_false(collapsed_text.contains("l1\n"))
+  assert_true(collapsed_text.contains("还有 9 行"))
   let expanded = chat_lines(state, true, 60, [])
   let mut expanded_text = ""
   for line in expanded {
     expanded_text = expanded_text + line.text + "\n"
   }
   assert_true(expanded_text.contains("l9"))
-  assert_false(expanded_text.contains("还有 3 行"))
+  assert_false(expanded_text.contains("还有 9 行"))
 }
 
 ///|

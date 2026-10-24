@@ -212,6 +212,10 @@ pub(all) struct Theme {
 pub fn Theme::color(Self, String) -> String?
 pub fn Theme::color_or(Self, String, String) -> String
 
+type ToolBlock derive(Eq, @debug.Debug)
+
+type ToolBodyLine derive(Eq, @debug.Debug)
+
 pub(all) struct TuiBridge {
   mut agent : @runtime.Agent?
 }

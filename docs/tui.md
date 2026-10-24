@@ -234,11 +234,42 @@ provider effect 在下一个分片边界查 `ProviderHooks::should_abort`：
 Esc 与 Ctrl+C 的分工照 pi：Esc 是 `app.interrupt`，Ctrl+C 是 `app.clear`。
 ela 里那个「一个键干两件事」的 `app.abort` 默认不绑，这里也不绑。
 
+## 工具块：每个工具各画各的
+
+工具块的形状照 pi 的 `ToolExecutionComponent`：一个空行、标题行加粗（
+`toolTitle`）、正文缩进两格、底色按 pending / success / error 切换，
+`Ctrl+O` 在折叠（标题 + 少量正文）与展开（至多 40 行）之间切换。
+折叠时保留几行**每个工具不一样**，与 pi 的 `core/tools/renderers` 同一套：
+
+| 工具 | 标题 | 折叠保留 | 展开 |
+| --- | --- | --- | --- |
+| `bash` / `powershell` | `$ cmd` / `PS> cmd`（带 `timeout` 时附 `(timeout Ns)`） | **尾部 5 行**（命令输出越靠后越重要），完成附一行 `耗时 1.2s`（pi 的 `formatDuration` 口径） | 尾部 40 行 |
+| `edit` | `edit 路径` | 彩色 diff：删 `-` 红、加 `+` 绿（`toolDiffRemoved` / `toolDiffAdded`），上下文灰，首尾相同的行折成上下文（各至多 3 行）；多段 edits 用 `@@ edits[N]` 分隔 | 前 40 行 |
+| `write` | `write 路径` | 内容预览 10 行 + `… 还有 N 行（共 M 行，Ctrl+O 展开）` | 前 40 行 |
+| `read` | `read 路径[:起-止]`（带 `offset` / `limit` 时） | 只留标题（pi 同款：标题已说明读了什么） | 前 40 行 |
+| `grep` | `grep /模式/ in 路径 (glob) limit N` | 15 行 | 40 行 |
+| `find` / `ls` | `find 模式 in 路径` / `ls 路径` | 20 行 | 40 行 |
+| 其它 | `名字 参数` | 6 行（扩展工具的兕底）| 40 行 |
+
+实现细节与 pi 的差别（都有意为之）：
+
+- `edit` 的 diff 从**参数**算（`oldText` → `newText`），因为工具结果里没有
+  结构化 diff；没有文件行号，所以行首只有 `+` / `-` 标记。
+- 成功的 `edit` / `write` 不再复读结果文本（`Successfully replaced ...`），
+  块里就是 diff / 内容；失败时显示错误文本（`error` 色，折叠也保留 10 行）。
+- `bash` 保留尾部：与工具本身的截断口径一致（模型看到的也是尾部）；
+  提示写「前面还有 N 行」。耗时来自 `state.tool_timings`。
+- 绝对路径相对化到 cwd、统一 `/` 分隔（pi 的 `renderToolPath` 同效果）。
+- 标题、正文、提示的排版在 `tui_view.mbt`（`push_bg_block_lines`），
+  「标题 + 行 + 提示」的算法在 `tui_tool.mbt`（纯函数，测试在
+  `tui_tool_wbtest.mbt`）。
+
+参数 JSON 解析失败不致命：标题退回 `名字 一行参数`，正文退回结果文本 ——
+半个 JSON 的流式中途块也能画。
+
 ## 与 ela 的差距（分步补齐）
 
-1. **各工具专用渲染器**：工具块现在是一块标题 + 结果文本；pi 的 bash 会保留
-   尾部 N 行、edit 会画彩色 diff、write 会预览内容。
-2. **Windows 输入法**：`_getch` 拿到的是控制台代码页字节，不是 UTF-8；
+1. **Windows 输入法**：`_getch` 拿到的是控制台代码页字节，不是 UTF-8；
    英文与多数符号没问题，中文长句输入建议在别处打好再粘贴（粘贴走的是
    同一批字节，表现一致）。
 

@@ -160,7 +160,8 @@ fn message_lines(
     }
     @message.ToolResultMsg(part) =>
       // 工具块已经在 assistant 消息里连同调用画过了；只有找不到那次调用的
-      // 结果（旧会话回放、或调用消息被裁掉）才单独画一块。
+      // 结果（旧会话回放、或调用消息被裁掉）才单独画一块。参数拿不到，
+      // 按空参数走通用形状。
       if !call_was_rendered(state, part.tool_call_id) {
         out.push(blank_line())
         let bg = if part.is_error {
@@ -168,22 +169,22 @@ fn message_lines(
         } else {
           palette.tool_success_bg
         }
-        let body = @message.contents_text(part.content)
-        let lines = if expanded {
-          first_lines(body, 40)
-        } else {
-          first_lines(body, 6)
+        let orphan : @message.ToolCall = {
+          id: part.tool_call_id,
+          name: part.tool_name,
+          arguments: "",
         }
-        push_bg_lines(
-          out,
-          part.tool_name,
-          lines,
-          line_count(body),
+        let render = tool_render(
+          orphan,
+          Some(part),
+          "",
+          None,
           expanded,
-          bg,
+          state.cwd,
           width,
           palette,
         )
+        push_bg_block_lines(out, render, bg, width, palette)
       }
     @message.SystemMsg(part) =>
       // 中途的工具声明是给模型看的，不是给用户看的：只留一行标记。
@@ -248,72 +249,53 @@ fn tool_block(
       }
     None => palette.tool_pending_bg
   }
-  let title = call.name + " " + truncate_to(one_line(call.arguments), width - 4)
-  match result {
-    Some(part) => {
-      let body = @message.contents_text(part.content)
-      let limit = if expanded { 40 } else { 6 }
-      let lines = first_lines(body, limit)
-      push_bg_lines(
-        out,
-        title,
-        lines,
-        line_count(body),
-        expanded,
-        bg,
-        width,
-        palette,
-      )
-    }
-    None => {
-      // 还在跑：显示进度最后一行（没有就只画标题）。
-      let lines : Array[String] = []
-      match state.tool_progress.get(call.id) {
-        Some(progress) => {
-          let last = last_line(@message.contents_text(progress.content))
-          if !last.is_empty() {
-            lines.push(last)
-          }
-        }
-        None => ()
-      }
-      push_bg_lines(
-        out,
-        title,
-        lines,
-        lines.length(),
-        false,
-        bg,
-        width,
-        palette,
-      )
-    }
+  // 还在跑：显示进度输出的尾部（与 bash 的保留口径一致）。
+  let progress = match state.tool_progress.get(call.id) {
+    Some(progress) => @message.contents_text(progress.content)
+    None => ""
   }
+  let render = tool_render(
+    call,
+    result,
+    progress,
+    state.tool_timings.get(call.id),
+    expanded,
+    state.cwd,
+    width,
+    palette,
+  )
+  push_bg_block_lines(out, render, bg, width, palette)
 }
 
 ///|
-fn push_bg_lines(
+/// 把 tool_render 的结果画成带底色的块：标题加粗（pi 的 toolTitle），
+/// 正文行可以自带前景色（edit 的 diff 三色），提示行用 dim。
+fn push_bg_block_lines(
   out : Array[StyledLine],
-  title : String,
-  body : Array[String],
-  total_lines : Int32,
-  expanded : Bool,
+  block : ToolBlock,
   bg : String,
   width : Int32,
   palette : Palette,
 ) -> Unit {
-  let lines : Array[String] = [title]
-  for line in body {
-    lines.push("  " + line)
+  out.push(pad_line("", palette.muted, Some(bg), width))
+  out.push({
+    text: pad_to_width(" " + block.title, width),
+    fg: Some(palette.muted),
+    bg: Some(bg),
+    bold: true,
+    spans: None,
+  })
+  for line in block.lines {
+    let fg = match line.fg {
+      Some(fg) => fg
+      None => palette.muted
+    }
+    out.push(pad_line("  " + line.text, fg, Some(bg), width))
   }
-  if !expanded && total_lines > body.length() {
-    lines.push(
-      "  … 还有 " +
-      (total_lines - body.length()).to_string() +
-      " 行（Ctrl+O 展开）",
-    )
+  if !block.hint.is_empty() {
+    out.push(pad_line("  " + block.hint, palette.dim, Some(bg), width))
   }
-  push_bg_block(out, lines, width, palette.muted, bg)
+  out.push(pad_line("", palette.muted, Some(bg), width))
 }
 
 ///|
@@ -995,14 +977,6 @@ fn span_node(span : MarkdownSpan) -> @vnode.TuiNode {
   match span.fg {
     Some(fg) => @vnode.text(span.text, fg~, bold=span.bold)
     None => @vnode.text(span.text, bold=span.bold)
-  }
-}
-
-///|
-fn last_line(text : String) -> String {
-  match text.rev_find("\n") {
-    Some(index) => text[index + 1:].to_owned()
-    None => text
   }
 }
 
