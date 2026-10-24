@@ -134,7 +134,7 @@ fn message_lines(
         compaction_block(part, expanded, width, out)
       } else {
         let body = @message.contents_text(part.content)
-        push_bg_block(out, wrap_text(body, width - 2), width, "", color_user_bg)
+        push_bg_markdown(out, body, width, "", color_user_bg)
       }
     @message.AssistantMsg(part) => {
       for block in part.content {
@@ -142,7 +142,7 @@ fn message_lines(
           @message.Text(text) =>
             if !text.trim(chars=" \t\r\n").is_empty() {
               out.push(blank_line())
-              push_inset_block(out, text, width, "")
+              push_markdown_block(out, text, width, "")
             }
           @message.Thinking(text) =>
             if !text.trim(chars=" \t\r\n").is_empty() {
@@ -325,16 +325,65 @@ fn push_bg_block(
 }
 
 ///|
-/// 不带底色的助手 / 思考文字：左边留一格（pi 的 Markdown `paddingX=1`）。
-fn push_inset_block(
+/// 带 markdown 样式的助手正文：左边留一格（pi 的 Markdown `paddingX=1`）。
+fn push_markdown_block(
   out : Array[StyledLine],
   text : String,
   width : Int32,
   fg : String,
 ) -> Unit {
-  for line in wrap_text(text, width - 2) {
-    out.push(pad_line(" " + line, fg, None, width))
+  for line in markdown_lines(text, width - 2) {
+    out.push(prefixed_markdown_line(line, " ", fg, None, width))
   }
+}
+
+///|
+/// 带底色的 markdown（用户消息）：上下各一条同色空行，内容左留一格。
+fn push_bg_markdown(
+  out : Array[StyledLine],
+  text : String,
+  width : Int32,
+  fg : String,
+  bg : String,
+) -> Unit {
+  out.push(pad_line("", fg, Some(bg), width))
+  for line in markdown_lines(text, width - 2) {
+    out.push(prefixed_markdown_line(line, " ", fg, Some(bg), width))
+  }
+  out.push(pad_line("", fg, Some(bg), width))
+}
+
+///|
+/// 给 markdown 行加前缀与底色：行内 span 保留，前缀自己当一段（不抢正文颜色）。
+fn prefixed_markdown_line(
+  line : StyledLine,
+  prefix : String,
+  fg : String,
+  bg : String?,
+  width : Int32,
+) -> StyledLine {
+  if line.text.is_empty() {
+    return pad_line("", fg, bg, width)
+  }
+  let spans : Array[MarkdownSpan] = [
+    {
+      text: prefix,
+      fg: if fg.is_empty() {
+        None
+      } else {
+        Some(fg)
+      },
+      bold: false,
+    },
+  ]
+  match line.spans {
+    Some(inner) =>
+      for span in inner {
+        spans.push(span)
+      }
+    None => spans.push({ text: line.text, fg: line.fg, bold: line.bold, })
+  }
+  { text: prefix + line.text, fg: None, bg, bold: false, spans: Some(spans), }
 }
 
 ///|
@@ -353,6 +402,7 @@ fn pad_line(
     },
     bg,
     bold: false,
+    spans: None,
   }
 }
 
@@ -772,28 +822,31 @@ pub fn tui_view(tui : TuiState, state : @state.AgentState) -> @vnode.TuiNode {
   let children : Array[@vnode.TuiNode] = []
   children.push(@vnode.row(tab_nodes(state, tui.page, width)))
   for line in shown {
-    children.push(line_node(line))
+    children.push(line_node(line, width))
   }
   if has_panel {
     for line in panel {
-      children.push(line_node(line))
+      children.push(line_node(line, width))
     }
   } else {
     for line in queue {
-      children.push(line_node(line))
+      children.push(line_node(line, width))
     }
     children.push(@vnode.text(" "))
-    children.push(line_node(editor_top_border(state, width, now_ms())))
+    children.push(line_node(editor_top_border(state, width, now_ms()), width))
     children.push(
       line_node(
         pad_line(render_editor(tui.input, tui.cursor, width), "", None, width),
+        width,
       ),
     )
-    children.push(line_node(pad_line(rule(width), color_dim, None, width)))
+    children.push(
+      line_node(pad_line(rule(width), color_dim, None, width), width),
+    )
   }
   let footer = footer_lines(state, width)
   for line in footer {
-    children.push(line_node(line))
+    children.push(line_node(line, width))
   }
   @vnode.column(width=width.to_double(), height=height.to_double(), children)
 }
@@ -877,7 +930,14 @@ fn min_int(a : Int32, b : Int32) -> Int32 {
 }
 
 ///|
-fn line_node(line : StyledLine) -> @vnode.TuiNode {
+fn line_node(line : StyledLine, width : Int32) -> @vnode.TuiNode {
+  match line.spans {
+    Some(spans) =>
+      if !spans.is_empty() {
+        return span_line_node(line, spans, width)
+      }
+    None => ()
+  }
   let text = if line.text.is_empty() { " " } else { line.text }
   match (line.fg, line.bg) {
     (Some(fg), Some(bg)) =>
@@ -889,9 +949,56 @@ fn line_node(line : StyledLine) -> @vnode.TuiNode {
 }
 
 ///|
+/// 行内多样式的行：每个 span 一个 text 节点，末尾补空格把行铺满（diff 需要）。
+fn span_line_node(
+  line : StyledLine,
+  spans : Array[MarkdownSpan],
+  width : Int32,
+) -> @vnode.TuiNode {
+  let children : Array[@vnode.TuiNode] = []
+  for span in spans {
+    if !span.text.is_empty() {
+      children.push(span_node(span))
+    }
+  }
+  let used = display_width(line.text)
+  if width > used {
+    children.push(@vnode.text(spaces(width - used)))
+  }
+  if children.is_empty() {
+    return @vnode.text(" ")
+  }
+  match line.bg {
+    Some(bg) => @vnode.row(bg~, children)
+    None => @vnode.row(children)
+  }
+}
+
+///|
+fn span_node(span : MarkdownSpan) -> @vnode.TuiNode {
+  match span.fg {
+    Some(fg) => @vnode.text(span.text, fg~, bold=span.bold)
+    None => @vnode.text(span.text, bold=span.bold)
+  }
+}
+
+///|
 fn last_line(text : String) -> String {
   match text.rev_find("\n") {
     Some(index) => text[index + 1:].to_owned()
     None => text
+  }
+}
+
+///|
+/// 不带样式的缩进文字（思考 / 流式尾巴 / 错误行）：左边留一格。
+fn push_inset_block(
+  out : Array[StyledLine],
+  text : String,
+  width : Int32,
+  fg : String,
+) -> Unit {
+  for line in wrap_text(text, width - 2) {
+    out.push(pad_line(" " + line, fg, None, width))
   }
 }

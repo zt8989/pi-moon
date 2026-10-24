@@ -49,6 +49,8 @@ pub fn insert_text(String, Int32, String) -> (String, Int32)
 
 pub fn line_count(String) -> Int32
 
+pub fn markdown_lines(String, Int32) -> Array[StyledLine]
+
 pub fn one_decimal(Double) -> String
 
 pub fn one_line(String) -> String
@@ -104,6 +106,14 @@ type CliArgs
 
 type CompactSnapshot
 
+type MarkdownCell
+
+pub(all) struct MarkdownSpan {
+  text : String
+  fg : String?
+  bold : Bool
+} derive(Eq, @debug.Debug)
+
 pub(all) struct Picker {
   kind : PickerKind
   title : String
@@ -138,6 +148,7 @@ pub(all) struct StyledLine {
   fg : String?
   bg : String?
   bold : Bool
+  spans : Array[MarkdownSpan]?
 } derive(Eq, @debug.Debug)
 
 pub(all) struct TuiBridge {

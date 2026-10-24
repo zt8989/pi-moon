@@ -592,3 +592,124 @@ test "反馈卡不会因为「锚点等于消息数」被画两遍" {
   }
   assert_eq(occurrences(text, "最后一条之后"), 1)
 }
+
+///|
+fn spans_of(line : StyledLine) -> Array[MarkdownSpan] {
+  match line.spans {
+    Some(spans) => spans
+    None => []
+  }
+}
+
+///|
+fn line_texts(lines : Array[StyledLine]) -> String {
+  let mut text = ""
+  for line in lines {
+    text = text + line.text + "\n"
+  }
+  text
+}
+
+///|
+test "markdown：标题去井号、列表换圆点" {
+  let lines = markdown_lines("## 小标题\n\n- 一项\n- 二项", 40)
+  let text = line_texts(lines)
+  assert_false(text.contains("##"))
+  assert_true(text.contains("小标题"))
+  assert_true(text.contains("• 一项"))
+  // 标题整行加粗。
+  let heading = lines[0]
+  for span in spans_of(heading) {
+    assert_true(span.bold)
+  }
+}
+
+///|
+test "markdown：行内 code / 粗体 / 链接各带自己的样式" {
+  let lines = markdown_lines(
+    "`code` 和 **粗体** 以及 [链接](https://example.com)", 60,
+  )
+  let mut found_code = false
+  let mut found_bold = false
+  let mut found_link = false
+  let mut found_url = false
+  for line in lines {
+    for span in spans_of(line) {
+      if span.text == "code" && span.fg == Some("magenta") {
+        found_code = true
+      }
+      if span.text == "粗体" && span.bold {
+        found_bold = true
+      }
+      if span.text == "链接" && span.fg == Some("cyan") {
+        found_link = true
+      }
+      if span.text.contains("https://example.com") {
+        found_url = true
+      }
+    }
+  }
+  assert_true(found_code)
+  assert_true(found_bold)
+  assert_true(found_link)
+  assert_true(found_url)
+}
+
+///|
+test "markdown：围栏代码保留标记、内容用代码色" {
+  let lines = markdown_lines("```\nlet x = 1\n```", 40)
+  assert_true(lines[0].text.contains("```"))
+  let mut found = false
+  for line in lines {
+    if line.text.contains("let x = 1") {
+      found = true
+      assert_eq(line.fg, Some("rgb(200,200,210)"))
+    }
+  }
+  assert_true(found)
+}
+
+///|
+test "markdown：带样式的行按显示宽度折行，样式不丢" {
+  let lines = markdown_lines(
+    "`aaaaaaaaaaaaaaaaaaaa` bbbbbbbbbbbbbbbbbbbb cccccccccccccccccccc", 12,
+  )
+  assert_true(lines.length() > 1)
+  for line in lines {
+    assert_true(display_width(line.text) <= 12)
+  }
+  let mut has_code = false
+  for span in spans_of(lines[0]) {
+    if span.fg == Some("magenta") {
+      has_code = true
+    }
+  }
+  assert_true(has_code)
+}
+
+///|
+test "markdown：用户块整段铺底色，首尾各一条空白底色行" {
+  let state = {
+    ..test_state(),
+    messages: [@message.user_message("# 标题\n正文", 1L)],
+  }
+  let lines = chat_lines(state, false, 40, [])
+  let mut bg_count = 0
+  let mut found_heading = false
+  let mut found_body = false
+  for line in lines {
+    if line.bg == Some("blue") {
+      bg_count = bg_count + 1
+    }
+    if line.text.contains("标题") && !line.text.contains("#") {
+      found_heading = true
+    }
+    if line.text.contains("正文") {
+      found_body = true
+    }
+  }
+  assert_true(found_heading)
+  assert_true(found_body)
+  // 顶/底空白 + 两行内容。
+  assert_eq(bg_count, 4)
+}

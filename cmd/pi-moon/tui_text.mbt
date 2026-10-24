@@ -13,11 +13,14 @@ pub(all) struct StyledLine {
   fg : String?
   bg : String?
   bold : Bool
+  /// 行内有多段样式时（markdown 的 code / link / 标题）用这个；`None` 就是
+  /// 整行一个样式（工具块、状态行这些）。
+  spans : Array[MarkdownSpan]?
 } derive(Eq, Debug)
 
 ///|
 pub fn plain_line(text : String) -> StyledLine {
-  { text, fg: None, bg: None, bold: false, }
+  { text, fg: None, bg: None, bold: false, spans: None, }
 }
 
 ///|
@@ -27,17 +30,17 @@ pub fn styled_line(
   bold~ : Bool = false,
   bg? : String,
 ) -> StyledLine {
-  { text, fg: Some(fg), bg, bold, }
+  { text, fg: Some(fg), bg, bold, spans: None, }
 }
 
 ///|
 pub fn dim_line(text : String) -> StyledLine {
-  { text, fg: Some("rgb(150,152,160)"), bg: None, bold: false, }
+  { text, fg: Some("rgb(150,152,160)"), bg: None, bold: false, spans: None, }
 }
 
 ///|
 pub fn blank_line() -> StyledLine {
-  { text: "", fg: None, bg: None, bold: false, }
+  { text: "", fg: None, bg: None, bold: false, spans: None, }
 }
 
 ///|

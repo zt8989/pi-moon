@@ -53,16 +53,17 @@ reducer 里没有一个 `await`、没有一个 `fetch`、也没有 while。真�
   ela 同形：顶行页签 + 统计 / 中间页（对话或轨迹，`Ctrl+R`）/ 队列面板 + 空隙 +
   composer（工作状态嵌在上框线）+ 两行底栏；生成中 Enter 进 steer、Alt+Enter
   followUp、Ctrl+U 取回队列，Esc 中断或取回，Ctrl+C×2 退出，工具块折叠；
-  `Ctrl+L` / `/thinking` / `/resume` 的模型、思考级别、会话面板覆盖 composer。
+  `Ctrl+L` / `/thinking` / `/resume` 的模型、思考级别、会话面板覆盖 composer；
+  assistant / user 文本走最小 markdown（标题、列表、引用、围栏代码、行内 code/bold/link）。
   一次性与管道行为不变（见 [docs/tui.md](docs/tui.md)）。
 
-**还没有**（下一步逐步接）：Web 界面、pi 扩展、TUI 的 markdown
-（见 [docs/tui.md](docs/tui.md) 的「与 ela 的差距」）。
+**还没有**（下一步逐步接）：Web 界面、pi 扩展、TUI 的各工具专用渲染器 /
+Windows 输入法（见 [docs/tui.md](docs/tui.md) 的「与 ela 的差距」）。
 
 ## 跑起来
 
 ```bash
-moon test                        # 100 个测试：纯表 + 整环 + 轨迹树 + provider + 工具 + 会话 + 压缩 + TUI
+moon test                        # 105 个测试：纯表 + 整环 + 轨迹树 + provider + 工具 + 会话 + 压缩 + TUI
 
 # 真实模型：读 ~/.pi/agent/ 下与 pi 同一份配置
 moon run cmd/pi-moon                    # 全屏 TUI（默认落盘，可 -c 恢复）
@@ -250,8 +251,8 @@ common → message → compact → trace → action → state → loop → runti
 
 ## 下一步（按顺序）
 
-1. **TUI 迭代**：markdown 与各工具专用渲染器（差距清单见
-   [docs/tui.md](docs/tui.md)）。
+1. **TUI 迭代**：各工具专用渲染器（bash 尾部保留、edit 彩色 diff）、
+   Windows 输入法（差距清单见 [docs/tui.md](docs/tui.md)）。
 2. **Web 界面**：rabbita 与终端共用同一份 state；跨包只碰 `Agent` 的
    `state` / `send`。
 3. **pi 扩展**：`extension.event` / 扩展命令 / 生命周期。
