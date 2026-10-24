@@ -102,17 +102,18 @@ provider effect 在下一个分片边界查 `ProviderHooks::should_abort`：
 `read_until` 被取消会丢掉半行 SSE，那比晚几百毫秒更糟。provider 长时间不发
 事件时，Esc 最迟在空闲超时（默认 120s）后才生效 —— 这是 v0.7 的已知边界。
 
-## 面板：模型 / 思考级别
+## 面板：模型 / 思考级别 / 会话
 
 `Ctrl+L`（或 `/model`）开模型面板；`/thinking` 开思考级别面板，
-`/thinking <级别>` 直接切。面板**覆盖 composer 那一块**（与 ela 的 selector
-同形：整行宽、顶边框带标题、底边落在 composer 底边），中间页相应变短：
+`/thinking <级别>` 直接切；`/resume` 开会话面板。面板**覆盖 composer 那一块**
+（与 ela 的 selector 同形：整行宽、顶边框带标题、底边落在 composer 底边），
+中间页相应变短：
 
 ```text
-── 选择模型 ─────────────────────────────────────
+── 恢复会话 ─────────────────────────────────────
   ↑/↓ 选择 · Enter 确认 · Esc 取消
- › workbuddy / cn:deepseek-v4.1-flash  reasoning · ctx 1.0M  ●
-   workbuddy / cn:glm-5.3-flash  reasoning · ctx 1.0M
+ › 刚刚  1792808634625 · 10 KB  ●
+   2 小时前  1792808625918 · 10 KB
 ────────────────────────────────────────────────
 ```
 
@@ -121,6 +122,10 @@ provider effect 在下一个分片边界查 `ProviderHooks::should_abort`：
   `off`，显式禁用的档位也回到 `off`）；
 - `/thinking` 只列当前模型**支持**的档位（`thinking_level_map` 里显式 `null`
   的不出现）；Enter 走 `ThinkingChanged`；
+- `/resume` 列 `<agent dir>/sessions/*.jsonl`，按修改时间倒序，`●` 是当前文件；
+  Enter 走 `SessionRestored`（messages / 轨迹 / 装载段 / 模型整体换掉），并把
+  落盘器换成 `SessionWriter::restored` —— 接着那个文件写，不能把当前会话的
+  历史追加到旧文件里；
 - 面板只在空闲时能开（生成中按 `Ctrl+L` 会提示先中断）；Esc 关闭。
 - 选完会 flush 一次会话（`model.init` / 后续请求的模型就是新的）。
 
@@ -144,6 +149,7 @@ provider effect 在下一个分片边界查 `ProviderHooks::should_abort`：
 | `/model` | 模型面板（同 `Ctrl+L`） |
 | `/thinking` | 思考级别面板 |
 | `/thinking <级别>` | 直接切到那一档（大小写不敏感） |
+| `/resume` | 会话面板（恢复历史 JSONL） |
 | `/compact` | 手动压缩上下文 |
 | `/continue` | 修复尾消息后继续未完成的回合 |
 | `/tools` | 显示当前工具集 |
@@ -155,13 +161,11 @@ ela 里那个「一个键干两件事」的 `app.abort` 默认不绑，这里也
 
 ## 与 ela 的差距（分步补齐）
 
-1. **会话选择器**（ela 的 `/resume`）：模型与思考级别有了面板，会话列表还没接
-   （它要把一个 JSONL 整体装回环上，与 `SessionRestored` 一起做）。
-2. **markdown 高亮与逐字排版**：现在 assistant 文本是纯文本折行；工具块也
+1. **markdown 高亮与逐字排版**：现在 assistant 文本是纯文本折行；工具块也
    没有 pi 的各工具专用渲染器（bash 的尾部保留、edit 的彩色 diff）。
-3. **状态卡锚点**：ela 的 `notify` 卡钉在「第 N 条消息之后」，随对话滚走；
+2. **状态卡锚点**：ela 的 `notify` 卡钉在「第 N 条消息之后」，随对话滚走；
    这里只有一张尾部卡，下一条消息提交时清掉。
-4. **Windows 输入法**：`_getch` 拿到的是控制台代码页字节，不是 UTF-8；
+3. **Windows 输入法**：`_getch` 拿到的是控制台代码页字节，不是 UTF-8；
    英文与多数符号没问题，中文长句输入建议在别处打好再粘贴（粘贴走的是
    同一批字节，表现一致）。
 

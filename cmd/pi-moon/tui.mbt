@@ -30,6 +30,8 @@ pub(all) enum TuiCommand {
   OpenModels
   /// `/thinking`：开思考级别面板。
   OpenThinking
+  /// `/resume`：开会话面板。
+  OpenSessions
   Exit
 } derive(Debug)
 
@@ -37,6 +39,7 @@ pub(all) enum TuiCommand {
 pub(all) enum PickerKind {
   ModelPicker
   ThinkingPicker
+  SessionPicker
 } derive(Eq, Debug)
 
 ///|
@@ -48,6 +51,8 @@ pub(all) struct PickerItem {
   provider : String
   model_id : String
   level : String
+  /// 会话面板的路径（其余面板为空）。
+  path : String
 } derive(Eq, Debug)
 
 ///|
@@ -93,6 +98,9 @@ pub(all) struct TuiState {
   mut picker : Picker?
   /// 面板里按了 Enter：driver 去应用选中的那一项。
   mut picker_confirm : Bool
+  /// 当前会话文件（空 = 不落盘）。`/resume` 换会话时跟着变。
+  mut session_path : String
+  mut session_label : String
   mut last_ctrl_c : Int64
   mut writer : @session.SessionWriter?
 }
@@ -136,6 +144,8 @@ pub fn TuiState::new() -> TuiState {
     take_back: false,
     picker: None,
     picker_confirm: false,
+    session_path: "",
+    session_label: "",
     last_ctrl_c: 0L,
     writer: None,
   }
@@ -205,11 +215,17 @@ pub async fn run_tui(
   tui : TuiState,
   config : @provider.PiConfig,
   compact_enabled : Bool,
-  session_label : String,
+  session_path : String,
 ) -> Unit {
   let (width, height) = @io.get_terminal_size()
   tui.width = width
   tui.height = height
+  tui.session_path = session_path
+  tui.session_label = if session_path.is_empty() {
+    "(不落盘)"
+  } else {
+    session_path
+  }
   pi_enable_vt_output()
   let (app, cleanup) = @vnode.init_vnode_terminal(width, height, fn(raw) {
     @io.print_raw(raw)
@@ -235,7 +251,7 @@ pub async fn run_tui(
   }
   @stdio.stderr.write(
     "[session] " +
-    session_label +
+    tui.session_label +
     " · " +
     state.messages.length().to_string() +
     " 条消息 · " +
@@ -500,6 +516,8 @@ fn submit_command(tui : TuiState, text : String) -> Unit {
     tui.commands.push(OpenThinking)
   } else if text.has_prefix("/thinking ") {
     tui.commands.push(ThinkingLevel(text[10:].trim().to_owned()))
+  } else if text == "/resume" {
+    tui.commands.push(OpenSessions)
   } else {
     set_notice(tui, "未知命令：" + text)
   }
@@ -587,6 +605,7 @@ async fn tui_driver(
       }
       OpenModels => open_model_picker(tui, agent.state, config)
       OpenThinking => open_thinking_picker(tui, agent.state, config)
+      OpenSessions => open_session_picker(tui, agent.state, config)
       ThinkingLevel(level) => apply_thinking(agent, tui, config, level)
       Exit => tui.quit = true
     }
@@ -866,6 +885,7 @@ fn open_model_picker(
         provider: provider.name,
         model_id: model.id,
         level: "",
+        path: "",
       })
     }
   }
@@ -928,6 +948,7 @@ fn open_thinking_picker(
       provider: state.provider_name,
       model_id: state.model_id,
       level,
+      path: "",
     })
   }
   tui.picker = Some({
@@ -1044,6 +1065,7 @@ async fn apply_picker(
       tui.picker = None
       persist_tui(agent, tui)
     }
+    SessionPicker => restore_session(agent, tui, item.path)
   }
   tui.dirty = true
 }
@@ -1092,6 +1114,194 @@ async fn apply_thinking(
     err => set_notice(tui, "error: " + err.to_string())
   }
   set_notice(tui, "思考级别：" + matched)
+  persist_tui(agent, tui)
+  tui.dirty = true
+}
+
+// ─── 会话面板（/resume） ───────────────────────────────────────────────────
+
+///|
+struct SessionFile {
+  name : String
+  path : String
+  mtime : Int64
+  size : Int64
+}
+
+///|
+async fn open_session_picker(
+  tui : TuiState,
+  _state : @state.AgentState,
+  config : @provider.PiConfig,
+) -> Unit {
+  let dir = session_directory(config)
+  let names = @fs.readdir(dir) catch {
+    _ => {
+      set_notice(tui, "没有会话目录：" + dir)
+      return
+    }
+  }
+  let files : Array[SessionFile] = []
+  for name in names {
+    if name.has_suffix(".jsonl") {
+      let path = dir + "/" + name
+      let (mtime, _) = @fs.mtime(path) catch { _ => (0L, 0) }
+      let size = @fs.file_size(path) catch { _ => 0L }
+      files.push({ name, path, mtime, size, })
+    }
+  }
+  if files.is_empty() {
+    set_notice(tui, "还没有历史会话")
+    return
+  }
+  // 新的在上面（文件数通常几十，插入排序足够）。
+  let mut index = 1
+  while index < files.length() {
+    let current = files[index]
+    let mut at = index
+    while at > 0 && files[at - 1].mtime < current.mtime {
+      files[at] = files[at - 1]
+      at = at - 1
+    }
+    files[at] = current
+    index = index + 1
+  }
+  let now = @env.now().reinterpret_as_int64() / 1000L
+  let items : Array[PickerItem] = []
+  let mut selected = 0
+  for at in 0..<files.length() {
+    let file = files[at]
+    let stem = if file.name.has_suffix(".jsonl") {
+      file.name[:file.name.length() - 6].to_owned()
+    } else {
+      file.name
+    }
+    if file.path == tui.session_path {
+      selected = at
+    }
+    items.push({
+      label: relative_time(file.mtime, now),
+      detail: stem + " · " + size_text(file.size),
+      provider: "",
+      model_id: "",
+      level: "",
+      path: file.path,
+    })
+  }
+  tui.picker = Some({
+    kind: SessionPicker,
+    title: "恢复会话",
+    items,
+    selected,
+  })
+  tui.dirty = true
+}
+
+///|
+fn relative_time(seconds : Int64, now_seconds : Int64) -> String {
+  let diff = if now_seconds > seconds { now_seconds - seconds } else { 0L }
+  if diff < 60L {
+    "刚刚"
+  } else if diff < 3600L {
+    (diff / 60L).to_string() + " 分钟前"
+  } else if diff < 86400L {
+    (diff / 3600L).to_string() + " 小时前"
+  } else {
+    (diff / 86400L).to_string() + " 天前"
+  }
+}
+
+///|
+fn size_text(bytes : Int64) -> String {
+  if bytes < 1024L {
+    bytes.to_string() + " B"
+  } else if bytes < 1024L * 1024L {
+    (bytes / 1024L).to_string() + " KB"
+  } else {
+    (bytes / (1024L * 1024L)).to_string() + " MB"
+  }
+}
+
+///|
+/// 把选中的会话整体装回环上：messages / 轨迹 / 装载段 / 模型，然后把落盘器
+/// 换成「接着这个文件写」的游标 —— 不能继续往旧文件里追加当前会话的历史。
+async fn restore_session(
+  agent : @runtime.Agent,
+  tui : TuiState,
+  path : String,
+) -> Unit {
+  let session_id = @session.session_id_from_path(path)
+  let loaded_opt = @session.load_session(path, session_id) catch {
+    err => {
+      set_notice(tui, "[session] " + err.to_string())
+      tui.picker = None
+      tui.dirty = true
+      return
+    }
+  }
+  let loaded = match loaded_opt {
+    Some(loaded) => loaded
+    None => {
+      set_notice(tui, "[session] 没有可恢复的内容：" + path)
+      tui.picker = None
+      tui.dirty = true
+      return
+    }
+  }
+  let state = agent.state
+  let prompt = match loaded.prompt {
+    Some(prompt) => prompt
+    None =>
+      { system_prompt: state.prompt.system_prompt, tools: state.prompt.tools, }
+  }
+  let tools = match loaded.tools {
+    Some(tools) => tools
+    None => state.prompt.tools
+  }
+  let model = match loaded.model {
+    Some(model) => model
+    None =>
+      {
+        provider: state.provider_name,
+        model_id: state.model_id,
+        thinking_level: state.thinking_level,
+        reasoning: state.model.reasoning,
+        capabilities: state.model.capabilities,
+        context_window: state.model.context_window,
+      }
+  }
+  agent.send(
+    @action.SessionRestored({
+      prompt,
+      tools,
+      model,
+      messages: loaded.messages,
+      trace: loaded.trace,
+      persisted_seq: loaded.persisted_seq,
+    }),
+  ) catch {
+    err => {
+      set_notice(tui, "[session] " + err.to_string())
+      tui.picker = None
+      tui.dirty = true
+      return
+    }
+  }
+  tui.writer = Some(@session.SessionWriter::restored(path, loaded))
+  tui.session_path = path
+  tui.session_label = path
+  tui.picker = None
+  tui.busy = false
+  tui.abort = false
+  tui.chat_scroll = 0
+  set_notice(
+    tui,
+    "已恢复：" +
+    path +
+    "（" +
+    loaded.messages.length().to_string() +
+    " 条消息）",
+  )
   persist_tui(agent, tui)
   tui.dirty = true
 }

@@ -819,7 +819,7 @@ async fn run(args : CliArgs) -> Unit {
           tui,
           config,
           config.compaction.enabled,
-          session_path.unwrap_or("(不落盘)"),
+          session_path.unwrap_or(""),
         )
         return
       }

@@ -443,3 +443,65 @@ test "斜杠命令：/model 与 /thinking [级别]" {
     _ => abort("expected thinking-level")
   }
 }
+
+///|
+test "时间与会话大小的人话格式" {
+  assert_eq(relative_time(1000L, 1030L), "刚刚")
+  assert_eq(relative_time(1000L, 1000L + 120L), "2 分钟前")
+  assert_eq(relative_time(1000L, 1000L + 7200L), "2 小时前")
+  assert_eq(relative_time(1000L, 1000L + 172800L), "2 天前")
+  assert_eq(size_text(512L), "512 B")
+  assert_eq(size_text(2048L), "2 KB")
+  assert_eq(size_text(3L * 1024L * 1024L), "3 MB")
+}
+
+///|
+test "斜杠命令：/resume 开会话面板" {
+  let tui = TuiState::new()
+  type_text(tui, "/resume")
+  handle_key(tui, "\r")
+  match tui.commands[0] {
+    OpenSessions => ()
+    _ => abort("expected open-sessions")
+  }
+}
+
+///|
+async test "会话面板：列出 sessions 目录，新的在前，当前会话打点" {
+  let root = @fs.tmpdir(prefix="pi-moon-tui-sessions-")
+  let dir = root + "/sessions"
+  @fs.mkdir(dir, recursive=true) catch {
+    _ => abort("mkdir sessions failed")
+  }
+  let path_old = dir + "/1000.jsonl"
+  let path_new = dir + "/2000.jsonl"
+  let message_state = {
+    ..test_state(),
+    messages: [@message.user_message("旧会话", 1L)],
+  }
+  let (_, _) = @session.SessionWriter::new(path_old).flush(message_state) catch {
+    _ => abort("write old session failed")
+  }
+  // mtime 的分辨率到秒；等一秒才能保证「新的在前」稳定。
+  @async.sleep(1100)
+  let newer_state = {
+    ..test_state(),
+    messages: [@message.user_message("新会话", 2L)],
+  }
+  let (_, _) = @session.SessionWriter::new(path_new).flush(newer_state) catch {
+    _ => abort("write new session failed")
+  }
+  let config = { ..test_pi_config(), agent_dir: root, }
+  let tui = TuiState::new()
+  tui.session_path = path_old
+  open_session_picker(tui, test_state(), config)
+  let picker = tui.picker.unwrap()
+  assert_eq(picker.kind, SessionPicker)
+  assert_eq(picker.items.length(), 2)
+  assert_true(picker.items[0].path.has_suffix("2000.jsonl"))
+  assert_eq(picker.items[0].label, "刚刚")
+  assert_eq(picker.items[picker.selected].path, path_old)
+  @fs.rmdir(root, recursive=true) catch {
+    _ => ()
+  }
+}

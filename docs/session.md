@@ -81,12 +81,17 @@ moon run cmd/pi-moon -- -s logs/today.jsonl -p "继续"
 # 恢复 sessions 目录里最新的那份
 moon run cmd/pi-moon -- -c -p "刚才说到哪了？"
 
-# 多轮 REPL（/exit 退出，/continue 续跑当前回合）
+# 多轮 TUI（/exit 退出，/continue 续跑当前回合，/resume 开会话面板）
 moon run cmd/pi-moon -- -i
 
 # 不读不写
 moon run cmd/pi-moon -- --no-session -p "..."
 ```
+
+TUI 里 `/resume` 直接列 `<agent dir>/sessions` 下的会话（修改时间倒序），
+Enter 后用 `SessionRestored` 把 messages / 轨迹 / 装载段 / 模型整体装回，
+落盘器换成 `SessionWriter::restored` 的游标 —— 接着那个文件写，不往旧文件
+追加当前会话的历史。
 
 stderr 会打出这一次用的是哪个文件、恢复了多少：
 

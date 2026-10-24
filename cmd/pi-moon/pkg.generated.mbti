@@ -117,12 +117,16 @@ pub(all) struct PickerItem {
   provider : String
   model_id : String
   level : String
+  path : String
 } derive(Eq, @debug.Debug)
 
 pub(all) enum PickerKind {
   ModelPicker
   ThinkingPicker
+  SessionPicker
 } derive(Eq, @debug.Debug)
+
+type SessionFile
 
 pub(all) struct StyledLine {
   text : String
@@ -145,6 +149,7 @@ pub(all) enum TuiCommand {
   ThinkingLevel(String)
   OpenModels
   OpenThinking
+  OpenSessions
   Exit
 } derive(@debug.Debug)
 
@@ -175,6 +180,8 @@ pub(all) struct TuiState {
   mut take_back : Bool
   mut picker : Picker?
   mut picker_confirm : Bool
+  mut session_path : String
+  mut session_label : String
   mut last_ctrl_c : Int64
   mut writer : @session.SessionWriter?
 }

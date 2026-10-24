@@ -803,6 +803,7 @@ fn picker_rows(
       ModelPicker =>
         item.provider == state.provider_name && item.model_id == state.model_id
       ThinkingPicker => item.level == state.thinking_level
+      SessionPicker => item.path == tui.session_path
     }
     let marker = if index == picker.selected { "› " } else { "  " }
     let suffix = if current { "  ●" } else { "" }
