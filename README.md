@@ -61,7 +61,7 @@ reducer 里没有一个 `await`、没有一个 `fetch`、也没有 while。真�
 ## 跑起来
 
 ```bash
-moon test                        # 89 个测试：纯表 + 整环 + 轨迹树 + provider + 工具 + 会话 + 压缩 + TUI
+moon test                        # 91 个测试：纯表 + 整环 + 轨迹树 + provider + 工具 + 会话 + 压缩 + TUI
 
 # 真实模型：读 ~/.pi/agent/ 下与 pi 同一份配置
 moon run cmd/pi-moon                    # 全屏 TUI（默认落盘，可 -c 恢复）
@@ -250,7 +250,7 @@ common → message → compact → trace → action → state → loop → runti
 ## 下一步（按顺序）
 
 1. **TUI 迭代**：模型 / 思考 / 会话选择器、markdown 与各工具专用渲染器、
-   中断时半截文本进 messages（差距清单见 [docs/tui.md](docs/tui.md)）。
+   状态卡锚点（差距清单见 [docs/tui.md](docs/tui.md)）。
 2. **Web 界面**：rabbita 与终端共用同一份 state；跨包只碰 `Agent` 的
    `state` / `send`。
 3. **pi 扩展**：`extension.event` / 扩展命令 / 生命周期。

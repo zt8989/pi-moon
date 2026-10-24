@@ -518,3 +518,33 @@ async test "run_tools 把 bash 的中间输出变成 ToolProgress" {
   assert_eq(is_error, false)
   assert_eq(result_text, "firstsecond")
 }
+
+///|
+test "中断：半截正文保留成 aborted 消息，未完成的 toolCall 被剥掉" {
+  let accumulator = StreamAccumulator::new()
+  let _ = accumulator.apply_line(
+    "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"想\"}}]}",
+  )
+  let _ = accumulator.apply_line(
+    "data: {\"choices\":[{\"delta\":{\"content\":\"半句\"}}]}",
+  )
+  let _ = accumulator.apply_line(
+    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"pa\"}}]}}]}",
+  )
+  let part = aborted_part(accumulator, test_resolved("high").model).unwrap()
+  assert_eq(part.stop_reason, "aborted")
+  assert_eq(part.content.length(), 2)
+  for block in part.content {
+    match block {
+      @message.ToolCallBlock(_) =>
+        abort("half-written tool call must not enter messages")
+      _ => ()
+    }
+  }
+}
+
+///|
+test "中断：还没有任何正文时不产出 aborted 消息" {
+  let accumulator = StreamAccumulator::new()
+  assert_true(aborted_part(accumulator, test_resolved("high").model) is None)
+}

@@ -117,10 +117,15 @@ async fn stream_completion(
   while !accumulator.done {
     // 先给界面一个安全点：生成中敲的话在这里入队，下一步 / 批次结束时投递。
     (hooks.on_tick)(dispatch)
-    // 中断在**分片边界**生效：已经收到的字照常进 state（界面看得见它停在哪），
-    // 但这条 assistant 消息不会落进 messages。
+    // 中断在**分片边界**生效：已经收到的字照常进 state，并按 ela / pi 的做法
+    // 作为一条 `stop_reason=aborted` 的 assistant 消息保留下来 —— 用户看到自己
+    // 停在哪，下一轮模型也知道自己说过什么。
     if (hooks.should_abort)() {
-      dispatch.send(abort_failure())
+      match aborted_part(accumulator, resolved.model) {
+        Some(part) =>
+          dispatch.send(@action.LlmDone({ message: part, node_id: None, }))
+        None => dispatch.send(abort_failure())
+      }
       return
     }
     let line = read_sse_line(client, options.idle_timeout_ms) catch {
@@ -190,6 +195,31 @@ fn abort_failure() -> @action.AgentAction {
     node_id: None,
     cause: Some(@common.CauseUser),
   })
+}
+
+///|
+/// 中断时的半截消息：有正文就保留，没有就回 `None`（走 `llm.failed`）。
+///
+/// **必须剥掉 toolCall 块**：流被掐断时参数 JSON 只写了一半，而一条带 toolCall
+/// 的 assistant 消息后面若没有对应的 toolResult，下一轮请求就是非法的消息序列。
+/// 正文（text / thinking）没这个问题。
+fn aborted_part(
+  accumulator : StreamAccumulator,
+  model : PiModelInfo,
+) -> @message.AssistantPart? {
+  let part = accumulator.to_assistant_part(model)
+  let kept : Array[@message.Content] = []
+  for block in part.content {
+    match block {
+      @message.ToolCallBlock(_) => ()
+      _ => kept.push(block)
+    }
+  }
+  if kept.is_empty() {
+    None
+  } else {
+    Some({ ..part, content: kept, stop_reason: "aborted", })
+  }
 }
 
 ///|

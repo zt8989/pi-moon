@@ -125,6 +125,12 @@ fn message_lines(
           @message.Image(_) => ()
         }
       }
+      // 用户中断：ela 的 `stopNoticeLine` 在正文后面补一行错误色。
+      // toolCall 已经在 provider 侧剥掉了，这里不必再判。
+      if part.stop_reason == "aborted" {
+        out.push(blank_line())
+        push_inset_block(out, "[已中断]", width, "red")
+      }
       match part.error_message {
         Some(error) => {
           out.push(blank_line())

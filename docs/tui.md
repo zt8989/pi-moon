@@ -88,8 +88,11 @@ driver       await agent.send(...)：模型流、工具、压缩都在这条 awa
 命令队列要等 driver 空闲，中断不能等。`Esc` 只把 `tui.abort` 立起来，
 provider effect 在下一个分片边界查 `ProviderHooks::should_abort`：
 
-- **LLM 流**：查到就 dispatch `llm.failed(kind=aborted, cause=user)`，
-  已收到的字留在 `streaming_text` 里给界面看，**半截消息不进 `messages`**；
+- **LLM 流**：查到就**收工**。已经收到的正文（text / thinking）按 ela / pi 的做法
+  作为一条 `stop_reason=aborted` 的 assistant 消息保留下来，界面上补一行
+  `[已中断]`；**半截 toolCall 必须剥掉** —— 流被掐断时参数 JSON 只写了一半，
+  而一条带 toolCall 的消息后面没有对应的 toolResult，下一轮请求就是非法的。
+  一个字都没收到时才走 `llm.failed(kind=aborted)`；
 - **工具批次**：正在跑的那一条不打断（进程已经起来了，硬停会留下半截文件），
   从下一条起补 `tool.result(is_error=true, "用户中断，未执行")`，再收工 ——
   每个 `toolCall` 都必须有结果，否则下一轮请求是非法消息序列；
@@ -126,15 +129,13 @@ ela 里那个「一个键干两件事」的 `app.abort` 默认不绑，这里也
 
 ## 与 ela 的差距（分步补齐）
 
-1. **中断时半截文本的去处**：现在只留在界面上（`streaming_text`），**不进
-   messages**；ela 会作为 `stop_reason=aborted` 的 assistant 消息保留。
-2. **模型 / 思考档位 / 会话选择器**（`Ctrl+L` 等）：ela 用覆盖 composer 矩形
+1. **模型 / 思考档位 / 会话选择器**（`Ctrl+L` 等）：ela 用覆盖 composer 矩形
    的面板，这里还没有面板层。
-3. **markdown 高亮与逐字排版**：现在 assistant 文本是纯文本折行；工具块也
+2. **markdown 高亮与逐字排版**：现在 assistant 文本是纯文本折行；工具块也
    没有 pi 的各工具专用渲染器（bash 的尾部保留、edit 的彩色 diff）。
-4. **状态卡锚点**：ela 的 `notify` 卡钉在「第 N 条消息之后」，随对话滚走；
+3. **状态卡锚点**：ela 的 `notify` 卡钉在「第 N 条消息之后」，随对话滚走；
    这里只有一张尾部卡，下一条消息提交时清掉。
-5. **Windows 输入法**：`_getch` 拿到的是控制台代码页字节，不是 UTF-8；
+4. **Windows 输入法**：`_getch` 拿到的是控制台代码页字节，不是 UTF-8；
    英文与多数符号没问题，中文长句输入建议在别处打好再粘贴（粘贴走的是
    同一批字节，表现一致）。
 
@@ -143,7 +144,7 @@ ela 里那个「一个键干两件事」的 `app.abort` 默认不绑，这里也
 开屏时 `tty.c` 做两件事：输出代码页切到 UTF-8（65001），并打开
 `ENABLE_VIRTUAL_TERMINAL_PROCESSING`；退出时原样还原。不做这两步的症状很
 一致：中文变乱码、边框变乱码字面量（已在 Windows Terminal / conhost 的
-PTY 里验证过）。输入侧仍是 `_getch` 的代码页字节，见上面第 6 条。
+PTY 里验证过）。输入侧仍是 `_getch` 的代码页字节，见上面第 4 条。
 
 ## 依赖与版本钉法
 
