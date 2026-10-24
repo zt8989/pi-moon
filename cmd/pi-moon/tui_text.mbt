@@ -11,12 +11,13 @@
 pub(all) struct StyledLine {
   text : String
   fg : String?
+  bg : String?
   bold : Bool
 } derive(Eq, Debug)
 
 ///|
 pub fn plain_line(text : String) -> StyledLine {
-  { text, fg: None, bold: false, }
+  { text, fg: None, bg: None, bold: false, }
 }
 
 ///|
@@ -24,18 +25,19 @@ pub fn styled_line(
   text : String,
   fg : String,
   bold~ : Bool = false,
+  bg? : String,
 ) -> StyledLine {
-  { text, fg: Some(fg), bold, }
+  { text, fg: Some(fg), bg, bold, }
 }
 
 ///|
 pub fn dim_line(text : String) -> StyledLine {
-  { text, fg: Some("rgb(128,128,128)"), bold: false, }
+  { text, fg: Some("rgb(150,152,160)"), bg: None, bold: false, }
 }
 
 ///|
 pub fn blank_line() -> StyledLine {
-  { text: "", fg: None, bold: false, }
+  { text: "", fg: None, bg: None, bold: false, }
 }
 
 ///|
@@ -207,4 +209,110 @@ pub fn line_count(text : String) -> Int32 {
     count = count + 1
   }
   count
+}
+
+///|
+/// 补齐到整行宽度（按显示列宽算）。
+///
+/// pi-tui 是**增量**重绘：行变短时旧字的尾巴不会被擦掉。底栏 / 页签 / 带底色的
+/// 块都必须补到全宽，否则下一帧会叠着出现（看起来像重复刷屏）。汉字是双宽，
+/// 按 `String::length` 补会少一截。
+pub fn pad_to_width(text : String, width : Int32) -> String {
+  let used = display_width(text)
+  if used >= width {
+    text
+  } else {
+    text + spaces(width - used)
+  }
+}
+
+///|
+/// 一整行横线。
+pub fn rule(width : Int32) -> String {
+  let chars : Array[Char] = []
+  for _ in 0..<width {
+    chars.push('─')
+  }
+  String::from_array(chars)
+}
+
+///|
+/// `twoColumn(left, right, width)`：左右两段，中间用空格补齐。
+///
+/// 放不下时右边优先（模型名是定位信息），与 ela 的 `twoColumn` 同一口径。
+pub fn two_column(left : String, right : String, width : Int32) -> String {
+  let left_width = display_width(left)
+  let right_width = display_width(right)
+  if left_width + right_width + 1 > width {
+    truncate_to(left + " " + right, width)
+  } else {
+    left + spaces(width - left_width - right_width) + right
+  }
+}
+
+///|
+/// 一位小数（`1.324` → `1.3`，`1.0` 保持 `1.0`）—— pi 的 `toFixed(1)` 同形。
+pub fn one_decimal(value : Double) -> String {
+  let tenths = (value * 10.0).round().to_int()
+  (tenths / 10).to_string() + "." + (tenths % 10).to_string()
+}
+
+///|
+/// token 数量的短写，与 pi 的 `formatTokens` 逐条一致。
+pub fn format_tokens(count : Int32) -> String {
+  if count < 1000 {
+    count.to_string()
+  } else if count < 10000 {
+    one_decimal(count.to_double() / 1000.0) + "k"
+  } else if count < 1000000 {
+    (count.to_double() / 1000.0).round().to_int().to_string() + "k"
+  } else if count < 10000000 {
+    one_decimal(count.to_double() / 1000000.0) + "M"
+  } else {
+    (count.to_double() / 1000000.0).round().to_int().to_string() + "M"
+  }
+}
+
+///|
+/// 一位小数的百分比。
+pub fn format_percent(value : Double) -> String {
+  let tenths = (value * 10.0).round().to_int()
+  (tenths / 10).to_string() + "." + (tenths % 10).to_string() + "%"
+}
+
+///|
+/// 把家目录缩成 `~`（与 pi 的 `formatCwdForFooter` 同一效果）。
+pub fn shorten_home(path : String, home : String) -> String {
+  if home.is_empty() {
+    return path
+  }
+  if path == home {
+    return "~"
+  }
+  if path.has_prefix(home + "/") {
+    return "~/" + path[home.length() + 1:].to_owned()
+  }
+  if path.has_prefix(home + "\\") {
+    return "~\\" + path[home.length() + 1:].to_owned()
+  }
+  path
+}
+
+///|
+/// 压成一行（排队消息只占一行，多行会把输入框顶下去）。
+pub fn one_line(text : String) -> String {
+  let chars : Array[Char] = []
+  let mut last_space = false
+  for c in text {
+    if c == '\n' || c == '\r' || c == '\t' {
+      if !last_space {
+        chars.push(' ')
+        last_space = true
+      }
+    } else {
+      chars.push(c)
+      last_space = c == ' '
+    }
+  }
+  String::from_array(chars).trim(chars=" ").to_owned()
 }

@@ -108,6 +108,7 @@ pub(all) struct ProviderHooks {
   on_thinking : async (String) -> Unit
   on_tool_progress : async (String, Array[@message.Content]) -> Unit
   should_abort : () -> Bool
+  on_tick : async (@runtime.Dispatch) -> Unit
 }
 
 pub(all) struct ResolvedProvider {

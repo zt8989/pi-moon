@@ -5,6 +5,7 @@ import {
   "mizchi/signals/ui",
   "mizchi/tui/vnode",
   "moonbitlang/core/debug",
+  "pi-moon/core/action",
   "pi-moon/core/runtime",
   "pi-moon/core/session",
   "pi-moon/core/state",
@@ -16,6 +17,8 @@ pub fn backspace(String, Int32) -> (String, Int32)
 pub fn blank_line() -> StyledLine
 
 pub fn char_count(String) -> Int32
+
+pub fn chat_lines(@state.AgentState, Bool, Int32, String) -> Array[StyledLine]
 
 pub fn clamp_cursor(Int32, Int32) -> Int32
 
@@ -29,35 +32,55 @@ pub fn dim_line(String) -> StyledLine
 
 pub fn display_width(String) -> Int32
 
+pub fn editor_top_border(@state.AgentState, Int32, Int64) -> StyledLine
+
 pub fn first_lines(String, Int32) -> Array[String]
 
-pub fn footer_text(@state.AgentState, Bool, String, Int32) -> String
+pub fn flush_ui_actions(TuiState, @runtime.Dispatch) -> Unit
 
-pub fn header_text(@state.AgentState) -> String
+pub fn footer_lines(@state.AgentState, Int32) -> Array[StyledLine]
+
+pub fn format_percent(Double) -> String
+
+pub fn format_tokens(Int32) -> String
 
 pub fn insert_text(String, Int32, String) -> (String, Int32)
 
 pub fn line_count(String) -> Int32
 
+pub fn one_decimal(Double) -> String
+
+pub fn one_line(String) -> String
+
+pub fn pad_to_width(String, Int32) -> String
+
+pub fn page_height(Int32, Int32) -> Int32
+
 pub fn plain_line(String) -> StyledLine
+
+pub fn queue_lines(@state.AgentState, Int32) -> Array[StyledLine]
 
 pub fn render_editor(String, Int32, Int32) -> String
 
+pub fn rule(Int32) -> String
+
 pub async fn run_tui(@runtime.Agent, TuiState, Bool, String) -> Unit
+
+pub fn shorten_home(String, String) -> String
 
 pub fn spaces(Int32) -> String
 
-pub fn styled_line(String, String, bold? : Bool) -> StyledLine
+pub fn styled_line(String, String, bold? : Bool, bg? : String) -> StyledLine
 
-pub fn transcript_height(Int32) -> Int32
+pub fn tab_nodes(@state.AgentState, TuiPage, Int32) -> Array[@ui.Node[@vnode.TuiEvent, @vnode.TuiAttrValue]]
 
-pub fn transcript_lines(@state.AgentState, Bool, Int32) -> Array[StyledLine]
-
-pub fn transcript_width(Int32) -> Int32
+pub fn trace_lines(@state.AgentState, Int32) -> Array[StyledLine]
 
 pub fn truncate_to(String, Int32) -> String
 
 pub fn tui_view(TuiState, @state.AgentState) -> @ui.Node[@vnode.TuiEvent, @vnode.TuiAttrValue]
+
+pub fn two_column(String, String, Int32) -> String
 
 pub fn visible_lines(Array[StyledLine], Int32, Int32) -> Array[StyledLine]
 
@@ -83,6 +106,7 @@ type CompactSnapshot
 pub(all) struct StyledLine {
   text : String
   fg : String?
+  bg : String?
   bold : Bool
 } derive(Eq, @debug.Debug)
 
@@ -92,8 +116,14 @@ pub(all) enum TuiCommand {
   Compact
   Tools(Array[String])
   ListTools
+  Dequeue
   Exit
 } derive(@debug.Debug)
+
+pub(all) enum TuiPage {
+  Chat
+  Trace
+} derive(Eq, @debug.Debug)
 
 pub(all) struct TuiState {
   mut width : Int32
@@ -102,7 +132,9 @@ pub(all) struct TuiState {
   mut cursor : Int32
   mut history : Array[String]
   mut history_pos : Int32
-  mut scroll : Int32
+  mut chat_scroll : Int32
+  mut trace_scroll : Int32
+  mut page : TuiPage
   mut expanded : Bool
   mut busy : Bool
   mut abort : Bool
@@ -111,6 +143,7 @@ pub(all) struct TuiState {
   mut notice : String
   mut notice_at : Int64
   mut commands : Array[TuiCommand]
+  mut pending_actions : Array[@action.AgentAction]
   mut last_ctrl_c : Int64
   mut writer : @session.SessionWriter?
 }

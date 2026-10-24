@@ -100,45 +100,47 @@ test "visible_lines 默认贴底，scroll 往上翻" {
 }
 
 ///|
-test "transcript_lines：工具输出折叠与展开" {
+test "chat_lines：工具块折叠与展开" {
   let call : @message.ToolCall = { id: "c1", name: "read", arguments: "{}", }
   let state = {
     ..test_state(),
     messages: [
       @message.user_message("看一下", 1L),
-      @message.tool_result_message(call, "l1\nl2\nl3\nl4\nl5", false, 2L),
+      @message.tool_result_message(
+        call, "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9", false, 2L,
+      ),
     ],
   }
-  let collapsed = transcript_lines(state, false, 60)
+  let collapsed = chat_lines(state, false, 60, "")
   let mut collapsed_text = ""
   for line in collapsed {
     collapsed_text = collapsed_text + line.text + "\n"
   }
   assert_true(collapsed_text.contains("还有 3 行"))
-  assert_true(collapsed_text.contains("› 看一下"))
-  let expanded = transcript_lines(state, true, 60)
+  assert_true(collapsed_text.contains("看一下"))
+  let expanded = chat_lines(state, true, 60, "")
   let mut expanded_text = ""
   for line in expanded {
     expanded_text = expanded_text + line.text + "\n"
   }
-  assert_true(expanded_text.contains("l5"))
+  assert_true(expanded_text.contains("l9"))
   assert_false(expanded_text.contains("还有 3 行"))
 }
 
 ///|
-test "transcript_lines：流式文本与中断错误各有一行" {
+test "chat_lines：流式文本与思考各占一段" {
   let state = {
     ..test_state(),
     phase: @common.Thinking,
     streaming_text: "正在说",
     thinking_text: "想一下",
   }
-  let lines = transcript_lines(state, false, 60)
+  let lines = chat_lines(state, false, 60, "")
   let mut text = ""
   for line in lines {
     text = text + line.text + "\n"
   }
-  assert_true(text.contains("… 想一下"))
+  assert_true(text.contains("想一下"))
   assert_true(text.contains("正在说▌"))
 }
 
@@ -170,10 +172,14 @@ test "键位：Enter 提交、斜杠命令、Esc 两种语义" {
     _ => abort("expected compact")
   }
 
-  // 空闲时 Esc 只清输入。
+  // 空闲时 Esc 不是直接清输入，而是把「取回排队消息」交给 driver。
   type_text(tui, "abc")
   handle_key(tui, "\u{001b}")
-  assert_eq(tui.input, "")
+  match tui.commands[2] {
+    Dequeue => ()
+    _ => abort("expected dequeue")
+  }
+  assert_eq(tui.input, "abc")
   assert_false(tui.abort)
 
   // 生成中 Esc = 中断。
@@ -193,13 +199,37 @@ test "键位：Ctrl+C 第一次提示、第二次退出" {
 }
 
 ///|
-test "键位：生成中 Enter 进队列而不是丢消息" {
+test "键位：生成中 Enter 进 followUp 队列而不是丢消息" {
   let tui = TuiState::new()
   tui.busy = true
   type_text(tui, "排队一句")
   handle_key(tui, "\r")
-  assert_eq(tui.commands.length(), 1)
-  assert_true(tui.notice.contains("已排队"))
+  assert_eq(tui.commands.length(), 0)
+  assert_eq(tui.pending_actions.length(), 1)
+  assert_eq(tui.notice, "")
+  match tui.pending_actions[0] {
+    @action.QueueInput(input) => assert_eq(input.text, "排队一句")
+    _ => abort("expected queue.input")
+  }
+}
+
+///|
+test "队列面板：只在有排队时占行，形状与 ela 一致" {
+  let empty = queue_lines(test_state(), 80)
+  assert_eq(empty.length(), 0)
+  let queued = {
+    ..test_state(),
+    follow_up_queue: [{ text: "待会儿再说", content: [], at: 1L, }],
+    steer_queue: [{ text: "顺便看下版本", content: [], at: 2L, }],
+  }
+  let lines = queue_lines(queued, 80)
+  let mut text = ""
+  for line in lines {
+    text = text + line.text + "\n"
+  }
+  assert_true(text.contains("Steering: 顺便看下版本"))
+  assert_true(text.contains("Follow-up: 待会儿再说"))
+  assert_true(text.contains("自动发送"))
 }
 
 ///|
@@ -218,16 +248,22 @@ test "键位：上下翻历史" {
 }
 
 ///|
-test "顶栏与底栏不再依赖 state 里的空串判断" {
-  let state = test_state()
-  assert_true(header_text(state).contains("deepseek/deepseek-chat"))
-  assert_true(header_text(state).contains("就绪"))
-  assert_true(footer_text(state, true, "", 120).contains("Ctrl+C"))
-  assert_true(footer_text(state, true, "", 120).contains("Esc"))
+test "顶行是页签 + 统计，底栏是 cwd + 用量/模型" {
+  let state = {
+    ..test_state(),
+    messages: [@message.assistant_message("hi", "stop", 1L)],
+  }
+  let tab = tab_nodes(state, Chat, 100)
+  assert_true(tab.length() > 3)
+  let footer = footer_lines(state, 100)
+  assert_eq(footer.length(), 2)
+  assert_eq(display_width(footer[0].text), 100)
+  assert_true(footer[1].text.contains("(deepseek) deepseek-chat"))
+  assert_eq(display_width(footer[1].text), 100)
 }
 
 ///|
-test "tui_view 能画出一整帧（顶栏 / 对话区 / 输入区 / 底栏）" {
+test "tui_view 能画出一整帧（顶行 / 对话区 / composer / 底栏）" {
   let tui = TuiState::new()
   tui.width = 80
   tui.height = 24
@@ -236,7 +272,8 @@ test "tui_view 能画出一整帧（顶栏 / 对话区 / 输入区 / 底栏）" 
     messages: [@message.user_message("你好，画一帧", 1L)],
   }
   let frame = @vnode.render_vnode_once(80, 24, tui_view(tui, state))
-  assert_true(frame.contains("pi-moon"))
+  assert_true(frame.contains("deepseek"))
   assert_true(frame.contains("你好，画一帧"))
-  assert_true(frame.contains("说点什么"))
+  assert_true(frame.contains("对话"))
+  assert_true(frame.contains("轨迹"))
 }

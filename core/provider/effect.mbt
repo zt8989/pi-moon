@@ -25,6 +25,15 @@ pub(all) struct ProviderHooks {
   ///
   /// 默认恒为 `false`：一次性 CLI 与测试的行为一个字都不变。
   should_abort : () -> Bool
+  /// 一个**安全的外部 action 入口**。
+  ///
+  /// effect 在流的分片边界 / 每条工具之前调它，界面在这里把「用户在生成中敲的
+  /// 话」（`QueueInput`）送进环上。为什么不让界面直接 `Agent::send`：driver 正在
+  /// 这条 effect 里 await，另一个任务调 `send` 会把 deferred 队列里排着的 effect
+  /// 拉起来并发跑（两条流同时写一份 state）。
+  ///
+  /// 默认空实现：只是多一次同步调用。
+  on_tick : async (@runtime.Dispatch) -> Unit
 }
 
 ///|
@@ -34,6 +43,7 @@ pub fn noop_hooks() -> ProviderHooks {
     on_thinking: async fn(_) { () },
     on_tool_progress: async fn(_, _) { () },
     should_abort: fn() { false },
+    on_tick: async fn(_) { () },
   }
 }
 
@@ -105,6 +115,8 @@ async fn stream_completion(
   }
   let accumulator = StreamAccumulator::new()
   while !accumulator.done {
+    // 先给界面一个安全点：生成中敲的话在这里入队，下一步 / 批次结束时投递。
+    (hooks.on_tick)(dispatch)
     // 中断在**分片边界**生效：已经收到的字照常进 state（界面看得见它停在哪），
     // 但这条 assistant 消息不会落进 messages。
     if (hooks.should_abort)() {
@@ -284,6 +296,7 @@ async fn run_tools_with_hooks(
   }
   let mut index = 0
   while index < calls.length() {
+    (hooks.on_tick)(dispatch)
     // 工具批次里的中断点：正在跑的那一条**不打断**（进程已经起来了，硬停会留下
     // 半截文件），从下一条起补失败结果再收工 —— 每个 toolCall 都必须有结果，
     // 否则下一轮请求就是非法消息序列。

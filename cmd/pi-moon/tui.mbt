@@ -12,12 +12,20 @@
 // provider effect 在下一个分片边界查它（见 `core/provider/effect.mbt`）。
 
 ///|
+pub(all) enum TuiPage {
+  Chat
+  Trace
+} derive(Eq, Debug)
+
+///|
 pub(all) enum TuiCommand {
   Submit(String)
   Continue
   Compact
   Tools(Array[String])
   ListTools
+  /// 把排队中的消息取回输入框（闲时按 Esc）。
+  Dequeue
   Exit
 } derive(Debug)
 
@@ -34,7 +42,9 @@ pub(all) struct TuiState {
   mut cursor : Int32
   mut history : Array[String]
   mut history_pos : Int32
-  mut scroll : Int32
+  mut chat_scroll : Int32
+  mut trace_scroll : Int32
+  mut page : TuiPage
   mut expanded : Bool
   mut busy : Bool
   mut abort : Bool
@@ -43,6 +53,8 @@ pub(all) struct TuiState {
   mut notice : String
   mut notice_at : Int64
   mut commands : Array[TuiCommand]
+  /// 生成中敲下的话：由 effect 的 `on_tick` 在安全点 dispatch 进环里。
+  mut pending_actions : Array[@action.AgentAction]
   mut last_ctrl_c : Int64
   mut writer : @session.SessionWriter?
 }
@@ -56,7 +68,9 @@ pub fn TuiState::new() -> TuiState {
     cursor: 0,
     history: [],
     history_pos: -1,
-    scroll: 0,
+    chat_scroll: 0,
+    trace_scroll: 0,
+    page: Chat,
     expanded: false,
     busy: false,
     abort: false,
@@ -65,6 +79,7 @@ pub fn TuiState::new() -> TuiState {
     notice: "",
     notice_at: 0L,
     commands: [],
+    pending_actions: [],
     last_ctrl_c: 0L,
     writer: None,
   }
@@ -106,6 +121,25 @@ fn set_notice(tui : TuiState, text : String) -> Unit {
   tui.notice = text
   tui.notice_at = now_ms()
   tui.dirty = true
+}
+
+///|
+/// 当前页的滚动位置（两页各归各的，切页不会把另一页的视口带过去）。
+fn scroll_get(tui : TuiState) -> Int32 {
+  if tui.page == Chat {
+    tui.chat_scroll
+  } else {
+    tui.trace_scroll
+  }
+}
+
+///|
+fn scroll_set(tui : TuiState, value : Int32) -> Unit {
+  if tui.page == Chat {
+    tui.chat_scroll = value
+  } else {
+    tui.trace_scroll = value
+  }
 }
 
 ///|
@@ -203,10 +237,10 @@ fn handle_key_event(tui : TuiState, key : @events.KeyEvent) -> Unit {
     @events.KeyEvent::Special(special, modifier) =>
       match modifier {
         @events.KeyModifier::Ctrl =>
-          // Ctrl+Home / Ctrl+End：跳到对话的最顶 / 最底。
+          // Ctrl+Home / Ctrl+End：跳到当前页的最顶 / 最底。
           match special {
-            @events.SpecialKey::Home => tui.scroll = 1000000
-            @events.SpecialKey::End => tui.scroll = 0
+            @events.SpecialKey::Home => scroll_set(tui, 1000000)
+            @events.SpecialKey::End => scroll_set(tui, 0)
             _ => handle_special(tui, special)
           }
         _ => handle_special(tui, special)
@@ -223,7 +257,9 @@ fn handle_special(tui : TuiState, special : @events.SpecialKey) -> Unit {
         tui.abort = true
         set_notice(tui, "正在中断…")
       } else {
-        clear_input(tui)
+        // 闲时的 Esc = ela 的 `app.interrupt`：有队列就把队列还回编辑器，
+        // 没有就清空输入。两者都交给 driver —— 按键看不到 agent 状态。
+        tui.commands.push(Dequeue)
       }
     @events.SpecialKey::Backspace => {
       let (input, cursor) = backspace(tui.input, tui.cursor)
@@ -243,9 +279,9 @@ fn handle_special(tui : TuiState, special : @events.SpecialKey) -> Unit {
     @events.SpecialKey::Up => history_prev(tui)
     @events.SpecialKey::Down => history_next(tui)
     @events.SpecialKey::PageUp =>
-      tui.scroll = tui.scroll + max_int(tui.height / 2, 1)
+      scroll_set(tui, scroll_get(tui) + max_int(tui.height / 2, 1))
     @events.SpecialKey::PageDown =>
-      tui.scroll = max_int(tui.scroll - max_int(tui.height / 2, 1), 0)
+      scroll_set(tui, max_int(scroll_get(tui) - max_int(tui.height / 2, 1), 0))
     _ => ()
   }
 }
@@ -281,6 +317,10 @@ fn handle_ctrl(tui : TuiState, c : Char) -> Unit {
           "工具输出：折叠"
         },
       )
+    }
+    'r' => {
+      tui.page = if tui.page == Chat { Trace } else { Chat }
+      set_notice(tui, if tui.page == Chat { "对话" } else { "轨迹" })
     }
     _ => ()
   }
@@ -340,13 +380,20 @@ fn submit_input(tui : TuiState) -> Unit {
   tui.history.push(text)
   tui.history_pos = -1
   clear_input(tui)
+  tui.notice = ""
   if text.has_prefix("/") {
     submit_command(tui, text)
     return
   }
-  tui.commands.push(Submit(text))
   if tui.busy {
-    set_notice(tui, "已排队：本回合结束后发送")
+    // 生成中不打断：进 followUp 队列（ela 的 Option+Enter 语义）。真正入环靠
+    // effect 的 `on_tick` —— 按键任务不碰 agent（见文件头）。
+    // 不另发通知：队列面板本身就在 composer 上方显示它。
+    tui.pending_actions.push(
+      @action.QueueInput({ text, content: [], kind: @common.FollowUp, }),
+    )
+  } else {
+    tui.commands.push(Submit(text))
   }
 }
 
@@ -384,11 +431,13 @@ async fn tui_driver(
       Submit(text) => {
         tui.busy = true
         tui.abort = false
-        tui.scroll = 0
+        tui.chat_scroll = 0
+        tui.notice = ""
         tui.dirty = true
         agent.send(@action.UserMessage({ text, content: [], })) catch {
           err => set_notice(tui, "error: " + err.to_string())
         }
+        drain_pending(agent, tui)
         tui.abort = false
         tui.busy = false
         tui_auto_compact(agent, tui, compact_enabled)
@@ -398,16 +447,19 @@ async fn tui_driver(
       Continue => {
         tui.busy = true
         tui.abort = false
+        tui.notice = ""
         tui.dirty = true
         agent.send(@action.TurnContinue) catch {
           err => set_notice(tui, "error: " + err.to_string())
         }
+        drain_pending(agent, tui)
         tui.abort = false
         tui.busy = false
         tui_auto_compact(agent, tui, compact_enabled)
         persist_tui(agent, tui)
         tui.dirty = true
       }
+      Dequeue => dequeue_all(agent, tui)
       Compact => {
         tui_compact(agent, tui, @compact.Manual)
         persist_tui(agent, tui)
@@ -538,14 +590,75 @@ async fn tui_render_loop(
       app.resize(width, height)
       tui.dirty = true
     }
-    if !tui.notice.is_empty() && now_ms() - tui.notice_at > 5000L {
-      tui.notice = ""
-      tui.dirty = true
-    }
     if tui.dirty {
       tui.dirty = false
       @io.print_raw(app.render_frame(tui_view(tui, agent.state)))
     }
     @async.sleep(16)
+  }
+}
+
+///|
+/// 把生成中敲的话送进环上。**只在 effect 的安全点被调用**（`ProviderHooks::on_tick`）：
+/// driver 此刻正在这条 effect 里 await，这个 dispatch 与它同上下文。
+pub fn flush_ui_actions(tui : TuiState, dispatch : @runtime.Dispatch) -> Unit {
+  while !tui.pending_actions.is_empty() {
+    let action = tui.pending_actions.remove(0)
+    dispatch.send(action) catch {
+      err => set_notice(tui, "error: " + err.to_string())
+    }
+    tui.dirty = true
+  }
+}
+
+///|
+/// driver 自己（没有 effect 在跑时）把待发 action 送进去。
+///
+/// 生成结束时在途的那几条（例如刚好在 `llm.done` 之后才按的 Enter）没人 tick 到
+/// 它们，这里兜底 —— 否则它们会永远挂在界面上。
+async fn drain_pending(agent : @runtime.Agent, tui : TuiState) -> Unit {
+  while !tui.pending_actions.is_empty() {
+    let action = tui.pending_actions.remove(0)
+    agent.send(action) catch {
+      err => set_notice(tui, "error: " + err.to_string())
+    }
+    tui.dirty = true
+  }
+}
+
+///|
+/// 把排队中的消息取回输入框（ela 的 `app.message.dequeue`）：Esc 的闲时语义。
+async fn dequeue_all(agent : @runtime.Agent, tui : TuiState) -> Unit {
+  let state = agent.state
+  let texts : Array[String] = []
+  for item in state.steer_queue {
+    texts.push(item.text)
+  }
+  for item in state.follow_up_queue {
+    texts.push(item.text)
+  }
+  if texts.is_empty() {
+    clear_input(tui)
+    tui.dirty = true
+    return
+  }
+  tui.input = texts.join(" ")
+  tui.cursor = char_count(tui.input)
+  agent.send(@action.QueueClear) catch {
+    err => set_notice(tui, "error: " + err.to_string())
+  }
+  set_notice(
+    tui,
+    "已取回 " + texts.length().to_string() + " 条排队消息",
+  )
+  tui.dirty = true
+}
+
+///|
+fn max_int(a : Int32, b : Int32) -> Int32 {
+  if a > b {
+    a
+  } else {
+    b
   }
 }

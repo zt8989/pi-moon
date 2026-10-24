@@ -696,6 +696,12 @@ async fn run(args : CliArgs) -> Unit {
         None => false
       }
     },
+    on_tick: async fn(dispatch) {
+      match tui {
+        Some(tui) => flush_ui_actions(tui, dispatch)
+        None => ()
+      }
+    },
   }
   let table = @provider.effect_table_with_hooks(config, options, hooks)
   let agent = @runtime.Agent::new(
