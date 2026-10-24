@@ -383,6 +383,39 @@ pub fn build_request_body(
 }
 
 ///|
+/// 摘要请求体：**没有工具**，system prompt 是摘要助手那句，用户消息是拍平后的对话。
+///
+/// 与普通请求共用 `message_json` 的线格式（工具结果 / 思考块照样按同一条规则翻），
+/// 但不发工具定义，也不发思考参数：摘要要的是确定性输出，不是再思考一遍。
+pub fn build_summary_request_body(
+  resolved : ResolvedProvider,
+  system_prompt : String,
+  messages : Array[@message.Message],
+  max_tokens : Int32,
+) -> Json {
+  let compat = resolved.model.compat
+  let body : Map[String, Json] = Map([])
+  body["model"] = jstr(resolved.model.id)
+  let out : Array[Json] = [
+    jobj([("role", jstr("system")), ("content", jstr(system_prompt))]),
+  ]
+  for message in messages {
+    out.push(message_json(message, compat))
+  }
+  body["messages"] = Json::array(out)
+  body["stream"] = json_bool(true)
+  if compat.supports_usage_in_streaming {
+    body["stream_options"] = jobj([("include_usage", json_bool(true))])
+  }
+  body[compat.max_tokens_field] = jnum(max_tokens.to_double())
+  // 历史里有 tool_calls / toolResult 时，有些网关要求 tools 字段存在，哪怕是空数组。
+  if history_has_tool_calls(messages) {
+    body["tools"] = Json::array([])
+  }
+  Json::object(body)
+}
+
+///|
 /// 请求体字符串（调试 / 测试用）。
 pub fn request_body_text(
   resolved : ResolvedProvider,

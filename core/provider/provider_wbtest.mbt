@@ -26,6 +26,7 @@ fn test_config(
       None => "off"
     },
     default_tools: field_string_array(settings_obj, "defaultTools"),
+    compaction: @compact.default_settings(),
     auth: parse_auth(Some(auth)),
     env: Map([]),
     agent_dir: "/tmp/pi",
@@ -137,6 +138,7 @@ test "内置 provider：deepseek + 环境变量 key，不需要 models.json" {
     default_model: None,
     default_thinking_level: "off",
     default_tools: None,
+    compaction: @compact.default_settings(),
     auth: Map([]),
     env,
     agent_dir: "/tmp/pi",
@@ -303,6 +305,54 @@ test "请求体：system 在前、工具与思考参数按 compat 发" {
   assert_eq(jfield(function, "name"), Some(Json::string("read")))
   // 参数被解析成对象（不是字符串）。
   assert_true(jfield(function, "parameters") is Some(Object(_)))
+}
+
+///|
+test "摘要请求体：system 是摘要助手、不带工具、不发思考参数" {
+  let prompt : @message.Message = @message.user_message(
+    "<conversation>…</conversation>", 0L,
+  )
+  let body = body_object(
+    build_summary_request_body(test_resolved("high"), "SUM-SYS", [prompt], 640),
+  )
+  assert_eq(body.get("model"), Some(Json::string("m1")))
+  assert_eq(body.get("stream"), Some(Json::boolean(true)))
+  assert_eq(body.get("max_tokens"), Some(Json::number(640.0)))
+  // 摘要不再思考：思考参数会让摘要又贵又容易跑偏。
+  assert_eq(body.get("thinking"), None)
+  assert_eq(body.get("reasoning_effort"), None)
+  // 没有工具历史时不发 tools 字段。
+  assert_eq(body.get("tools"), None)
+  let messages = match body.get("messages") {
+    Some(Array(items)) => items
+    _ => abort("messages missing")
+  }
+  assert_eq(messages.length(), 2)
+  assert_eq(jfield(messages[0], "role"), Some(Json::string("system")))
+  assert_eq(jfield(messages[0], "content"), Some(Json::string("SUM-SYS")))
+  assert_eq(jfield(messages[1], "role"), Some(Json::string("user")))
+  // 有 toolResult 的历史：网关要求 tools 字段存在（哪怕是空数组）。
+  let with_tool = build_summary_request_body(
+    test_resolved("off"),
+    "SUM-SYS",
+    [
+      @message.tool_result_message(
+        { id: "c1", name: "read", arguments: "{}", },
+        "内容",
+        false,
+        0L,
+      ),
+    ],
+    100,
+  )
+  match with_tool {
+    Object(obj) =>
+      match obj.get("tools") {
+        Some(Array(items)) => assert_eq(items.length(), 0)
+        _ => abort("tools missing")
+      }
+    _ => abort("body is not an object")
+  }
 }
 
 ///|

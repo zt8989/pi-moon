@@ -6,8 +6,8 @@
 // 而「有哪些工具、默认开哪些」可以单独测试。
 
 import {
-  "zhouteng/pi_moon/core/action",
-  "zhouteng/pi_moon/core/message",
+  "pi-moon/core/action",
+  "pi-moon/core/message",
   "moonbitlang/async",
   "moonbitlang/async/fs",
   "moonbitlang/async/process",

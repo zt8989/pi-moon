@@ -1,5 +1,5 @@
 // Generated using `moon info`, DON'T EDIT IT
-package "zhouteng/pi_moon/core/message"
+package "pi-moon/core/message"
 
 import {
   "moonbitlang/core/debug",
@@ -82,6 +82,8 @@ pub(all) struct Usage {
 pub(all) struct UserPart {
   content : Array[Content]
   timestamp : Int64
+  compaction_summary : Bool
+  tokens_before : Int32
 } derive(Eq, @debug.Debug)
 
 // Type aliases

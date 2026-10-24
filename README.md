@@ -25,10 +25,10 @@ reducer 里没有一个 `await`、没有一个 `fetch`、也没有 while。真�
 [redux-loop](https://github.com/redux-loop/redux-loop) 的形状：`update` 返回
 `(model, Cmd)`，而 `Cmd` 是可检视的数据。
 
-## 现状：v0.5 循环核心 + provider + 工具 + 会话
+## 现状：v0.6 循环核心 + provider + 工具 + 会话 + 压缩
 
 - 三张表：**迁移表**（action → 下一个状态）、**接线表**（action → Cmd）、
-  **effect 表**（`RunAgent` / `RunTools` 的真正实现）；
+  **effect 表**（`RunAgent` / `RunTools` / `RunCompact` 的真正实现）；
 - turn / step 两层容器；重试在**同一个 step 容器**里进行；
 - 轨迹树：`user → turn → step → llm.result / tool.*`，tip 规则与错误节点；
 - steer / followUp 两条队列（生成中也能说话）；
@@ -45,14 +45,17 @@ reducer 里没有一个 `await`、没有一个 `fetch`、也没有 while。真�
   prompt/model / tools.changed 装载段），`-s` / `-c` 恢复，`-i` 多轮 REPL
   （见 [docs/session.md](docs/session.md)）；
 - **会话中途换工具**：`tools.changed` 只改当前集，下一次请求追加一条声明消息
-  （REPL 里用 `/tools read,bash`；见 [docs/tools.md](docs/tools.md)）。
+  （REPL 里用 `/tools read,bash`；见 [docs/tools.md](docs/tools.md)）；
+- **上下文压缩**：`compact.request / done / failed` 三个 action + pi 的切点算法；
+  三种触发（手动 `/compact` / 超阈值 / provider 报溢出），摘要是**一条普通消息**，
+  落盘后可恢复（见 [docs/compact.md](docs/compact.md)）。
 
-**还没有**（下一步逐步接）：上下文压缩、pi 扩展、TUI / Web。
+**还没有**（下一步逐步接）：pi 扩展、TUI / Web。
 
 ## 跑起来
 
 ```bash
-moon test                        # 52 个测试：纯表 + 整环 + 轨迹树 + provider + 工具 + 会话
+moon test                        # 70 个测试：纯表 + 整环 + 轨迹树 + provider + 工具 + 会话 + 压缩
 
 # 真实模型：读 ~/.pi/agent/ 下与 pi 同一份配置
 moon run cmd/pi-moon -- -p "用一句话说明什么是 Elm 架构"
@@ -73,7 +76,7 @@ moon run cmd/pi-moon -- -t bash --show-tool-progress \
 moon run cmd/pi-moon -- -p "记住 42"
 moon run cmd/pi-moon -- -c -p "我刚才让你记住什么？"
 moon run cmd/pi-moon -- -i -s logs/today.jsonl
-moon run cmd/pi-moon -- -i        # REPL 里 /tools read,bash 可中途换工具
+moon run cmd/pi-moon -- -i        # REPL 里 /tools read,bash 可中途换工具；/compact 压缩上下文
 moon run cmd/pi-moon -- --no-session -p "..."
 
 # 离线演示：假 provider / 假工具，看两棵轨迹树
@@ -119,6 +122,7 @@ moon run cmd/main
 | --- | --- |
 | `core/common` | 标量枚举与纯策略：Phase / 错误分类 / StopCause 文案 |
 | `core/message` | 对话消息：user / assistant / toolResult / system + 内容块 |
+| `core/compact` | 压缩纯策略：token 估算、切点算法、摘要消息与提示词。纯函数 |
 | `core/trace` | 轨迹树：节点、tip 规则、统计、lazygit 风格渲染。纯函数 |
 | `core/action` | `AgentAction` 全部变体与载荷（一切皆 Action） |
 | `core/state` | `AgentState` 与初始状态。状态只能由 action 改 |
@@ -133,12 +137,13 @@ moon run cmd/main
 依赖方向是一条直线：
 
 ```text
-common → message → trace → action → state → loop → runtime → provider → cmd/pi-moon
-                                                      └──► cmd/main
+common → message → compact → trace → action → state → loop → runtime → provider → cmd/pi-moon
+                                                              └──► cmd/main
 ```
 
-`core/tools` 只依赖 `action` / `message`；`core/provider` 额外依赖它（`RunTools`
-effect 调 `@tools.execute`）。`core/session` 只依赖数据层（`action` / `message` /
+`core/compact` 只依赖 `message`（切点算法可以脱离环单独测）；`core/tools` 只依赖
+`action` / `message`；`core/provider` 额外依赖它（`RunTools` effect 调
+`@tools.execute`）。`core/session` 只依赖数据层（`action` / `message` /
 `state` / `trace`），CLI 用它落盘与恢复。
 
 没有循环依赖，也没有全局状态。
@@ -166,8 +171,12 @@ effect 调 `@tools.execute`）。`core/session` 只依赖数据层（`action` / 
 | `LlmFailed`（可重试） | 开 error 节点，**容器保持开着**，尝试 +1，相位留在 thinking | `AgentRun`（同一容器内重试） |
 | `LlmFailed`（不可重试 / 用尽） | 开 error 节点，关掉 step，相位 → idle | `TurnEnd` |
 | `TurnEnd` | 关回合容器（**推进 tip**）；有 followUp 则直接开新回合 | 容器开着就 `StepStart` + `AgentRun` |
+| `CompactRequest` | 守卫（idle / 未在压）；开 pending `compact` 节点、算好切点 | `RunCompact`（没什么可压时直接 `CompactDone`） |
+| `CompactDone` | 整份换 messages、闭合节点（推进 tip）、`compaction_epoch` +1 | 无 |
+| `CompactFailed` | 节点标 error、挂 error 子节点，**messages 不动** | 无 |
 
-两张表的完整语义见 [docs/loop.md](docs/loop.md)。
+两张表的完整语义见 [docs/loop.md](docs/loop.md)，压缩的取舍见
+[docs/compact.md](docs/compact.md)。
 
 ## 与 rabbita 的关系
 
@@ -196,6 +205,7 @@ effect 调 `@tools.execute`）。`core/session` 只依赖数据层（`action` / 
 | `packages/core/src/trace.ts` | `core/trace/trace.mbt` |
 | `packages/core/src/reducer.ts` 的 `transitions` | `core/loop/transition.mbt` |
 | `packages/core/src/reducer.ts` 的 `loopWiring` | `core/loop/wiring.mbt` |
+| `packages/core/src/compact.ts` | `core/compact/` + `core/loop/compact_ops.mbt` + provider 的 `RunCompact` |
 | `packages/core/src/effects.ts`（接口那一半） | `core/runtime/runtime.mbt` 的 `EffectTable` |
 | `packages/core/src/effects.ts`（pi-ai 那一半） | `core/provider/`（配置 + 请求 + SSE） |
 | `packages/core/src/tools.ts`（内置工具 + 开关） | `core/tools/`（八个工具 + `resolve_tool_selection`） |
@@ -223,10 +233,10 @@ effect 调 `@tools.execute`）。`core/session` 只依赖数据层（`action` / 
 | provider 复用 faceoff 的 `Settings` + `parse_sse_line` | 消息体 / 工具 / usage / tool_call 分片由本项目补（见 provider 文档） |
 | 工具输出里 `edit` 只做严格匹配、`find` 用 rg 代替 fd | 不引模糊匹配与 fd 依赖；差异清单见 [docs/tools.md](docs/tools.md) |
 | 会话**一回合 flush 一次**，不是每个 action 都写 | 写盘不参与 reducer，也不打断流式输出；粒度取舍见 [docs/session.md](docs/session.md) |
-| `compact.*` / 扩展尚未接 | 循环核心与外围先立住，再加压缩 / 扩展 |
+| `overflow` 只认几条常见报错文案，不像 pi 维护 40+ 家 | 漏判的代价是「该压没压」，下一轮还会失败，不破坏历史；见 [docs/compact.md](docs/compact.md) |
 
 ## 下一步（按顺序）
 
-1. **上下文压缩**：`compact.request / done / failed` 三个 action 与 pi 的切点算法。
-2. **界面**：rabbita（Web）与终端渲染共用同一份 state；跨包只碰 `Agent` 的
+1. **界面**：rabbita（Web）与终端渲染共用同一份 state；跨包只碰 `Agent` 的
    `state` / `send`。
+2. **pi 扩展**：`extension.event` / 扩展命令 / 生命周期。

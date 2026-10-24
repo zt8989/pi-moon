@@ -1,11 +1,12 @@
 // Generated using `moon info`, DON'T EDIT IT
-package "zhouteng/pi_moon/core/action"
+package "pi-moon/core/action"
 
 import {
   "moonbitlang/core/debug",
-  "zhouteng/pi_moon/core/common",
-  "zhouteng/pi_moon/core/message",
-  "zhouteng/pi_moon/core/trace",
+  "pi-moon/core/common",
+  "pi-moon/core/compact",
+  "pi-moon/core/message",
+  "pi-moon/core/trace",
 }
 
 // Values
@@ -44,8 +45,25 @@ pub(all) enum AgentAction {
   ToolsChanged(Array[PromptToolDefinition])
   SessionRestored(SessionRestoredData)
   ConversationReset(ConversationResetData)
+  CompactRequest(@compact.CompactReason)
+  CompactDone(CompactDoneData)
+  CompactFailed(CompactFailedData)
+  CompactSettingsChanged(@compact.Settings)
 } derive(Eq, @debug.Debug)
 pub fn AgentAction::name(Self) -> String
+
+pub(all) struct CompactDoneData {
+  messages : Array[@message.Message]
+  summary : String
+  tokens_before : Int32
+  summarized_count : Int32
+  kept_count : Int32
+  usage : @message.Usage?
+} derive(Eq, @debug.Debug)
+
+pub(all) struct CompactFailedData {
+  error : String
+} derive(Eq, @debug.Debug)
 
 pub(all) struct ConversationResetData {
   session_id : String?

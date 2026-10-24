@@ -1,10 +1,11 @@
 import {
-  "zhouteng/pi_moon/core/common",
-  "zhouteng/pi_moon/core/message",
-  "zhouteng/pi_moon/core/action",
-  "zhouteng/pi_moon/core/state",
-  "zhouteng/pi_moon/core/runtime",
-  "zhouteng/pi_moon/core/tools",
+  "pi-moon/core/common",
+  "pi-moon/core/message",
+  "pi-moon/core/compact",
+  "pi-moon/core/action",
+  "pi-moon/core/state",
+  "pi-moon/core/runtime",
+  "pi-moon/core/tools",
   "conglinyizhi/moonbit-llm-faceoff" @faceoff,
   "moonbitlang/async",
   "moonbitlang/async/http",
@@ -24,7 +25,7 @@ warnings = "-79-67"
 // 配置，改一次两处都生效 —— 这是「兼容 pi 的配置」的全部含义。
 
 import {
-  "zhouteng/pi_moon/core/loop",
+  "pi-moon/core/loop",
 } for "wbtest"
 
 supported_targets = "+native"

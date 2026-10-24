@@ -1,5 +1,5 @@
 import {
-  "zhouteng/pi_moon/core/message",
+  "pi-moon/core/message",
   "moonbitlang/core/immut/hashmap" @ihm,
 }
 

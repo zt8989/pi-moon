@@ -72,6 +72,9 @@ pub(all) struct PiConfig {
   /// `resolve_tool_selection`）：不带前缀的名字替换默认合集，`+name` / `-name`
   /// 在结果上增删。这里只负责**读**，不开工。
   default_tools : Array[String]?
+  /// `settings.json` 的 `compaction` 段（pi 的官方键名，两边同一份配置）。
+  /// 没配就是 pi 的默认值（enabled=true, reserve=16384, keepRecent=20000）。
+  compaction : @compact.Settings
   /// provider → api key（auth.json）。
   auth : Map[String, String]
   env : Map[String, String]
@@ -494,6 +497,28 @@ async fn read_json_file(path : String, diagnostics : Array[String]) -> Json? {
 }
 
 ///|
+/// 读 `settings.json` 的 `compaction` 段。
+///
+/// 只读不写：真正的压缩参数也在这里定，于是「两边用同一份配置」不是一句口号 ——
+/// 在 pi 里改了阈值，pi-moon 下一次启动就跟着变。
+fn parse_compaction(settings : Map[String, Json]) -> @compact.Settings {
+  let defaults = @compact.default_settings()
+  let obj = match settings.get("compaction") {
+    Some(Object(obj)) => obj
+    _ => Map([])
+  }
+  {
+    enabled: field_bool(obj, "enabled", defaults.enabled),
+    reserve_tokens: field_int(obj, "reserveTokens", defaults.reserve_tokens),
+    keep_recent_tokens: field_int(
+      obj,
+      "keepRecentTokens",
+      defaults.keep_recent_tokens,
+    ),
+  }
+}
+
+///|
 /// 读 pi 的三份配置。缺文件不是错误：`settings.json` 没有就用默认值，
 /// 只靠 `models.json` 或内置 provider 也能跑。
 pub async fn load_pi_config(agent_dir? : String) -> PiConfig {
@@ -523,6 +548,7 @@ pub async fn load_pi_config(agent_dir? : String) -> PiConfig {
       None => "off"
     },
     default_tools: field_string_array(settings, "defaultTools"),
+    compaction: parse_compaction(settings),
     auth: parse_auth(auth_json),
     env,
     agent_dir: dir,

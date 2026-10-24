@@ -15,6 +15,7 @@
 | `tools.changed` | **当前**工具集（中途换过才有） | 工具集第一次落盘时，以及此后每次变化时 |
 | `model.init` | provider / model / thinking / 能力 / context window | 首次，以及模型或档位变化时 |
 | `message` | 一条对话消息（user / assistant / toolResult / system） | 消息第一次出现时 |
+| `compact` | 压缩后的**整份** messages（重置历史） | `state.compaction_epoch` 变化时 |
 | `add` | 轨迹节点的**完整**字段（带 `seq`） | 节点第一次出现时 |
 | `close` | 节点的闭合补丁（id / status / ended_at） | 之前 add 过、后来闭合时 |
 
@@ -41,6 +42,7 @@ SessionWriter::flush(state)
    ├─ prompt.init（没写过才写）
    ├─ model.init（模型/档位变了才写）
    ├─ add 新节点 / close 刚闭合的节点
+   ├─ compact（压缩换过历史才写：整份新 messages）
    └─ message（按条数游标追加）
    │
    ▼
@@ -60,6 +62,10 @@ SessionWriter::flush(state)
 
 恢复出来的状态是「静止的会话」：相位 idle、流式缓冲清空、没有打开中的容器、
 队列为空。下一句用户输入照常从 `trace.tip_id` 往下接。
+
+压缩过的会话恢复回来仍然是压缩过的状态：回放遇到 `compact` 记录就把 messages
+整份重置成那条摘要 + 尾巴，之后的 `message` 记录再从它后面长。模型不会「想起」
+被丢掉的那部分 —— 那才是对的：摘要就是全部上下文了。
 
 ## 用法
 
@@ -104,7 +110,8 @@ stderr 会打出这一次用的是哪个文件、恢复了多少：
 - **一次回合内不落盘**：flush 发生在 `agent.send` 返回之后；回合中途崩溃会丢
   这一回合。要更细的粒度，需要把 flush 挂到 effect 边界（`RunAgent` /
   `RunTools` 之后），而不是每次 token 都写。
-- **`conversation.reset` 不落盘**：messages 只增不减；CLI 目前没有 `/clear`。
+- **`conversation.reset` 不落盘**：messages 只增不减（压缩是例外：它写一条
+  `compact` 记录把历史整段换掉）；CLI 目前没有 `/clear`。
 - **prompt / model 记录只保留最后一次**：回放取最后一条；没有「会话中途换过
   哪些模型」的完整时间线（轨迹节点里有 event，但 message 级历史不追）。
 - **工具集以恢复出来的记录为准**：有 `tools.changed` 就用它，否则用

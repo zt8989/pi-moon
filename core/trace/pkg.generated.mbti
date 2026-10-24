@@ -1,10 +1,10 @@
 // Generated using `moon info`, DON'T EDIT IT
-package "zhouteng/pi_moon/core/trace"
+package "pi-moon/core/trace"
 
 import {
   "moonbitlang/core/debug",
   "moonbitlang/core/immut/hashmap",
-  "zhouteng/pi_moon/core/message",
+  "pi-moon/core/message",
 }
 
 // Values

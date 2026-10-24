@@ -1,0 +1,11 @@
+// 上下文压缩的纯策略：token 估算、切点、摘要消息形状。
+//
+// 只依赖 message —— 不碰 state / loop / provider。于是「切点算得对不对」可以在
+// 没有环、没有网络的情况下单独测；真正打网络写摘要的是 provider 的 effect。
+
+import {
+  "pi-moon/core/message",
+  "moonbitlang/core/json",
+}
+
+warnings = "-implicit_impl_as_method"

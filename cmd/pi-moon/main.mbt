@@ -1,8 +1,8 @@
 // pi-moon 的命令行入口。
 //
-// v0.4：provider / 工具 / 会话都是真的 —— pi 配置 → OpenAI 兼容流式接口；
+// v0.6：provider / 工具 / 会话 / 压缩都是真的 —— pi 配置 → OpenAI 兼容流式接口；
 // 八个内置工具按 pi 的 `defaultTools` 语义开关；会话以 JSONL 落盘，用 `-s` / `-c`
-// 恢复，`-i` 进多轮 REPL。
+// 恢复，`-i` 进多轮 REPL；`/compact` 或超阈值时把老对话换成一段摘要。
 
 ///|
 let usage : String = "pi-moon — Elm architecture agent core in MoonBit\n" +
@@ -31,7 +31,7 @@ let usage : String = "pi-moon — Elm architecture agent core in MoonBit\n" +
   "  -s, --session <file>     会话文件（存在则恢复，否则新建）\n" +
   "  -c, --continue           恢复 sessions 目录里最新的会话\n" +
   "      --no-session         不落盘 / 不恢复\n" +
-  "  -i, --interactive        多轮 REPL（/tools 换工具；/exit 退出；/continue 续跑）\n" +
+  "  -i, --interactive        多轮 REPL（/tools 换工具；/compact 压缩上下文；/exit 退出；/continue 续跑）\n" +
   "      --no-trace           不打印轨迹树\n" +
   "  -h, --help               显示这段文字"
 
@@ -482,6 +482,99 @@ async fn print_report(agent : @runtime.Agent, show_trace : Bool) -> Unit {
 }
 
 ///|
+/// 发起压缩前的快照。
+///
+/// 只靠 `compaction_epoch` 不够：没什么可压时 epoch 不会变，但那次压缩
+/// **真的完成了**（而且会把 `last_compaction` 换成 0 条）。
+struct CompactSnapshot {
+  epoch : Int32
+  record : @state.CompactionRecord?
+  error_node : String?
+}
+
+///|
+fn compact_snapshot(state : @state.AgentState) -> CompactSnapshot {
+  {
+    epoch: state.compaction_epoch,
+    record: state.last_compaction,
+    error_node: state.error_node_id,
+  }
+}
+
+///|
+/// 自动压缩：一个回合彻底停下来之后判一次。
+///
+/// 为什么可以放在这里而不是做成订阅器：`agent.send()` 在**环完全停下来**时
+/// 才返回（队列空 + effect 队列空），那一刻正是唯一安全的压缩时机 —— 压缩要
+/// 整份换掉 messages，而 LLM 还在流 / 工具还在跑时换，那条流回来就找不到
+/// 自己的 toolCallId 了。
+///
+/// `enabled` 关掉的只是**自动**压缩：手动 `/compact` 照旧能用。
+async fn maybe_auto_compact(agent : @runtime.Agent, enabled : Bool) -> Unit {
+  if !enabled {
+    return
+  }
+  let state = agent.state
+  if state.phase != @common.Idle || state.compacting {
+    return
+  }
+  let decision = @loop.decide_compaction(state, false)
+  if !decision.should {
+    return
+  }
+  let reason = match decision.reason {
+    Some(reason) => reason
+    None => return
+  }
+  let before = compact_snapshot(state)
+  agent.send(@action.CompactRequest(reason)) catch {
+    err => {
+      eprintln("[compact] " + err.to_string())
+      return
+    }
+  }
+  report_compaction(agent, before)
+}
+
+///|
+/// 压完（或压失败）之后的一句话。
+///
+/// `before` 是发起压缩那一刻的快照：epoch 变大了说明真的换过历史；
+/// `last_compaction` 变了说明压了一次「0 条」（没什么可压）；两者都没变、
+/// 但 error 节点换了，才是失败。三种都要说 —— 静默是这里最坏的行为
+/// （用户以为压了，实际历史一个字没动）。
+async fn report_compaction(
+  agent : @runtime.Agent,
+  before : CompactSnapshot,
+) -> Unit {
+  let state = agent.state
+  if state.compaction_epoch > before.epoch {
+    match state.last_compaction {
+      Some(record) =>
+        eprintln(
+          "[compact] " +
+          record.reason.text() +
+          "：" +
+          record.summarized_count.to_string() +
+          " 条 → " +
+          record.kept_count.to_string() +
+          " 条（压缩前约 " +
+          record.tokens_before.to_string() +
+          " tokens）",
+        )
+      None => ()
+    }
+  } else if state.last_compaction != before.record {
+    eprintln("[compact] 没什么可压的")
+  } else if state.error_node_id != before.error_node &&
+    state.stop_cause == Some(@common.CauseCompactError) {
+    eprintln("[compact] 失败：" + state.error.unwrap_or("未知错误"))
+  } else {
+    eprintln("[compact] 没什么可压的")
+  }
+}
+
+///|
 async fn run(args : CliArgs) -> Unit {
   let config = @provider.load_pi_config(agent_dir?=args.agent_dir)
   for diagnostic in config.diagnostics {
@@ -657,6 +750,13 @@ async fn run(args : CliArgs) -> Unit {
       writer = persist(writer, agent)
     }
   }
+  // 压缩参数读 `settings.json` 的 `compaction` 段（与 pi 同一份配置）。
+  agent.send(@action.CompactSettingsChanged(config.compaction)) catch {
+    err => {
+      runtime_failure(err.to_string())
+      return
+    }
+  }
   eprintln(
     "[" +
     agent.state.provider_name +
@@ -701,6 +801,7 @@ async fn run(args : CliArgs) -> Unit {
         @stdio.stdout.write("\n") catch {
           _ => ()
         }
+        maybe_auto_compact(agent, config.compaction.enabled)
         writer = persist(writer, agent)
       }
     None => ()
@@ -761,6 +862,19 @@ async fn run(args : CliArgs) -> Unit {
       if text == "/exit" || text == "/quit" {
         break
       }
+      if text == "/compact" {
+        let before = compact_snapshot(agent.state)
+        agent.send(@action.CompactRequest(@compact.Manual)) catch {
+          err => {
+            eprintln("[error] " + err.to_string())
+            break
+          }
+        }
+        report_compaction(agent, before)
+        // 压缩换过历史：立刻落盘，否则用户压完就退出时文件还是旧的。
+        writer = persist(writer, agent)
+        continue
+      }
       if text == "/continue" {
         agent.send(@action.TurnContinue) catch {
           err => {
@@ -779,6 +893,7 @@ async fn run(args : CliArgs) -> Unit {
       @stdio.stdout.write("\n") catch {
         _ => ()
       }
+      maybe_auto_compact(agent, config.compaction.enabled)
       writer = persist(writer, agent)
     }
   }

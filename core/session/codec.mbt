@@ -231,6 +231,9 @@ pub fn encode_message(message : @message.Message) -> Json {
         ("role", jstr("user")),
         ("content", encode_contents(part.content)),
         ("timestamp", jint64(part.timestamp)),
+        // 压缩摘要的结构标记：回放时靠它认回那条摘要（不靠内容猜）。
+        ("compaction_summary", jbool(part.compaction_summary)),
+        ("tokens_before", jint(part.tokens_before)),
       ])
     @message.AssistantMsg(part) =>
       jobj([
@@ -281,6 +284,10 @@ pub fn decode_message(json : Json) -> @message.Message? {
         @message.UserMsg({
           content: decode_contents(obj, "content"),
           timestamp,
+          compaction_summary: field_bool(obj, "compaction_summary").unwrap_or(
+            false,
+          ),
+          tokens_before: field_int(obj, "tokens_before").unwrap_or(0),
         }),
       )
     "assistant" =>
@@ -333,6 +340,46 @@ pub fn decode_message(json : Json) -> @message.Message? {
     }
     _ => None
   }
+}
+
+// ─── 压缩记录 ────────────────────────────────────────────────────────────────
+
+///|
+/// 一次压缩后的**整份** messages（`op: "compact"`）。
+///
+/// 为什么要单独一种记录：`message` 记录是**增量**的（按条数游标追加），而压缩
+/// 是「整段换掉」—— 增量表达不了。回放时遇到 `compact` 就重置 messages，
+/// 之后的 `message` 记录再从它后面长出来。
+pub fn encode_compaction(messages : Array[@message.Message]) -> Json {
+  let items : Array[Json] = []
+  for message in messages {
+    items.push(encode_message(message))
+  }
+  jobj([("op", jstr("compact")), ("messages", jarr(items))])
+}
+
+///|
+/// `compact` 记录 → 整份新历史。
+pub fn decode_compaction(json : Json) -> Array[@message.Message]? {
+  let obj = match json {
+    Object(obj) => obj
+    _ => return None
+  }
+  if field_string_or(obj, "op", "") != "compact" {
+    return None
+  }
+  let messages : Array[@message.Message] = []
+  match field_array(obj, "messages") {
+    Some(items) =>
+      for item in items {
+        match decode_message(item) {
+          Some(message) => messages.push(message)
+          None => ()
+        }
+      }
+    None => ()
+  }
+  Some(messages)
 }
 
 // ─── 轨迹节点 ────────────────────────────────────────────────────────────────

@@ -302,6 +302,295 @@ async fn run_tools_default(
 }
 
 ///|
+priv struct SummaryResult {
+  text : String
+  usage : @message.Usage?
+}
+
+///|
+/// 组一个摘要预算：`ratio` 是 reserve 的百分比，再按模型的 max_tokens 封顶。
+fn summary_budget(
+  reserve_tokens : Int32,
+  model_max : Int32?,
+  ratio : Int32,
+) -> Int32 {
+  let raw = reserve_tokens * ratio / 100
+  let capped = match model_max {
+    Some(max) => if max > 0 && max < raw { max } else { raw }
+    None => raw
+  }
+  if capped < 1 {
+    1
+  } else {
+    capped
+  }
+}
+
+///|
+fn part_text(part : @message.AssistantPart) -> String {
+  let builder = StringBuilder()
+  for block in part.content {
+    match block {
+      @message.Text(text) => builder.write_string(text)
+      _ => ()
+    }
+  }
+  builder.to_string().trim().to_owned()
+}
+
+///|
+/// 打一次摘要请求（流式收完，但不往环上发 delta）。
+///
+/// 失败用 `Err` 返回而不是 dispatch：调用方要先把两次摘要（历史 + 半轮前缀）
+/// 都拿到才 dispatch 一条 `compact.done`。
+async fn summarization_call(
+  resolved : ResolvedProvider,
+  system_prompt : String,
+  user_text : String,
+  options : ChatOptions,
+  max_tokens : Int32,
+) -> Result[SummaryResult, String] {
+  let message : @message.Message = @message.UserMsg({
+    content: [@message.Text(user_text)],
+    timestamp: @env.now().reinterpret_as_int64(),
+    compaction_summary: false,
+    tokens_before: 0,
+  })
+  let body = build_summary_request_body(
+    resolved,
+    system_prompt,
+    [message],
+    max_tokens,
+  ).stringify()
+  let settings = resolved.faceoff_settings(system_prompt)
+  let url = settings.chat_completions_url()
+  let headers : @http.Headers = Map([])
+  headers["Content-Type"] = "application/json"
+  headers["Accept"] = "text/event-stream"
+  if !resolved.api_key.is_empty() {
+    headers["Authorization"] = "Bearer " + resolved.api_key
+  }
+  let client = @http.post_stream(url, headers~) catch {
+    err => return Err("transport error: " + err.to_string())
+  }
+  defer client.close()
+  let response = try {
+    client.write(body)
+    client.end_request()
+  } catch {
+    err => return Err("transport error: " + err.to_string())
+  }
+  if response.code < 200 || response.code >= 300 {
+    let text = client.read_all().text() catch { _ => "" }
+    return Err("http " + response.code.to_string() + ": " + truncate(text, 400))
+  }
+  let accumulator = StreamAccumulator::new()
+  while !accumulator.done {
+    let line = read_sse_line(client, options.idle_timeout_ms) catch {
+      @async.TimeoutError =>
+        return Err(
+          "summary idle timeout after " +
+          options.idle_timeout_ms.to_string() +
+          "ms",
+        )
+      err => return Err("stream error: " + err.to_string())
+    }
+    let line = match line {
+      Some(line) => line
+      None => break
+    }
+    let _ = accumulator.apply_line(line)
+  }
+  if accumulator.is_truncated() {
+    return Err("stream ended before finish/[DONE]")
+  }
+  let part = accumulator.to_assistant_part(resolved.model)
+  // 半截摘要绝对不能进 messages：模型会拿着残缺的「进度」继续干，
+  // 比不压糟糕得多。pi 的 `getSummarizationFailure` 专门拦这一条。
+  if part.stop_reason == "length" {
+    return Err("generation hit the token cap and the summary is incomplete")
+  }
+  if !part.tool_calls().is_empty() {
+    return Err("summarization attempted to call a tool")
+  }
+  let text = part_text(part)
+  if text.is_empty() {
+    return Err("summary was empty")
+  }
+  Ok({ text, usage: part.usage, })
+}
+
+///|
+fn merge_unique(target : Array[String], extra : Array[String]) -> Unit {
+  for item in extra {
+    if !target.contains(item) {
+      target.push(item)
+    }
+  }
+}
+
+///|
+fn combine_usage(
+  left : @message.Usage?,
+  right : @message.Usage?,
+) -> @message.Usage? {
+  match (left, right) {
+    (Some(a), Some(b)) =>
+      Some({
+        input_tokens: a.input_tokens + b.input_tokens,
+        output_tokens: a.output_tokens + b.output_tokens,
+        total_tokens: a.total_tokens + b.total_tokens,
+        cost_total: a.cost_total + b.cost_total,
+      })
+    (Some(a), None) => Some(a)
+    (None, Some(b)) => Some(b)
+    (None, None) => None
+  }
+}
+
+///|
+/// 压缩的真正干活处：读 `state.compact_plan` → 生成摘要 → dispatch `compact.done`。
+///
+/// effect 不改 state（本项目的不变式）：它只发 action，换历史是迁移的事。
+async fn run_compact_effect(
+  config : PiConfig,
+  options : ChatOptions,
+  state : @state.AgentState,
+  dispatch : @runtime.Dispatch,
+) -> Unit {
+  let plan = match state.compact_plan {
+    Some(plan) => plan
+    None => {
+      // 正常情况下接线已经用 `compact.done` 处理了「没什么可压」，走到这里
+      // 说明状态不对 —— 回一条空结果，别让 compacting 卡死。
+      dispatch.send(
+        @action.CompactDone({
+          messages: state.messages,
+          summary: "",
+          tokens_before: 0,
+          summarized_count: 0,
+          kept_count: state.messages.length(),
+          usage: None,
+        }),
+      )
+      return
+    }
+  }
+  let provider = if state.model.provider.is_empty() {
+    None
+  } else {
+    Some(state.model.provider)
+  }
+  let model = if state.model.model_id.is_empty() {
+    None
+  } else {
+    Some(state.model.model_id)
+  }
+  let resolved = config.resolve(
+    provider?,
+    model?,
+    api_key?=options.api_key,
+    thinking=state.model.thinking_level,
+  ) catch {
+    err => {
+      dispatch.send(@action.CompactFailed({ error: err.to_string(), }))
+      return
+    }
+  }
+  // 窗口小的模型要夹紧 reserve / keepRecent（理由见 `effective_settings`）。
+  let settings = @compact.effective_settings(
+    state.compact_settings,
+    state.model.context_window,
+  )
+  let history_budget = summary_budget(
+    settings.reserve_tokens,
+    resolved.model.max_tokens,
+    80,
+  )
+  let previous = @compact.last_summary_text(plan.summarized)
+  let history = summarization_call(
+    resolved,
+    @compact.summarization_system_prompt(),
+    @compact.summarize_prompt(plan.summarized, previous),
+    options,
+    history_budget,
+  )
+  let history_result = match history {
+    Ok(result) => result
+    Err(error) => {
+      dispatch.send(
+        @action.CompactFailed({
+          error: "上下文压缩失败（对话原样保留）：" + error,
+        }),
+      )
+      return
+    }
+  }
+  let mut summary = history_result.text
+  let mut usage = history_result.usage
+  // 切点落在一轮中间：前半轮另做一段摘要并拼在后面（pi 的合并形状）。
+  if plan.is_split_turn && !plan.turn_prefix.is_empty() {
+    let prefix_budget = summary_budget(
+      settings.reserve_tokens,
+      resolved.model.max_tokens,
+      50,
+    )
+    let prefix = summarization_call(
+      resolved,
+      @compact.summarization_system_prompt(),
+      @compact.turn_prefix_prompt(plan.turn_prefix),
+      options,
+      prefix_budget,
+    )
+    match prefix {
+      Ok(result) => {
+        summary = summary +
+          "\n\n---\n\n**Turn Context (split turn):**\n\n" +
+          result.text
+        usage = combine_usage(usage, result.usage)
+      }
+      Err(error) => {
+        dispatch.send(
+          @action.CompactFailed({
+            error: "上下文压缩失败（对话原样保留）：" + error,
+          }),
+        )
+        return
+      }
+    }
+  }
+  // 文件清单附在摘要末尾：压缩之后模型仍要知道这个会话碰过什么文件。
+  let (read, modified) = @compact.file_lists(plan.summarized)
+  let (prefix_read, prefix_modified) = @compact.file_lists(plan.turn_prefix)
+  let read_all : Array[String] = []
+  let modified_all : Array[String] = []
+  merge_unique(read_all, read)
+  merge_unique(read_all, prefix_read)
+  merge_unique(modified_all, modified)
+  merge_unique(modified_all, prefix_modified)
+  summary = summary + @compact.format_file_operations(read_all, modified_all)
+  let summary_message = @compact.build_summary_message(
+    summary,
+    plan.tokens_before,
+    @env.now().reinterpret_as_int64(),
+  )
+  let messages : Array[@message.Message] = [summary_message]
+  for message in plan.kept {
+    messages.push(message)
+  }
+  dispatch.send(
+    @action.CompactDone({
+      messages,
+      summary,
+      tokens_before: plan.tokens_before,
+      summarized_count: plan.summarized.length(),
+      kept_count: plan.kept.length(),
+      usage,
+    }),
+  )
+}
+
+///|
 /// 用 pi 配置驱动的 effect 表。
 pub fn effect_table(
   config : PiConfig,
@@ -353,6 +642,9 @@ pub fn effect_table_full(
       run_agent_effect(config, options, hooks, state, dispatch)
     },
     run_tools,
+    run_compact: async fn(state, dispatch) {
+      run_compact_effect(config, options, state, dispatch)
+    },
   }
 }
 

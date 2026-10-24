@@ -143,6 +143,28 @@ pub(all) struct ConversationResetData {
 } derive(Eq, Debug)
 
 ///|
+/// 压完了：`messages` 是**整份新历史**（摘要 + 保留的尾巴），不是增量 ——
+/// 压缩的本质就是「替换中间一大段」，增量表达不了。
+pub(all) struct CompactDoneData {
+  messages : Array[@message.Message]
+  /// 摘要正文（界面 / 轨迹上可展开看）。
+  summary : String
+  /// 压缩前的估算 token 数。
+  tokens_before : Int32
+  /// 被摘掉 / 保留的消息条数。`summarized_count == 0` 表示没有可压的内容。
+  summarized_count : Int32
+  kept_count : Int32
+  /// 摘要这一次花掉的 token。
+  usage : @message.Usage?
+} derive(Eq, Debug)
+
+///|
+/// 压失败。**对话原样保留**（压缩是优化，不是正确性要求）。
+pub(all) struct CompactFailedData {
+  error : String
+} derive(Eq, Debug)
+
+///|
 pub(all) enum AgentAction {
   PromptInit(PromptInitData)
   ModelInit(ModelSpec)
@@ -191,6 +213,15 @@ pub(all) enum AgentAction {
   SessionRestored(SessionRestoredData)
   /// 清空对话 / 开新会话。
   ConversationReset(ConversationResetData)
+  /// 开始一次上下文压缩。**不携带结果** —— 真正干活的是 effect（要花钱、要打网络），
+  /// 结果从 `CompactDone` / `CompactFailed` 回来。
+  CompactRequest(@compact.CompactReason)
+  /// 压完了（或者「没什么可压」）：整份换掉 messages。
+  CompactDone(CompactDoneData)
+  /// 压失败：对话一个字都不动。
+  CompactFailed(CompactFailedData)
+  /// 改压缩参数（`settings.json` 的 `compaction` 段）。
+  CompactSettingsChanged(@compact.Settings)
 } derive(Eq, Debug)
 
 ///|
@@ -226,5 +257,9 @@ pub fn AgentAction::name(self : AgentAction) -> String {
     ToolsChanged(_) => "tools.changed"
     SessionRestored(_) => "session.restored"
     ConversationReset(_) => "conversation.reset"
+    CompactRequest(_) => "compact.request"
+    CompactDone(_) => "compact.done"
+    CompactFailed(_) => "compact.failed"
+    CompactSettingsChanged(_) => "compact.settings"
   }
 }

@@ -37,19 +37,31 @@ pub fn Dispatch::send(
 }
 
 ///|
-/// effect 表：`RunAgent` / `RunTools` 的真正实现。
+/// effect 表：`RunAgent` / `RunTools` / `RunCompact` 的真正实现。
 ///
-/// 两张表各自只拿到「当时的 state」与 dispatch 句柄 —— 它读不到 store，
+/// 三张表各自只拿到「当时的 state」与 dispatch 句柄 —— 它读不到 store，
 /// 也改不了 state。想改状态只能发 action。
 pub(all) struct EffectTable {
   run_agent : async (@state.AgentState, Dispatch) -> Unit
   run_tools : async (@state.AgentState, Array[@message.ToolCall], Dispatch) -> Unit
+  run_compact : async (@state.AgentState, Dispatch) -> Unit
 }
 
 ///|
-/// 什么也不做的表：`RunAgent` / `RunTools` 被丢掉。用来测试「接线发对了没有」。
+/// 什么都不做的表：`RunAgent` / `RunTools` 被丢掉（用来测试「接线发对了没有」）。
+/// `RunCompact` 例外：它回一条失败，因为「压到一半没人收尾」会把之后所有输入卡住。
 pub fn noop_effect_table() -> EffectTable {
-  { run_agent: async fn(_, _) { () }, run_tools: async fn(_, _, _) { () }, }
+  {
+    run_agent: async fn(_, _) { () },
+    run_tools: async fn(_, _, _) { () },
+    // 压缩不能「什么都不做」：那样 `compacting` 会永远卡住，之后所有输入都被拒。
+    // 回一条失败，至少把状态放回 idle（对话原样保留）。
+    run_compact: async fn(_, dispatch) {
+      dispatch.send(
+        @action.CompactFailed({ error: "本内核没有接入上下文压缩", }),
+      )
+    },
+  }
 }
 
 ///|
@@ -185,6 +197,7 @@ async fn Agent::flush_deferred(self : Agent) -> Unit {
         (self.table.run_agent)(self.state, dispatch)
       @loop.RunTools(calls) =>
         (self.table.run_tools)(self.state, calls, dispatch)
+      @loop.RunCompact => (self.table.run_compact)(self.state, dispatch)
       @loop.Redispatch(action) => self.pump(action)
       _ => ()
     }

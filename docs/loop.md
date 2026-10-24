@@ -9,7 +9,7 @@
 | --- | --- | --- |
 | 迁移表 | `core/loop/transition.mbt` 的 `transition` | action → 下一个状态（纯函数） |
 | 接线表 | `core/loop/wiring.mbt` 的 `wiring` | action → `Array[Cmd]`（纯数据） |
-| effect 表 | `core/runtime/runtime.mbt` 的 `EffectTable` | `RunAgent` / `RunTools` 的真正实现（注入） |
+| effect 表 | `core/runtime/runtime.mbt` 的 `EffectTable` | `RunAgent` / `RunTools` / `RunCompact` 的真正实现（注入） |
 
 `reduce(state, action, now)` = 迁移 + 接线：
 
@@ -30,6 +30,7 @@ pub(all) enum Cmd {
   Redispatch(AgentAction)          // 送回 reducer（环上的一步）
   RunAgent(String?)                // 交给 effect 表
   RunTools(Array[ToolCall])        // 交给 effect 表
+  RunCompact                       // 读 state.compact_plan，写摘要
 }
 ```
 
@@ -179,7 +180,7 @@ ToolBatchDone ──迁移：关 step──► wiring 看到 steer 队列非空
   的 toolResult —— 否则第一个请求就会被 provider 以非法消息序列拒掉。
   **只补末尾**：中插会让会话写入器的「已写条数」游标错位。
 
-三条守卫：环在跑时不接、一条消息都没有不接。（压缩尚未接。）
+三条守卫：环在跑时不接、压缩中不接、一条消息都没有不接。
 
 ## 轨迹树的 tip 规则
 
@@ -241,7 +242,7 @@ LLM 被调两遍，第二遍的结果覆盖第一遍，树上就是两个 `llm.r
 
 ## 已经接上的
 
-- **异步 effect**：`EffectTable` 的两项都是 `async`；`Dispatch.send()` 同步归约，
+- **异步 effect**：`EffectTable` 的三项都是 `async`；`Dispatch.send()` 同步归约，
   `flush_deferred()` 在 effect 边界 await。真实 provider（`core/provider`）就是
   按这个形状接的：SSE 增量在 await 期间逐条 dispatch。
 - **provider**：pi 的 `models.json` / `auth.json` / `settings.json` → OpenAI 兼容
@@ -257,7 +258,11 @@ LLM 被调两遍，第二遍的结果覆盖第一遍，树上就是两个 `llm.r
   一条新 system 消息追加并更新 `declared_tools`（不改 head / 不改历史消息）。
   声明写在防重入守卫**之前**：真实流程里 step 容器已经开了，守卫会跳过状态
   重置，但工具声明不能跳。
+- **上下文压缩**：`compact.request` 开 pending 节点并算好切点（`state.compact_plan`），
+  接线发 `RunCompact`；effect 打摘要请求，回 `compact.done` / `compact.failed`。
+  切点与摘要格式照搬 pi；判定在 `core/loop/compact_ops.mbt`；详见
+  [compact](compact.md)。
 
 ## 尚未接的部分（按计划的顺序）
 
-1. **压缩 / 扩展 / 分支**：action 与迁移都未搬（刻意留在环稳定之后）。
+1. **扩展 / 分支 / 界面**：action 与迁移都未搬（刻意留在环稳定之后）。

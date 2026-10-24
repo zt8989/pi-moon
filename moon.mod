@@ -3,9 +3,9 @@
 // 形状照搬原项目：reducer 是纯函数，返回 (state, Cmd[])；Cmd 是**数据**，
 // 由运行时解释执行。环不是写出来的 while 循环，是 action → reducer → Cmd →
 // effect → action 自己接起来的。
-name = "zhouteng/pi_moon"
+name = "pi-moon"
 
-version = "0.5.0"
+version = "0.6.0"
 
 readme = "README.md"
 

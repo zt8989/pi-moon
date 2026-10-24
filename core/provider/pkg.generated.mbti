@@ -1,16 +1,19 @@
 // Generated using `moon info`, DON'T EDIT IT
-package "zhouteng/pi_moon/core/provider"
+package "pi-moon/core/provider"
 
 import {
   "conglinyizhi/moonbit-llm-faceoff",
   "moonbitlang/core/debug",
-  "zhouteng/pi_moon/core/message",
-  "zhouteng/pi_moon/core/runtime",
-  "zhouteng/pi_moon/core/state",
+  "pi-moon/core/compact",
+  "pi-moon/core/message",
+  "pi-moon/core/runtime",
+  "pi-moon/core/state",
 }
 
 // Values
 pub fn build_request_body(ResolvedProvider, @state.AgentState, ChatOptions, Bool) -> Json
+
+pub fn build_summary_request_body(ResolvedProvider, String, Array[@message.Message], Int32) -> Json
 
 pub let default_compat : ModelCompat
 
@@ -68,6 +71,7 @@ pub(all) struct PiConfig {
   default_model : String?
   default_thinking_level : String
   default_tools : Array[String]?
+  compaction : @compact.Settings
   auth : Map[String, String]
   env : Map[String, String]
   agent_dir : String

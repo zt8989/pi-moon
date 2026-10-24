@@ -1,5 +1,5 @@
 // Generated using `moon info`, DON'T EDIT IT
-package "zhouteng/pi_moon/cmd/main"
+package "pi-moon/cmd/main"
 
 // Values
 

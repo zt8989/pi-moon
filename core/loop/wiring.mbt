@@ -139,6 +139,32 @@ pub fn wiring(
         None => [start_step_cmd()]
       }
     }
+    // ── 压缩 ──
+    //
+    // 没找到切点（历史太短 / 全在保留窗口内）不发 effect：直接回一条
+    // `compact.done`，summarized_count = 0。**不能静默** —— 用户以为压了、
+    // 实际历史一个字没动，是最坏的一种反馈。
+    @action.CompactRequest(_) =>
+      if !state.compact_requested {
+        []
+      } else {
+        match state.compact_plan {
+          Some(_) => [RunCompact]
+          None =>
+            [
+              redispatch(
+                CompactDone({
+                  messages: state.messages,
+                  summary: "",
+                  tokens_before: 0,
+                  summarized_count: 0,
+                  kept_count: state.messages.length(),
+                  usage: None,
+                }),
+              ),
+            ]
+        }
+      }
     _ => []
   }
 }

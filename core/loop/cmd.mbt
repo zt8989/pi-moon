@@ -20,6 +20,8 @@ pub(all) enum Cmd {
   RunAgent(String?)
   /// 执行一批工具调用。
   RunTools(Array[@message.ToolCall])
+  /// 压缩上下文：读 `state.compact_plan` → 打一次摘要请求 → 回一条 `compact.done`。
+  RunCompact
 } derive(Eq, Debug)
 
 ///|

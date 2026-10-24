@@ -1,5 +1,5 @@
 // Generated using `moon info`, DON'T EDIT IT
-package "zhouteng/pi_moon/cmd/pi-moon"
+package "pi-moon/cmd/pi-moon"
 
 // Values
 
@@ -13,6 +13,8 @@ pub fn CliError::to_string(Self) -> String
 
 // Types and methods
 type CliArgs
+
+type CompactSnapshot
 
 // Type aliases
 

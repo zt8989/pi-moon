@@ -105,6 +105,8 @@ test "消息编解码：四种 role 与全部内容块" {
         @message.Image("data:image/png;base64,AAA"),
       ],
       timestamp: 1L,
+      compaction_summary: false,
+      tokens_before: 0,
     }),
     @message.AssistantMsg({
       content: [
@@ -386,5 +388,55 @@ async test "tools.changed 落盘：恢复出当前工具集，head 仍是装载�
   let after = (@fs.read_file(path) catch { _ => abort("file missing") }).binary()
   let after_lines = @utf8.decode_lossy(after).split("\n").count()
   assert_eq(after_lines, before_lines)
+  remove_file(path)
+}
+
+///|
+async test "压缩落盘：写一条 compact 记录，回放出来就是压缩后的历史" {
+  let path = session_test_path("compact")
+  remove_file(path)
+  let state = session_state_after_turn()
+  let writer = SessionWriter::new(path)
+  let (writer, _cursor) = writer.flush(state) catch {
+    err => abort(err.to_string())
+  }
+  // 压缩：整份换掉 messages，并推进代数（落盘器据此写 compact 记录）。
+  let summary = @compact.build_summary_message("压缩后的摘要", 100, 9L)
+  let compacted = {
+    ..state,
+    messages: [summary],
+    compaction_epoch: state.compaction_epoch + 1,
+  }
+  let (_writer, _cursor) = writer.flush(compacted) catch {
+    err => abort(err.to_string())
+  }
+  let loaded = match load_session(path, "s-session") {
+    Some(loaded) => loaded
+    None => abort("load failed")
+  }
+  // 回放遇到 compact 就重置 messages：旧 message 记录作废。
+  assert_eq(loaded.messages.length(), 1)
+  assert_true(@compact.is_summary_message(loaded.messages[0]))
+  assert_eq(
+    @compact.summary_body(loaded.messages[0]),
+    Some("压缩后的摘要"),
+  )
+  // 再追加一句：从压缩后的长度继续增量，不重写历史。
+  let next_state = {
+    ..compacted,
+    messages: compacted.messages.add([@message.user_message("接着说", 10L)]),
+  }
+  let (next_writer, _cursor) = SessionWriter::restored(path, loaded).flush(
+    next_state,
+  ) catch {
+    err => abort(err.to_string())
+  }
+  let reloaded = match load_session(path, "s-session") {
+    Some(loaded) => loaded
+    None => abort("load failed")
+  }
+  assert_eq(reloaded.messages.length(), 2)
+  assert_eq(reloaded.messages[1], @message.user_message("接着说", 10L))
+  let _ = next_writer
   remove_file(path)
 }

@@ -42,9 +42,17 @@ pub let zero_usage : Usage = {
 
 ///|
 /// user 消息。带附件时 `content` 是 text / image 块的混合。
+///
+/// `compaction_summary` 是**结构标记**：这条 user 消息是压缩摘要，不是人说的话。
+/// 用标记而不是「内容长得像 `<summary>`」去认 —— 用户完全可能手打一段一模一样的
+/// 文本，而把那句当成压缩点会让回放丢掉真历史。
 pub(all) struct UserPart {
   content : Array[Content]
   timestamp : Int64
+  /// 这条是上下文压缩摘要。
+  compaction_summary : Bool
+  /// 压缩前的上下文 token 数（摘要消息专用；普通消息为 0）。
+  tokens_before : Int32
 } derive(Eq, Debug)
 
 ///|
@@ -189,7 +197,12 @@ pub fn Message::tool_result_id(self : Message) -> String? {
 ///|
 /// 纯文本 user 消息的构造糖。
 pub fn user_message(text : String, timestamp : Int64) -> Message {
-  UserMsg({ content: [Text(text)], timestamp, })
+  UserMsg({
+    content: [Text(text)],
+    timestamp,
+    compaction_summary: false,
+    tokens_before: 0,
+  })
 }
 
 ///|

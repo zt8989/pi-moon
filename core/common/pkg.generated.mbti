@@ -1,5 +1,5 @@
 // Generated using `moon info`, DON'T EDIT IT
-package "zhouteng/pi_moon/core/common"
+package "pi-moon/core/common"
 
 import {
   "moonbitlang/core/debug",

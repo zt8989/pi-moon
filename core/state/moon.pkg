@@ -1,8 +1,9 @@
 import {
-  "zhouteng/pi_moon/core/common",
-  "zhouteng/pi_moon/core/message",
-  "zhouteng/pi_moon/core/trace",
-  "zhouteng/pi_moon/core/action",
+  "pi-moon/core/common",
+  "pi-moon/core/message",
+  "pi-moon/core/trace",
+  "pi-moon/core/action",
+  "pi-moon/core/compact",
   "moonbitlang/core/immut/hashmap" @ihm,
 }
 

@@ -1,13 +1,14 @@
 import {
-  "zhouteng/pi_moon/core/message",
-  "zhouteng/pi_moon/core/action",
-  "zhouteng/pi_moon/core/state",
-  "zhouteng/pi_moon/core/loop",
+  "pi-moon/core/message",
+  "pi-moon/core/action",
+  "pi-moon/core/state",
+  "pi-moon/core/loop",
 }
 
 import {
-  "zhouteng/pi_moon/core/common",
-  "zhouteng/pi_moon/core/trace",
+  "pi-moon/core/common",
+  "pi-moon/core/compact",
+  "pi-moon/core/trace",
   "moonbitlang/async",
 } for "wbtest"
 

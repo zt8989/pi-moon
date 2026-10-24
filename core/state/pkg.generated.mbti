@@ -1,13 +1,14 @@
 // Generated using `moon info`, DON'T EDIT IT
-package "zhouteng/pi_moon/core/state"
+package "pi-moon/core/state"
 
 import {
   "moonbitlang/core/debug",
   "moonbitlang/core/immut/hashmap",
-  "zhouteng/pi_moon/core/action",
-  "zhouteng/pi_moon/core/common",
-  "zhouteng/pi_moon/core/message",
-  "zhouteng/pi_moon/core/trace",
+  "pi-moon/core/action",
+  "pi-moon/core/common",
+  "pi-moon/core/compact",
+  "pi-moon/core/message",
+  "pi-moon/core/trace",
 }
 
 // Values
@@ -44,6 +45,14 @@ pub(all) struct AgentState {
   follow_up_queue : Array[QueuedInput]
   delivering_input : QueuedInput?
   delivering_as : @common.QueueKind?
+  compacting : Bool
+  compact_requested : Bool
+  compact_reason : @compact.CompactReason?
+  compact_plan : @compact.CutPlan?
+  open_compact_node_id : String?
+  compact_settings : @compact.Settings
+  last_compaction : CompactionRecord?
+  compaction_epoch : Int32
   usage : @message.Usage?
   total_cost : Double
   error : String?
@@ -71,6 +80,13 @@ pub(all) struct AgentState {
   llm_timeout_ms : Int64
   persisted_seq : Int32
 } derive(@debug.Debug)
+
+pub(all) struct CompactionRecord {
+  reason : @compact.CompactReason
+  summarized_count : Int32
+  kept_count : Int32
+  tokens_before : Int32
+} derive(Eq, @debug.Debug)
 
 pub(all) struct ExecutingTool {
   call : @message.ToolCall

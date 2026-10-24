@@ -131,6 +131,7 @@ fn demo_table() -> @runtime.EffectTable {
       }
       dispatch.send(@action.ToolBatchDone(calls.length()))
     },
+    run_compact: async fn(_, _) { () },
   }
 }
 
@@ -167,6 +168,7 @@ fn flaky_table() -> @runtime.EffectTable {
       }
     },
     run_tools: async fn(_state, _calls, _dispatch) { () },
+    run_compact: async fn(_, _) { () },
   }
 }
 

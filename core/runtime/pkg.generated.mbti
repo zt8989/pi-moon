@@ -1,11 +1,11 @@
 // Generated using `moon info`, DON'T EDIT IT
-package "zhouteng/pi_moon/core/runtime"
+package "pi-moon/core/runtime"
 
 import {
-  "zhouteng/pi_moon/core/action",
-  "zhouteng/pi_moon/core/loop",
-  "zhouteng/pi_moon/core/message",
-  "zhouteng/pi_moon/core/state",
+  "pi-moon/core/action",
+  "pi-moon/core/loop",
+  "pi-moon/core/message",
+  "pi-moon/core/state",
 }
 
 // Values
@@ -44,6 +44,7 @@ pub fn Dispatch::send(Self, @action.AgentAction) -> Unit raise
 pub(all) struct EffectTable {
   run_agent : async (@state.AgentState, Dispatch) -> Unit
   run_tools : async (@state.AgentState, Array[@message.ToolCall], Dispatch) -> Unit
+  run_compact : async (@state.AgentState, Dispatch) -> Unit
 }
 
 // Type aliases

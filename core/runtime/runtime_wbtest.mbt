@@ -100,6 +100,7 @@ fn tool_agent_table() -> EffectTable {
       }
       dispatch.send(@action.ToolBatchDone(calls.length()))
     },
+    run_compact: async fn(_, _) { () },
   }
 }
 
@@ -190,6 +191,7 @@ fn retry_table(attempts : Ref[Int32]) -> EffectTable {
       }
     },
     run_tools: async fn(_state, _calls, _dispatch) { () },
+    run_compact: async fn(_, _) { () },
   }
 }
 
@@ -271,6 +273,7 @@ fn steer_table() -> EffectTable {
       }
       dispatch.send(@action.ToolBatchDone(calls.length()))
     },
+    run_compact: async fn(_, _) { () },
   }
 }
 
@@ -348,6 +351,7 @@ fn follow_up_table() -> EffectTable {
       }
     },
     run_tools: async fn(_state, _calls, _dispatch) { () },
+    run_compact: async fn(_, _) { () },
   }
 }
 
@@ -407,6 +411,7 @@ async test "轮数上限：撞上限收工，树上留 stop 节点" {
       }
       dispatch.send(@action.ToolBatchDone(calls.length()))
     },
+    run_compact: async fn(_, _) { () },
   }
   let state = @state.create_initial_state({
     system_prompt: "",
@@ -443,4 +448,51 @@ async test "轮数上限：撞上限收工，树上留 stop 节点" {
   }
   assert_eq(stop_count, 1)
   assert_eq(stops.length(), 0)
+}
+
+///|
+async test "compact：RunCompact 真的被 await，done 回来了整份换历史" {
+  let base = runtime_test_state()
+  let state = {
+    ..base,
+    messages: [
+      @message.user_message("第一问", 1L),
+      @message.assistant_message("第一答", "stop", 2L),
+      @message.user_message("第二问", 3L),
+      @message.assistant_message("第二答", "stop", 4L),
+    ],
+  }
+  let table : EffectTable = {
+    run_agent: async fn(_, _) { () },
+    run_tools: async fn(_, _, _) { () },
+    run_compact: async fn(state, dispatch) {
+      dispatch.send(
+        @action.CompactDone({
+          messages: [@compact.build_summary_message("摘要", 100, 90L)],
+          summary: "摘要",
+          tokens_before: 100,
+          summarized_count: state.messages.length() - 1,
+          kept_count: 1,
+          usage: None,
+        }),
+      )
+    },
+  }
+  let agent = Agent::new(state, table, runtime_test_clock())
+  // 默认 keepRecent 大于整段历史 → 没东西可压，effect 不会被调用。
+  agent.send(
+    @action.CompactSettingsChanged({
+      enabled: true,
+      reserve_tokens: 100,
+      keep_recent_tokens: 1,
+    }),
+  )
+  agent.send(@action.CompactRequest(@compact.Manual))
+  let next = agent.state
+  assert_false(next.compacting)
+  assert_eq(next.phase, @common.Idle)
+  assert_eq(next.messages.length(), 1)
+  assert_true(@compact.is_summary_message(next.messages[0]))
+  assert_eq(next.compaction_epoch, 1)
+  assert_eq(next.last_compaction.unwrap().reason, @compact.Manual)
 }

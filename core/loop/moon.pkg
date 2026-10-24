@@ -1,9 +1,10 @@
 import {
-  "zhouteng/pi_moon/core/common",
-  "zhouteng/pi_moon/core/message",
-  "zhouteng/pi_moon/core/trace",
-  "zhouteng/pi_moon/core/action",
-  "zhouteng/pi_moon/core/state",
+  "pi-moon/core/common",
+  "pi-moon/core/message",
+  "pi-moon/core/trace",
+  "pi-moon/core/action",
+  "pi-moon/core/state",
+  "pi-moon/core/compact",
 }
 
 warnings = "-implicit_impl_as_method"

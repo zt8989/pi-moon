@@ -35,6 +35,8 @@ pub(all) struct SessionWriter {
   tools_key : String
   /// 已经 add 过、但落盘时还没闭合的节点（后面要补 close）。
   open_nodes : @ihm.HashMap[String, Bool]
+  /// 上一次写过的压缩代数。变了就说明压缩整段换掉了 messages。
+  compaction_epoch : Int32
 }
 
 ///|
@@ -47,6 +49,7 @@ pub fn SessionWriter::new(path : String) -> SessionWriter {
     model_key: "",
     tools_key: "",
     open_nodes: @ihm.HashMap::new(),
+    compaction_epoch: 0,
   }
 }
 
@@ -81,6 +84,9 @@ pub fn SessionWriter::restored(
     },
     tools_key: tools_key_of(current_tools_of(loaded)),
     open_nodes,
+    // 从 0 起算：state 也是 0，于是恢复后第一次 flush 不会重写历史；
+    // 之后每压缩一次，state 的 epoch 就会超过它，照常触发一次整份重写。
+    compaction_epoch: 0,
   }
 }
 
@@ -172,6 +178,7 @@ pub async fn SessionWriter::flush(
   let mut node_cursor = self.node_cursor
   let mut message_cursor = self.message_cursor
   let mut open_nodes = self.open_nodes
+  let mut compaction_epoch = self.compaction_epoch
   if state.prompt.seeded {
     if !prompt_written {
       lines.push(encode_prompt_init(state.prompt).stringify())
@@ -212,7 +219,14 @@ pub async fn SessionWriter::flush(
       None => ()
     }
   }
-  // 消息按条数游标追加（messages 只增长；ConversationReset 不在本版 CLI 里用）。
+  // 压缩整段换掉了 messages：增量游标不再成立，写一条 `compact` 记录带上整份历史。
+  // 回放时它会重置 messages，之后的 `message` 记录再从新历史的尾巴往下长。
+  if state.compaction_epoch != compaction_epoch {
+    lines.push(encode_compaction(state.messages).stringify())
+    compaction_epoch = state.compaction_epoch
+    message_cursor = state.messages.length()
+  }
+  // 消息按条数游标追加（没压缩过时 messages 只增长）。
   while message_cursor < state.messages.length() {
     lines.push(message_record(state.messages[message_cursor]))
     message_cursor = message_cursor + 1
@@ -225,6 +239,7 @@ pub async fn SessionWriter::flush(
     model_key,
     tools_key,
     open_nodes,
+    compaction_epoch,
   }
   if lines.is_empty() {
     return (next, node_cursor)
@@ -267,7 +282,7 @@ pub async fn load_session(path : String, session_id : String) -> LoadedSession? 
   }
   let data = @fs.read_file(path) catch { _ => return None }
   let text = @utf8.decode_lossy(data.binary())
-  let messages : Array[@message.Message] = []
+  let mut messages : Array[@message.Message] = []
   let mut trace = @trace.create_trace_tree(session_id)
   let mut prompt : @action.PromptInitData? = None
   let mut tools : Array[@action.PromptToolDefinition]? = None
@@ -318,6 +333,12 @@ pub async fn load_session(path : String, session_id : String) -> LoadedSession? 
       "prompt.init" => prompt = decode_prompt_init(json)
       "tools.changed" => tools = decode_tools_changed(json)
       "model.init" => model = decode_model_init(json)
+      // 压缩记录：整份替换历史（之前的 message 记录作废）。
+      "compact" =>
+        match decode_compaction(json) {
+          Some(replaced) => messages = replaced
+          None => ()
+        }
       _ => ()
     }
   }

@@ -1,13 +1,14 @@
 // Generated using `moon info`, DON'T EDIT IT
-package "zhouteng/pi_moon/core/loop"
+package "pi-moon/core/loop"
 
 import {
   "moonbitlang/core/debug",
-  "zhouteng/pi_moon/core/action",
-  "zhouteng/pi_moon/core/common",
-  "zhouteng/pi_moon/core/message",
-  "zhouteng/pi_moon/core/state",
-  "zhouteng/pi_moon/core/trace",
+  "pi-moon/core/action",
+  "pi-moon/core/common",
+  "pi-moon/core/compact",
+  "pi-moon/core/message",
+  "pi-moon/core/state",
+  "pi-moon/core/trace",
 }
 
 // Values
@@ -29,11 +30,15 @@ pub fn close_turn_cmd() -> Cmd
 
 pub fn close_turn_node(@state.AgentState, Int64, @common.TurnEndReason, String) -> @state.AgentState
 
+pub fn decide_compaction(@state.AgentState, Bool) -> CompactDecision
+
 pub fn dedupe_tool_call_ids(@state.AgentState, @message.AssistantPart) -> (@message.AssistantPart, Array[@message.ToolCall])
 
 pub fn flatten_cmds(Array[Cmd]) -> Array[Cmd]
 
 pub fn flush_model_change(@state.AgentState, Int64) -> @state.AgentState
+
+pub fn looks_like_context_overflow(String) -> Bool
 
 pub fn new_turn_counters() -> TurnCounters
 
@@ -62,8 +67,15 @@ pub(all) enum Cmd {
   Redispatch(@action.AgentAction)
   RunAgent(String?)
   RunTools(Array[@message.ToolCall])
+  RunCompact
 } derive(Eq, @debug.Debug)
 pub fn Cmd::batch(Array[Self]) -> Self
+
+pub(all) struct CompactDecision {
+  should : Bool
+  reason : @compact.CompactReason?
+  context_tokens : Int32?
+} derive(Eq, @debug.Debug)
 
 pub(all) struct TurnCounters {
   turns : Int32

@@ -35,6 +35,18 @@ pub(all) struct ToolProgress {
 } derive(Eq, Debug)
 
 ///|
+/// 最近一次压缩的结果（给界面显示「N 条 → M 条，压掉了多少」）。
+///
+/// 之所以进 state 而不是让界面自己 diff messages.length：界面 diff 出来的
+/// 「少了多少条」在**恢复历史之后**没有意义（那条历史本来就没被压缩过）。
+pub(all) struct CompactionRecord {
+  reason : @compact.CompactReason
+  summarized_count : Int32
+  kept_count : Int32
+  tokens_before : Int32
+} derive(Eq, Debug)
+
+///|
 /// prompt 侧状态 —— 与 model 分开装载：「跟模型说什么」vs「用哪个模型说」。
 pub(all) struct PromptState {
   /// 基础 system prompt（渲染好的整段）。
@@ -118,6 +130,28 @@ pub(all) struct AgentState {
   /// 已经「决定要发」但还没真正组装成消息的队列头（在途状态）。
   delivering_input : QueuedInput?
   delivering_as : @common.QueueKind?
+  // ── 压缩 ──
+  /// 压缩是否正在进行中（摘要要打一次网络，可能好几秒）。
+  ///
+  /// 界面用它：压缩期间不能发新消息（否则压缩完会把那句话一起换掉）。
+  compacting : Bool
+  /// 这一次 `compact.request` 是否被迁移接受（守卫失败时为 false）。
+  ///
+  /// 接线靠它区分「这条 action 开启了压缩」与「压缩中又收到一条请求」——
+  /// 只看 `compacting` 的话，第二条请求会让 effect 再跑一遍。
+  compact_requested : Bool
+  /// 这次压缩的理由（节点 label、失败报告都要它）。
+  compact_reason : @compact.CompactReason?
+  /// 已经算好的切点；None = 没有可压的内容。effect 直接用它，不再算第二遍。
+  compact_plan : @compact.CutPlan?
+  /// 正在跑的压缩对应的轨迹节点 id；没有则 None。
+  open_compact_node_id : String?
+  /// 压缩参数（`settings.json` 的 `compaction` 段或默认值）。
+  compact_settings : @compact.Settings
+  /// 最近一次压缩的结果。
+  last_compaction : CompactionRecord?
+  /// 压缩替换过几次 messages。落盘器靠它判断「整份历史变了，要写一条 compact 记录」。
+  compaction_epoch : Int32
   // ── 用量 / 错误 ──
   usage : @message.Usage?
   total_cost : Double
@@ -253,6 +287,14 @@ pub fn create_initial_state(options : InitialStateOptions) -> AgentState {
     follow_up_queue: [],
     delivering_input: None,
     delivering_as: None,
+    compacting: false,
+    compact_requested: false,
+    compact_reason: None,
+    compact_plan: None,
+    open_compact_node_id: None,
+    compact_settings: @compact.default_settings(),
+    last_compaction: None,
+    compaction_epoch: 0,
     usage: None,
     total_cost: 0.0,
     error: None,

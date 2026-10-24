@@ -1,15 +1,17 @@
 // Generated using `moon info`, DON'T EDIT IT
-package "zhouteng/pi_moon/core/session"
+package "pi-moon/core/session"
 
 import {
   "moonbitlang/core/immut/hashmap",
-  "zhouteng/pi_moon/core/action",
-  "zhouteng/pi_moon/core/message",
-  "zhouteng/pi_moon/core/state",
-  "zhouteng/pi_moon/core/trace",
+  "pi-moon/core/action",
+  "pi-moon/core/message",
+  "pi-moon/core/state",
+  "pi-moon/core/trace",
 }
 
 // Values
+pub fn decode_compaction(Json) -> Array[@message.Message]?
+
 pub fn decode_message(Json) -> @message.Message?
 
 pub fn decode_model_init(Json) -> @action.ModelSpec?
@@ -19,6 +21,8 @@ pub fn decode_node(Json) -> @trace.TraceNode?
 pub fn decode_prompt_init(Json) -> @action.PromptInitData?
 
 pub fn decode_tools_changed(Json) -> Array[@action.PromptToolDefinition]?
+
+pub fn encode_compaction(Array[@message.Message]) -> Json
 
 pub fn encode_message(@message.Message) -> Json
 
@@ -62,6 +66,7 @@ pub(all) struct SessionWriter {
   model_key : String
   tools_key : String
   open_nodes : @hashmap.HashMap[String, Bool]
+  compaction_epoch : Int32
 }
 pub async fn SessionWriter::flush(Self, @state.AgentState) -> (Self, Int32)
 pub fn SessionWriter::new(String) -> Self

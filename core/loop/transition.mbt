@@ -44,12 +44,22 @@ fn transition_user_message(
   if state.phase != @common.Idle {
     return state
   }
+  // 压缩中不接受新话：压缩会整份换掉 messages，那句新话要是先进去了，
+  // 摘要回来时会连同它一起被换掉。
+  if state.compacting {
+    return state
+  }
   let content = if input.content.is_empty() {
     [@message.Text(input.text)]
   } else {
     input.content
   }
-  let message : @message.Message = @message.UserMsg({ content, timestamp: now, })
+  let message : @message.Message = @message.UserMsg({
+    content,
+    timestamp: now,
+    compaction_summary: false,
+    tokens_before: 0,
+  })
   // 顺序就是它们在树上的顺序：装载节点 → 换过模型那一笔 → user 节点。
   let begun = begin_trace(state, now)
   let with_model = flush_model_change({ ..state, trace: begun, }, now)
@@ -198,6 +208,8 @@ pub fn transition(
       let message : @message.Message = @message.UserMsg({
         content,
         timestamp: now,
+        compaction_summary: false,
+        tokens_before: 0,
       })
       let with_model = flush_model_change(state, now)
       // steer 的 user 节点挂在**当前回合容器**下面（它是这回合里的一个额外输入）；
@@ -352,6 +364,8 @@ pub fn transition(
           let message : @message.Message = @message.UserMsg({
             content,
             timestamp: now,
+            compaction_summary: false,
+            tokens_before: 0,
           })
           // 先把 followUp 那句话作为 user 消息插进去（它开启新回合），
           // 再开回合容器 —— 于是 user 节点在树上排在 turn.start 之前。
@@ -402,6 +416,9 @@ pub fn transition(
     @action.TurnContinue => {
       // 三条守卫：跑着不续（会开第二条并行的环）、压缩中不续、一条消息都没有不续。
       if state.phase != @common.Idle {
+        return state
+      }
+      if state.compacting {
         return state
       }
       if state.messages.is_empty() {
@@ -974,6 +991,7 @@ pub fn transition(
         },
         messages: data.messages.copy(),
         trace_begun: true,
+        compact_settings: state.compact_settings,
         persisted_seq: data.persisted_seq,
         total_steps: @trace.trace_stats(data.trace).steps,
       }
@@ -1022,8 +1040,160 @@ pub fn transition(
         // 保留装载好的两块（会话级的，不是对话级的）。
         prompt: state.prompt,
         model: state.model,
+        compact_settings: state.compact_settings,
         persisted_seq: state.persisted_seq,
       }
     }
+    // ── 压缩 ──
+    @action.CompactRequest(reason) => {
+      // 守卫一：压缩期间不能再来一次 —— 两条摘要基于同一份历史生成，
+      // 后写的覆盖先写的，白花钱还丢信息。
+      // 守卫二：环在跑时不许压 —— 压缩整份换掉 messages，而正在流的那条请求
+      // 回来时看到的已经不是它请求的那份历史，`tool.result` 更会找不到它的 id。
+      if state.compacting || state.phase != @common.Idle {
+        return { ..state, compact_requested: false, }
+      }
+      let settings = @compact.effective_settings(
+        state.compact_settings,
+        state.model.context_window,
+      )
+      let plan = @compact.plan_cut(state.messages, settings.keep_recent_tokens)
+      // **先开 pending 再等结果**，而不是等压缩完才开：那样中途挂掉就什么都没有，
+      // 而「开始压缩了」这个事实本身就该留在树上。
+      let (tree, node) = @trace.append_node(
+        state.trace,
+        state.trace.tip_id,
+        @trace.CompactNode,
+        @trace.Pending,
+        reason.text(),
+        now,
+        meta=[("reason", reason.name())],
+      )
+      {
+        ..state,
+        trace: tree,
+        compacting: true,
+        compact_requested: true,
+        compact_reason: Some(reason),
+        compact_plan: plan,
+        open_compact_node_id: Some(node.id),
+      }
+    }
+    @action.CompactDone(data) => {
+      if !state.compacting {
+        return state
+      }
+      let reason = state.compact_reason.unwrap_or(@compact.Manual)
+      let why = reason.text()
+      let nothing = data.summarized_count == 0
+      let label = if nothing {
+        why + "压缩：没什么可压的"
+      } else {
+        why +
+        "压缩：" +
+        data.summarized_count.to_string() +
+        " 条 → " +
+        data.kept_count.to_string() +
+        " 条"
+      }
+      // **就地改写**那个 pending 节点（不另开一个）：压缩从头到尾就是一个节点。
+      // 它从 pending 变成 ok，于是推进 tip —— 压缩之后的那条线是从摘要开始的。
+      let mut trace = state.trace
+      match state.open_compact_node_id {
+        Some(id) =>
+          trace = @trace.patch_node(
+            trace,
+            id,
+            status=@trace.Ok,
+            label~,
+            detail=data.summary,
+            meta=[
+              ("reason", reason.name()),
+              ("summarized", data.summarized_count.to_string()),
+              ("kept", data.kept_count.to_string()),
+              ("tokensBefore", data.tokens_before.to_string()),
+            ],
+            ended_at=now,
+          )
+        None => ()
+      }
+      let (usage, cost) = match data.usage {
+        Some(usage) => (Some(usage), usage.cost_total)
+        None => (state.usage, 0.0)
+      }
+      {
+        ..state,
+        trace,
+        compacting: false,
+        compact_requested: false,
+        compact_reason: None,
+        compact_plan: None,
+        open_compact_node_id: None,
+        messages: data.messages,
+        usage,
+        total_cost: state.total_cost + cost,
+        last_compaction: Some({
+          reason,
+          summarized_count: data.summarized_count,
+          kept_count: data.kept_count,
+          tokens_before: data.tokens_before,
+        }),
+        // 只有真的换过历史才推进 epoch：落盘器据此写一条 `compact` 记录。
+        compaction_epoch: if nothing {
+          state.compaction_epoch
+        } else {
+          state.compaction_epoch + 1
+        },
+        // 压缩成功**不碰** error / stop_reason / stop_cause：它不是「一轮对话的结果」。
+      }
+    }
+    @action.CompactFailed(data) => {
+      if !state.compacting {
+        return state
+      }
+      let node_id = state.open_compact_node_id
+      let mut trace = state.trace
+      match node_id {
+        Some(id) =>
+          trace = @trace.patch_node(
+            trace,
+            id,
+            status=@trace.Errored,
+            ended_at=now,
+          )
+        None => ()
+      }
+      let (tree, error_node) = @trace.append_node(
+        trace,
+        node_id,
+        @trace.ErrorNode,
+        @trace.Errored,
+        data.error,
+        now,
+        detail=data.error,
+        meta=[("kind", "compact-error"), ("cause", "compact-error")],
+        ended_at=now,
+      )
+      {
+        ..state,
+        trace: tree,
+        compacting: false,
+        compact_requested: false,
+        compact_reason: None,
+        compact_plan: None,
+        open_compact_node_id: None,
+        // messages 一个字都不动：半截摘要进历史比不压糟糕得多。
+        error: Some(data.error),
+        error_node_id: Some(error_node.id),
+        error_kind: None,
+        stop_reason: None,
+        stop_cause: Some(@common.CauseCompactError),
+        stop_cause_detail: Some(
+          @common.stop_cause_text(@common.CauseCompactError),
+        ),
+      }
+    }
+    @action.CompactSettingsChanged(settings) =>
+      { ..state, compact_settings: settings, }
   }
 }

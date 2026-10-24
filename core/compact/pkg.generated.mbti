@@ -1,0 +1,77 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "pi-moon/core/compact"
+
+import {
+  "moonbitlang/core/debug",
+  "pi-moon/core/message",
+}
+
+// Values
+pub fn build_summary_message(String, Int32, Int64) -> @message.Message
+
+pub fn default_settings() -> Settings
+
+pub fn effective_settings(Settings, Int32) -> Settings
+
+pub fn estimate_messages_tokens(Array[@message.Message]) -> Int32
+
+pub fn estimate_tokens(@message.Message) -> Int32
+
+pub fn file_lists(Array[@message.Message]) -> (Array[String], Array[String])
+
+pub fn format_file_operations(Array[String], Array[String]) -> String
+
+pub fn is_summary_message(@message.Message) -> Bool
+
+pub fn last_context_tokens(Array[@message.Message]) -> Int32?
+
+pub fn last_summary_text(Array[@message.Message]) -> String?
+
+pub fn plan_cut(Array[@message.Message], Int32) -> CutPlan?
+
+pub fn serialize_conversation(Array[@message.Message]) -> String
+
+pub fn should_compact(Int32, Int32, Settings) -> Bool
+
+pub fn summarization_prompt() -> String
+
+pub fn summarization_system_prompt() -> String
+
+pub fn summarize_prompt(Array[@message.Message], String?) -> String
+
+pub fn summary_body(@message.Message) -> String?
+
+pub let summary_prefix : String
+
+pub let summary_suffix : String
+
+pub fn turn_prefix_prompt(Array[@message.Message]) -> String
+
+// Errors
+
+// Types and methods
+pub(all) enum CompactReason {
+  Manual
+  Threshold
+  Overflow
+} derive(Eq, @debug.Debug)
+pub fn CompactReason::name(Self) -> String
+pub fn CompactReason::text(Self) -> String
+
+pub(all) struct CutPlan {
+  summarized : Array[@message.Message]
+  turn_prefix : Array[@message.Message]
+  kept : Array[@message.Message]
+  is_split_turn : Bool
+  tokens_before : Int32
+} derive(Eq, @debug.Debug)
+
+pub(all) struct Settings {
+  enabled : Bool
+  reserve_tokens : Int32
+  keep_recent_tokens : Int32
+} derive(Eq, @debug.Debug)
+
+// Type aliases
+
+// Traits
