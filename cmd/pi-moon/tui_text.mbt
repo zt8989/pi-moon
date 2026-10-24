@@ -34,11 +34,6 @@ pub fn styled_line(
 }
 
 ///|
-pub fn dim_line(text : String) -> StyledLine {
-  { text, fg: Some("rgb(150,152,160)"), bg: None, bold: false, spans: None, }
-}
-
-///|
 pub fn blank_line() -> StyledLine {
   { text: "", fg: None, bg: None, bold: false, spans: None, }
 }

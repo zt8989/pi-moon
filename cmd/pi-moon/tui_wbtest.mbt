@@ -635,13 +635,13 @@ test "markdown：行内 code / 粗体 / 链接各带自己的样式" {
   let mut found_url = false
   for line in lines {
     for span in spans_of(line) {
-      if span.text == "code" && span.fg == Some("magenta") {
+      if span.text == "code" && span.fg == Some("rgb(167,152,215)") {
         found_code = true
       }
       if span.text == "粗体" && span.bold {
         found_bold = true
       }
-      if span.text == "链接" && span.fg == Some("cyan") {
+      if span.text == "链接" && span.fg == Some("rgb(105,173,208)") {
         found_link = true
       }
       if span.text.contains("https://example.com") {
@@ -663,7 +663,7 @@ test "markdown：围栏代码保留标记、内容用代码色" {
   for line in lines {
     if line.text.contains("let x = 1") {
       found = true
-      assert_eq(line.fg, Some("rgb(200,200,210)"))
+      assert_eq(line.fg, Some("rgb(104,183,141)"))
     }
   }
   assert_true(found)
@@ -680,7 +680,7 @@ test "markdown：带样式的行按显示宽度折行，样式不丢" {
   }
   let mut has_code = false
   for span in spans_of(lines[0]) {
-    if span.fg == Some("magenta") {
+    if span.fg == Some("rgb(167,152,215)") {
       has_code = true
     }
   }
@@ -712,4 +712,208 @@ test "markdown：用户块整段铺底色，首尾各一条空白底色行" {
   assert_true(found_body)
   // 顶/底空白 + 两行内容。
   assert_eq(bg_count, 4)
+}
+
+///|
+test "markdown：有序列表、嵌套列表与任务列表" {
+  let lines = markdown_lines(
+    "1. 第一\n   - 子项\n2. 第二\n\n- [x] 完成\n- [ ] 未完成", 40,
+  )
+  let text = line_texts(lines)
+  assert_true(text.contains("1. 第一"))
+  assert_true(text.contains("2. 第二"))
+  // 嵌套项的缩进 = 外层标记宽度，叠出来的层级才看得见。
+  assert_true(text.contains("   • 子项"))
+  assert_true(text.contains("☑ 完成"))
+  assert_true(text.contains("☐ 未完成"))
+}
+
+///|
+test "markdown：表格按列宽对齐，分隔线用 ─ 与 ┼" {
+  let lines = markdown_lines(
+    "| 名 | 值 |\n| --- | ---: |\n| a | 1 |\n| longer | 22 |", 40,
+  )
+  assert_true(lines.length() >= 4)
+  assert_true(lines[0].text.contains("名"))
+  assert_true(lines[1].text.contains("┼"))
+  assert_true(lines[3].text.contains("longer"))
+  // 右对齐列：个位数也贴着右边界。
+  assert_true(lines[2].text.has_suffix("1"))
+  for line in lines {
+    assert_true(display_width(line.text) <= 40)
+  }
+}
+
+///|
+test "markdown：引用带灰竖线前缀" {
+  let lines = markdown_lines("> 引用一行", 20)
+  assert_eq(lines[0].text, "│ 引用一行")
+  let mut muted_prefix = false
+  for span in spans_of(lines[0]) {
+    if span.text == "│ " && span.fg == Some("rgb(157,165,169)") {
+      muted_prefix = true
+    }
+  }
+  assert_true(muted_prefix)
+}
+
+///|
+test "markdown：```diff 按行上色（增 / 删 / 区块头）" {
+  let lines = markdown_lines(
+    "```diff\n@@ -1 +1 @@\n- 旧\n+ 新\n 原样\n```", 40,
+  )
+  let mut added = false
+  let mut removed = false
+  let mut hunk = false
+  for line in lines {
+    if line.text.contains("+ 新") {
+      added = true
+      assert_eq(line.fg, Some("rgb(104,183,141)"))
+    }
+    if line.text.contains("- 旧") {
+      removed = true
+      assert_eq(line.fg, Some("rgb(234,127,129)"))
+    }
+    if line.text.contains("@@") {
+      hunk = true
+      assert_eq(line.fg, Some("rgb(105,173,208)"))
+    }
+  }
+  assert_true(added)
+  assert_true(removed)
+  assert_true(hunk)
+}
+
+///|
+test "markdown：硬换行断行、实体解码" {
+  let lines = markdown_lines("a &amp; b  \nc", 40)
+  assert_eq(lines.length(), 2)
+  assert_eq(lines[0].text, "a & b")
+  assert_eq(lines[1].text, "c")
+}
+
+///|
+test "markdown：引用式链接能解析出地址，定义本身不画" {
+  let lines = markdown_lines("[文档][d]\n\n[d]: https://example.com/doc", 60)
+  let text = line_texts(lines)
+  assert_true(text.contains("文档"))
+  assert_true(text.contains("https://example.com/doc"))
+  assert_false(text.contains("[d]:"))
+}
+
+///|
+test "markdown：空串得到一个空行，窄宽度不炸" {
+  let empty = markdown_lines("", 40)
+  assert_eq(empty.length(), 1)
+  assert_eq(empty[0].text, "")
+  let narrow = markdown_lines("`aaaaaaaa` bbbbbbbb", 3)
+  assert_true(narrow.length() > 0)
+  for line in narrow {
+    assert_true(display_width(line.text) <= 3)
+  }
+}
+
+///|
+test "markdown：没有围栏标记的正文不会被当成代码" {
+  let lines = markdown_lines("#hashtag 保持原样\n\n正文 `x` 结束", 40)
+  assert_true(lines[0].text.contains("#hashtag"))
+  let mut inline_code = false
+  for line in lines {
+    for span in spans_of(line) {
+      if span.text == "x" && span.fg == Some("rgb(167,152,215)") {
+        inline_code = true
+      }
+    }
+  }
+  assert_true(inline_code)
+}
+
+///|
+test "颜色：COLORTERM / TERM 广告 24-bit 时用 TrueColor" {
+  assert_true(
+    color_mode_from_env("xterm-256color", "truecolor", "", "", "", "").is_true_color(),
+  )
+  assert_true(
+    color_mode_from_env("xterm-direct", "", "", "", "", "").is_true_color(),
+  )
+}
+
+///|
+test "颜色：Windows Terminal / VS Code / ConEmu 也算 24-bit" {
+  assert_true(
+    color_mode_from_env("", "", "6f1a-...", "", "", "").is_true_color(),
+  )
+  assert_true(
+    color_mode_from_env("", "", "", "Windows_Terminal", "", "").is_true_color(),
+  )
+  assert_true(color_mode_from_env("", "", "", "vscode", "", "").is_true_color())
+  assert_true(color_mode_from_env("", "", "", "", "ON", "").is_true_color())
+  // 什么都不广告 → 退回 256 色（宁可量化，也别把底色送成默认色）。
+  assert_false(
+    color_mode_from_env("xterm-256color", "", "", "", "", "").is_true_color(),
+  )
+  assert_false(color_mode_from_env("", "", "", "", "", "").is_true_color())
+}
+
+///|
+test "颜色：24-bit 终端用 pi dark 主题的原值，256 色退回 16 色名字" {
+  let true_color = Palette::true_color()
+  assert_eq(true_color.user_bg, "rgb(33,59,73)")
+  assert_eq(true_color.tool_success_bg, "rgb(37,65,49)")
+  assert_eq(true_color.tool_error_bg, "rgb(91,40,42)")
+  assert_eq(true_color.tool_pending_bg, "rgb(52,56,58)")
+  let ansi = Palette::ansi256()
+  assert_eq(ansi.user_bg, "blue")
+  assert_eq(ansi.tool_success_bg, "green")
+}
+
+///|
+test "颜色：对话页的底色跟着调色板走" {
+  let call : @message.ToolCall = { id: "c1", name: "read", arguments: "{}", }
+  let state = {
+    ..test_state(),
+    messages: [
+      @message.user_message("你好", 1L),
+      @message.tool_result_message(call, "ok", false, 2L),
+    ],
+  }
+  let fallback = chat_lines(state, false, 60, [])
+  assert_true(fallback.any(fn(line) { line.bg == Some("blue") }))
+  let true_color = chat_lines(
+    state,
+    false,
+    60,
+    [],
+    palette=Palette::true_color(),
+  )
+  assert_true(true_color.any(fn(line) { line.bg == Some("rgb(33,59,73)") }))
+  // 找不到调用的孤儿结果块：成功底色走 pi 的深绿。
+  assert_true(true_color.any(fn(line) { line.bg == Some("rgb(37,65,49)") }))
+}
+
+///|
+test "颜色：TrueColor 下整帧真的发出 48;2 序列，256 色下不发" {
+  let state = {
+    ..test_state(),
+    messages: [@message.user_message("你好", 1L)],
+  }
+  let tui = {
+    ..TuiState::new(),
+    width: 80,
+    height: 24,
+    palette: Palette::true_color(),
+  }
+  let node = tui_view(tui, state)
+  let true_color = @vnode.render_vnode_once(
+    80,
+    24,
+    node,
+    color_mode=@render.ColorMode::TrueColor,
+  )
+  assert_true(true_color.contains("48;2;33;59;73"))
+  let fallback = @vnode.render_vnode_once(80, 24, node)
+  assert_false(fallback.contains("48;2;33;59;73"))
+  // 256 色退路：底色走调色板（48;5;n），不是 24-bit 的 48;2。
+  assert_true(fallback.contains("48;5;"))
+  assert_false(fallback.contains("48;2;"))
 }

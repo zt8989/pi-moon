@@ -9,31 +9,9 @@
 // **没有自造的对话区边框、也没有单独的标题栏**：ela 把模型名放在底栏第二行，
 // 把「我在哪页 / 跑到哪一步」压在顶行，理由是对话区的高度比装饰重要。
 //
-// 颜色取 pi 的分类（userMessageBg / toolSuccessBg / …），但用 **16 色名字**：
-// tui.mbt 的渲染器把 `rgb()` 量化到 256 色立方（6×6×6），pi 那些很暗的底色
-// （`rgb(41,49,73)` 与 `rgb(37,65,49)`）会双双落到同一个 `#005f5f` —— 用户块与
-// 工具块就分不出来了。16 色里的 blue / green / red 在暗色终端上最接近 pi 的观感。
-
-///|
-let color_user_bg : String = "blue"
-
-///|
-let color_tool_pending_bg : String = "black"
-
-///|
-let color_tool_success_bg : String = "green"
-
-///|
-let color_tool_error_bg : String = "red"
-
-///|
-let color_compaction_bg : String = "magenta"
-
-///|
-let color_muted : String = "rgb(150,152,160)"
-
-///|
-let color_dim : String = "rgb(128,128,128)"
+// 颜色取 pi 的分类（userMessageBg / toolSuccessBg / …）。**底色的具体值跟着
+// 终端能力变**：24-bit 终端用 pi dark 主题的原值，只有 256 色时退回 16 色名字
+// —— 量化会把 pi 那几块很暗的底色压成同一个格子（详见 `tui_color.mbt`）。
 
 ///|
 /// 顶行之外的固定高度：空隙(1) + composer(3) + 底栏(2)。
@@ -58,29 +36,30 @@ pub fn chat_lines(
   expanded : Bool,
   width : Int32,
   cards : Array[StatusCard],
+  palette~ : Palette = Palette::ansi256(),
 ) -> Array[StyledLine] {
   let out : Array[StyledLine] = []
-  push_cards(out, cards, 0, width)
+  push_cards(out, cards, 0, width, palette)
   let mut index = 0
   for message in state.messages {
-    message_lines(message, state, expanded, width, out)
+    message_lines(message, state, expanded, width, out, palette)
     index = index + 1
-    push_cards(out, cards, index, width)
+    push_cards(out, cards, index, width, palette)
   }
   // 正在流的那一轮：思考在上、正文在下（与模型说出来之前的顺序一致）。
   if state.phase != @common.Idle {
     if !state.thinking_text.is_empty() {
-      push_inset_block(out, state.thinking_text, width, color_muted)
+      push_inset_block(out, state.thinking_text, width, palette.muted)
     }
     if !state.streaming_text.is_empty() {
       push_inset_block(out, state.streaming_text + "▌", width, "")
     }
   }
   if state.compacting {
-    push_inset_block(out, "压缩中…", width, color_muted)
+    push_inset_block(out, "压缩中…", width, palette.muted)
   }
   // 锚点超过当前消息数的卡（理论上不该有）兜底画在最后，总比消失强。
-  push_cards_beyond(out, cards, state.messages.length(), width)
+  push_cards_beyond(out, cards, state.messages.length(), width, palette)
   out
 }
 
@@ -92,12 +71,13 @@ fn push_cards_beyond(
   cards : Array[StatusCard],
   at : Int32,
   width : Int32,
+  palette : Palette,
 ) -> Unit {
   for card in cards {
     if card.at > at {
       out.push(blank_line())
       for line in wrap_text(card.text, width - 2) {
-        out.push(dim_line(" " + line))
+        out.push(styled_line(" " + line, palette.dim))
       }
     }
   }
@@ -109,12 +89,13 @@ fn push_cards(
   cards : Array[StatusCard],
   at : Int32,
   width : Int32,
+  palette : Palette,
 ) -> Unit {
   for card in cards {
     if card.at == at {
       out.push(blank_line())
       for line in wrap_text(card.text, width - 2) {
-        out.push(dim_line(" " + line))
+        out.push(styled_line(" " + line, palette.dim))
       }
     }
   }
@@ -127,14 +108,15 @@ fn message_lines(
   expanded : Bool,
   width : Int32,
   out : Array[StyledLine],
+  palette : Palette,
 ) -> Unit {
   match message {
     @message.UserMsg(part) =>
       if part.compaction_summary {
-        compaction_block(part, expanded, width, out)
+        compaction_block(part, expanded, width, out, palette)
       } else {
         let body = @message.contents_text(part.content)
-        push_bg_markdown(out, body, width, "", color_user_bg)
+        push_bg_markdown(out, body, width, "", palette.user_bg, palette.md)
       }
     @message.AssistantMsg(part) => {
       for block in part.content {
@@ -142,12 +124,12 @@ fn message_lines(
           @message.Text(text) =>
             if !text.trim(chars=" \t\r\n").is_empty() {
               out.push(blank_line())
-              push_markdown_block(out, text, width, "")
+              push_markdown_block(out, text, width, "", palette.md)
             }
           @message.Thinking(text) =>
             if !text.trim(chars=" \t\r\n").is_empty() {
               out.push(blank_line())
-              push_inset_block(out, text, width, color_muted)
+              push_inset_block(out, text, width, palette.muted)
             }
           @message.ToolCallBlock(call) =>
             tool_block(
@@ -157,6 +139,7 @@ fn message_lines(
               expanded,
               width,
               out,
+              palette,
             )
           @message.Image(_) => ()
         }
@@ -165,12 +148,12 @@ fn message_lines(
       // toolCall 已经在 provider 侧剥掉了，这里不必再判。
       if part.stop_reason == "aborted" {
         out.push(blank_line())
-        push_inset_block(out, "[已中断]", width, "red")
+        push_inset_block(out, "[已中断]", width, palette.error)
       }
       match part.error_message {
         Some(error) => {
           out.push(blank_line())
-          push_inset_block(out, error, width, "red")
+          push_inset_block(out, error, width, palette.error)
         }
         None => ()
       }
@@ -181,9 +164,9 @@ fn message_lines(
       if !call_was_rendered(state, part.tool_call_id) {
         out.push(blank_line())
         let bg = if part.is_error {
-          color_tool_error_bg
+          palette.tool_error_bg
         } else {
-          color_tool_success_bg
+          palette.tool_success_bg
         }
         let body = @message.contents_text(part.content)
         let lines = if expanded {
@@ -199,15 +182,19 @@ fn message_lines(
           expanded,
           bg,
           width,
+          palette,
         )
       }
     @message.SystemMsg(part) =>
       // 中途的工具声明是给模型看的，不是给用户看的：只留一行标记。
       if part.source == Some("tools") {
-        out.push(dim_line(" 〔工具集已更新〕"))
+        out.push(styled_line(" 〔工具集已更新〕", palette.dim))
       } else {
         out.push(
-          dim_line(" 〔" + truncate_to(part.content, width - 3) + "〕"),
+          styled_line(
+            " 〔" + truncate_to(part.content, width - 3) + "〕",
+            palette.dim,
+          ),
         )
       }
   }
@@ -219,6 +206,7 @@ fn compaction_block(
   expanded : Bool,
   width : Int32,
   out : Array[StyledLine],
+  palette : Palette,
 ) -> Unit {
   out.push(blank_line())
   let body = @message.contents_text(part.content)
@@ -235,7 +223,7 @@ fn compaction_block(
       " tokens (Ctrl+O to expand)",
     )
   }
-  push_bg_block(out, head, width, color_muted, color_compaction_bg)
+  push_bg_block(out, head, width, palette.muted, palette.compaction_bg)
 }
 
 ///|
@@ -248,16 +236,17 @@ fn tool_block(
   expanded : Bool,
   width : Int32,
   out : Array[StyledLine],
+  palette : Palette,
 ) -> Unit {
   out.push(blank_line())
   let bg = match result {
     Some(part) =>
       if part.is_error {
-        color_tool_error_bg
+        palette.tool_error_bg
       } else {
-        color_tool_success_bg
+        palette.tool_success_bg
       }
-    None => color_tool_pending_bg
+    None => palette.tool_pending_bg
   }
   let title = call.name + " " + truncate_to(one_line(call.arguments), width - 4)
   match result {
@@ -265,7 +254,16 @@ fn tool_block(
       let body = @message.contents_text(part.content)
       let limit = if expanded { 40 } else { 6 }
       let lines = first_lines(body, limit)
-      push_bg_lines(out, title, lines, line_count(body), expanded, bg, width)
+      push_bg_lines(
+        out,
+        title,
+        lines,
+        line_count(body),
+        expanded,
+        bg,
+        width,
+        palette,
+      )
     }
     None => {
       // 还在跑：显示进度最后一行（没有就只画标题）。
@@ -279,7 +277,16 @@ fn tool_block(
         }
         None => ()
       }
-      push_bg_lines(out, title, lines, lines.length(), false, bg, width)
+      push_bg_lines(
+        out,
+        title,
+        lines,
+        lines.length(),
+        false,
+        bg,
+        width,
+        palette,
+      )
     }
   }
 }
@@ -293,6 +300,7 @@ fn push_bg_lines(
   expanded : Bool,
   bg : String,
   width : Int32,
+  palette : Palette,
 ) -> Unit {
   let lines : Array[String] = [title]
   for line in body {
@@ -305,7 +313,7 @@ fn push_bg_lines(
       " 行（Ctrl+O 展开）",
     )
   }
-  push_bg_block(out, lines, width, color_muted, bg)
+  push_bg_block(out, lines, width, palette.muted, bg)
 }
 
 ///|
@@ -331,8 +339,9 @@ fn push_markdown_block(
   text : String,
   width : Int32,
   fg : String,
+  colors : MarkdownColors,
 ) -> Unit {
-  for line in markdown_lines(text, width - 2) {
+  for line in markdown_lines(text, width - 2, colors~) {
     out.push(prefixed_markdown_line(line, " ", fg, None, width))
   }
 }
@@ -345,9 +354,10 @@ fn push_bg_markdown(
   width : Int32,
   fg : String,
   bg : String,
+  colors : MarkdownColors,
 ) -> Unit {
   out.push(pad_line("", fg, Some(bg), width))
-  for line in markdown_lines(text, width - 2) {
+  for line in markdown_lines(text, width - 2, colors~) {
     out.push(prefixed_markdown_line(line, " ", fg, Some(bg), width))
   }
   out.push(pad_line("", fg, Some(bg), width))
@@ -440,17 +450,18 @@ fn call_was_rendered(state : @state.AgentState, tool_call_id : String) -> Bool {
 pub fn trace_lines(
   state : @state.AgentState,
   width : Int32,
+  palette~ : Palette = Palette::ansi256(),
 ) -> Array[StyledLine] {
   let rows = @trace.trace_rows(state.trace, max_width=width - 2)
   let out : Array[StyledLine] = []
   if rows.is_empty() {
-    out.push(dim_line(" （轨迹为空）"))
+    out.push(styled_line(" （轨迹为空）", palette.dim))
     return out
   }
   for row in rows {
     let fg = match row.node.status {
-      @trace.Errored => "red"
-      @trace.Aborted => "yellow"
+      @trace.Errored => palette.error
+      @trace.Aborted => palette.warning
       _ => ""
     }
     out.push(pad_line(" " + row.text, fg, None, width))
@@ -504,6 +515,7 @@ fn clamp_int(value : Int32, low : Int32, high : Int32) -> Int32 {
 pub fn queue_lines(
   state : @state.AgentState,
   width : Int32,
+  palette~ : Palette = Palette::ansi256(),
 ) -> Array[StyledLine] {
   let out : Array[StyledLine] = []
   if state.steer_queue.is_empty() && state.follow_up_queue.is_empty() {
@@ -511,12 +523,16 @@ pub fn queue_lines(
   }
   out.push(blank_line())
   for item in state.steer_queue {
-    out.push(dim_line(queue_row("Steering: ", item.text, width)))
+    out.push(
+      styled_line(queue_row("Steering: ", item.text, width), palette.dim),
+    )
   }
   for item in state.follow_up_queue {
-    out.push(dim_line(queue_row("Follow-up: ", item.text, width)))
+    out.push(
+      styled_line(queue_row("Follow-up: ", item.text, width), palette.dim),
+    )
   }
-  out.push(dim_line(" ↳ Ctrl+U 取回排队消息"))
+  out.push(styled_line(" ↳ Ctrl+U 取回排队消息", palette.dim))
   out
 }
 
@@ -538,23 +554,24 @@ pub fn tab_nodes(
   state : @state.AgentState,
   page : TuiPage,
   width : Int32,
+  palette~ : Palette = Palette::ansi256(),
 ) -> Array[@vnode.TuiNode] {
   let stats = @trace.trace_stats(state.trace)
   let nodes : Array[@vnode.TuiNode] = []
   let mut used : Int32 = 0
   if page == Chat {
-    nodes.push(@vnode.text("对话", fg="cyan", bold=true))
+    nodes.push(@vnode.text("对话", fg=palette.accent, bold=true))
     used = used + 4
     nodes.push(@vnode.text(" "))
     used = used + 1
-    nodes.push(@vnode.text("│ 轨迹", fg=color_dim))
+    nodes.push(@vnode.text("│ 轨迹", fg=palette.dim))
     used = used + 4
   } else {
-    nodes.push(@vnode.text("对话", fg=color_dim))
+    nodes.push(@vnode.text("对话", fg=palette.dim))
     used = used + 4
     nodes.push(@vnode.text(" "))
     used = used + 1
-    nodes.push(@vnode.text("│ 轨迹", fg="cyan", bold=true))
+    nodes.push(@vnode.text("│ 轨迹", fg=palette.accent, bold=true))
     used = used + 4
   }
   let bits : Array[(String, String)] = []
@@ -564,13 +581,13 @@ pub fn tab_nodes(
     )
   }
   if stats.tool_calls > 0 {
-    bits.push(("工具" + stats.tool_calls.to_string(), color_dim))
+    bits.push(("工具" + stats.tool_calls.to_string(), palette.dim))
   }
   if stats.retries > 0 {
-    bits.push(("重试" + stats.retries.to_string(), color_dim))
+    bits.push(("重试" + stats.retries.to_string(), palette.dim))
   }
   if stats.errors > 0 {
-    bits.push(("错误" + stats.errors.to_string(), "red"))
+    bits.push(("错误" + stats.errors.to_string(), palette.error))
   }
   let mut bit_index = 0
   for bit in bits {
@@ -586,7 +603,7 @@ pub fn tab_nodes(
   let tail_gap = if bits.is_empty() { " " } else { "  " }
   nodes.push(@vnode.text(tail_gap))
   used = used + display_width(tail_gap)
-  nodes.push(@vnode.text("(Ctrl+R)", fg=color_dim))
+  nodes.push(@vnode.text("(Ctrl+R)", fg=palette.dim))
   used = used + 8
   let filler = if width > used { width - used } else { 0 }
   nodes.push(@vnode.text(spaces(filler)))
@@ -612,14 +629,15 @@ fn color_node(text : String, color : String) -> @vnode.TuiNode {
 pub fn footer_lines(
   state : @state.AgentState,
   width : Int32,
+  palette~ : Palette = Palette::ansi256(),
 ) -> Array[StyledLine] {
   let cwd = shorten_home(state.cwd, home_dir())
   let model = model_line(state)
   [
-    pad_line(cwd, color_dim, None, width),
+    pad_line(cwd, palette.dim, None, width),
     pad_line(
       two_column(stats_line(state), model, width),
-      color_dim,
+      palette.dim,
       None,
       width,
     ),
@@ -725,8 +743,9 @@ pub fn editor_top_border(
   state : @state.AgentState,
   width : Int32,
   now : Int64,
+  palette~ : Palette = Palette::ansi256(),
 ) -> StyledLine {
-  let color = border_color(state.thinking_level)
+  let color = palette.thinking_color(state.thinking_level)
   let status = working_status_text(state, now)
   match status {
     None => pad_line(rule(width), color, None, width)
@@ -776,21 +795,6 @@ fn spinner_frame(now : Int64) -> String {
 }
 
 ///|
-/// composer 框线颜色跟思考级别走（pi 的 `getThinkingBorderColor`）。
-fn border_color(level : String) -> String {
-  match level {
-    "off" => "rgb(120,122,132)"
-    "minimal" => "rgb(110,120,170)"
-    "low" => "rgb(105,125,190)"
-    "medium" => "rgb(150,120,200)"
-    "high" => "rgb(200,120,210)"
-    "xhigh" => "rgb(220,110,180)"
-    "max" => "rgb(230,130,90)"
-    _ => "rgb(120,122,132)"
-  }
-}
-
-///|
 /// 整个界面。
 ///
 /// 面板开着时，它**覆盖 composer 那一块**（ela 的选择器：整行宽、底边落在
@@ -798,9 +802,13 @@ fn border_color(level : String) -> String {
 pub fn tui_view(tui : TuiState, state : @state.AgentState) -> @vnode.TuiNode {
   let width = tui.width
   let height = tui.height
-  let panel = picker_rows(tui, state, width, height)
+  let panel = picker_rows(tui, state, width, height, palette=tui.palette)
   let has_panel = !panel.is_empty()
-  let mut queue = if has_panel { [] } else { queue_lines(state, width) }
+  let mut queue = if has_panel {
+    []
+  } else {
+    queue_lines(state, width, palette=tui.palette)
+  }
   // 太矮的终端：先牺牲队列面板（内容还在环上，不会丢），保证 composer 与
   // 底栏这两块不飞出屏幕。
   let page_budget = height - 1 - fixed_bottom_rows
@@ -808,9 +816,9 @@ pub fn tui_view(tui : TuiState, state : @state.AgentState) -> @vnode.TuiNode {
     queue = []
   }
   let page = if tui.page == Chat {
-    chat_lines(state, tui.expanded, width, tui.cards)
+    chat_lines(state, tui.expanded, width, tui.cards, palette=tui.palette)
   } else {
-    trace_lines(state, width)
+    trace_lines(state, width, palette=tui.palette)
   }
   let scroll = if tui.page == Chat { tui.chat_scroll } else { tui.trace_scroll }
   let page_rows = if has_panel {
@@ -820,7 +828,9 @@ pub fn tui_view(tui : TuiState, state : @state.AgentState) -> @vnode.TuiNode {
   }
   let shown = visible_lines(page, page_rows, scroll)
   let children : Array[@vnode.TuiNode] = []
-  children.push(@vnode.row(tab_nodes(state, tui.page, width)))
+  children.push(
+    @vnode.row(tab_nodes(state, tui.page, width, palette=tui.palette)),
+  )
   for line in shown {
     children.push(line_node(line, width))
   }
@@ -841,10 +851,10 @@ pub fn tui_view(tui : TuiState, state : @state.AgentState) -> @vnode.TuiNode {
       ),
     )
     children.push(
-      line_node(pad_line(rule(width), color_dim, None, width), width),
+      line_node(pad_line(rule(width), tui.palette.dim, None, width), width),
     )
   }
-  let footer = footer_lines(state, width)
+  let footer = footer_lines(state, width, palette=tui.palette)
   for line in footer {
     children.push(line_node(line, width))
   }
@@ -860,6 +870,7 @@ fn picker_rows(
   state : @state.AgentState,
   width : Int32,
   height : Int32,
+  palette~ : Palette = Palette::ansi256(),
 ) -> Array[StyledLine] {
   let picker = match tui.picker {
     Some(picker) => picker
@@ -874,12 +885,14 @@ fn picker_rows(
   rows.push(
     pad_line(
       "── " + picker.title + " " + rule(max_int(width - title_width - 4, 0)),
-      color_dim,
+      palette.dim,
       None,
       width,
     ),
   )
-  rows.push(dim_line("  ↑/↓ 选择 · Enter 确认 · Esc 取消"))
+  rows.push(
+    styled_line("  ↑/↓ 选择 · Enter 确认 · Esc 取消", palette.dim),
+  )
   let start = clamp_int(
     picker.selected - visible / 2,
     0,
@@ -899,9 +912,11 @@ fn picker_rows(
     let detail = if item.detail.is_empty() { "" } else { "  " + item.detail }
     let text = " " + marker + item.label + detail + suffix
     if index == picker.selected {
-      rows.push(styled_line(truncate_to(text, width), "cyan", bold=true))
+      rows.push(
+        styled_line(truncate_to(text, width), palette.accent, bold=true),
+      )
     } else if current {
-      rows.push(styled_line(truncate_to(text, width), "green"))
+      rows.push(styled_line(truncate_to(text, width), palette.success))
     } else {
       rows.push(plain_line(truncate_to(text, width)))
     }
@@ -910,13 +925,14 @@ fn picker_rows(
   // 列表比窗口长时，在提示行里说一声还有多少。
   if items.length() > visible {
     let more = items.length() - visible
-    rows[1] = dim_line(
+    rows[1] = styled_line(
       "  ↑/↓ 选择 · Enter 确认 · Esc 取消 · 还有 " +
       more.to_string() +
       " 项",
+      palette.dim,
     )
   }
-  rows.push(pad_line(rule(width), color_dim, None, width))
+  rows.push(pad_line(rule(width), palette.dim, None, width))
   rows
 }
 

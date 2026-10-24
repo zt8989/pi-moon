@@ -1,9 +1,8 @@
-// 最小 markdown：块级（围栏代码 / 标题 / 列表 / 引用 / 分隔线）+ 行内
-// （code / 粗体 / 链接）。
+// markdown → 屏幕行：解析交给 @md（CommonMark CST），这里只做
+// 「AST → 带样式的行」这一层。
 //
-// 不追求 CommonMark：对话流里真正影响可读性的就是这几样，剩下的按原文显示
-// 比「猜错了把内容吃掉」安全。样式也只用终端给得起的（前景色 + 粗体）——
-// 斜体、下划线这些在 vnode 的 text 上没有开关。
+// 样式只用终端给得起的（前景色 + 粗体）：斜体 / 下划线在 vnode 的 text 上
+// 没有开关，所以 Emphasis 继承外层样式，不假装。表格单元格同理只保留文字。
 //
 // 折行必须按**单元格**做，不能先拼成字符串再折：`**加粗**` 拆开之后要保留
 // 每一段的样式，先折字符串就等于把样式信息丢了。
@@ -23,368 +22,811 @@ struct MarkdownCell {
 }
 
 ///|
-let color_md_code : String = "magenta"
+/// markdown 用到的颜色。默认值来自 pi 的 dark 主题（和界面其它部分同一个来源），
+/// 主题换了就整套跟着换。
+pub(all) struct MarkdownColors {
+  code : String
+  link : String
+  link_url : String
+  code_block : String
+  code_block_border : String
+  heading : String
+  quote : String
+  quote_border : String
+  hr : String
+  list_bullet : String
+  diff_add : String
+  diff_removed : String
+  diff_context : String
+} derive(Eq, Debug)
 
 ///|
-let color_md_link : String = "cyan"
+pub fn MarkdownColors::from_theme(theme : Theme) -> MarkdownColors {
+  let fallback = builtin_theme("dark", "dark")
+  let pick = fn(token : String) {
+    theme.color_or(token, fallback.color_or(token, ""))
+  }
+  {
+    code: pick("mdCode"),
+    link: pick("mdLink"),
+    link_url: pick("mdLinkUrl"),
+    code_block: pick("mdCodeBlock"),
+    code_block_border: pick("mdCodeBlockBorder"),
+    heading: pick("mdHeading"),
+    quote: pick("mdQuote"),
+    quote_border: pick("mdQuoteBorder"),
+    hr: pick("mdHr"),
+    list_bullet: pick("mdListBullet"),
+    diff_add: pick("toolDiffAdded"),
+    diff_removed: pick("toolDiffRemoved"),
+    diff_context: pick("toolDiffContext"),
+  }
+}
 
 ///|
-let color_md_code_block : String = "rgb(200,200,210)"
+pub fn MarkdownColors::defaults() -> MarkdownColors {
+  MarkdownColors::from_theme(builtin_theme("dark", "dark"))
+}
 
 ///|
 /// markdown 文本 → 屏幕行（宽度已经是**内容宽度**：调用方自己把左侧内边距
-/// 算进去）。
-pub fn markdown_lines(text : String, width : Int32) -> Array[StyledLine] {
+/// 算进去）。首尾的空行会被去掉 —— 调用方在块前后自己留白。
+pub fn markdown_lines(
+  text : String,
+  width : Int32,
+  colors~ : MarkdownColors = MarkdownColors::defaults(),
+) -> Array[StyledLine] {
+  let document = @md.parse(text).document
+  trim_blank_edges(
+    render_blocks(document.children, width, document.definitions, colors),
+  )
+}
+
+///|
+fn render_blocks(
+  blocks : Array[@md.Block],
+  width : Int32,
+  defs : Array[@md.LinkDefinition],
+  colors : MarkdownColors,
+) -> Array[StyledLine] {
   let out : Array[StyledLine] = []
-  let mut in_code = false
-  for raw in text.split("\n") {
-    let line = raw.to_owned()
-    let chars = line.to_array()
-    let trimmed = trim_start_chars(chars)
-    if is_fence(trimmed) {
-      out.push(dim_line("  " + chars_to_string(trimmed)))
-      in_code = !in_code
-      continue
-    }
-    if in_code {
-      for wrapped in wrap_prefixed("  ", line, width) {
-        out.push(styled_line(wrapped, color_md_code_block))
+  for block in blocks {
+    match block {
+      @md.Block::BlankLines(count~, ..) => {
+        // 连续空行最多留两行：对话流里三行以上的空白没有信息量。
+        let blanks = if count > 2 { 2 } else { count }
+        for _ in 0..<blanks {
+          out.push(blank_line())
+        }
       }
-      continue
+      _ =>
+        for line in render_block(block, width, defs, colors) {
+          out.push(line)
+        }
     }
-    if is_blank(chars) {
+  }
+  out
+}
+
+///|
+fn render_block(
+  block : @md.Block,
+  width : Int32,
+  defs : Array[@md.LinkDefinition],
+  colors : MarkdownColors,
+) -> Array[StyledLine] {
+  match block {
+    @md.Block::ThematicBreak(..) => [styled_line(rule(width), colors.hr)]
+    @md.Block::Heading(level~, children~, ..) =>
+      heading_lines(level, children, width, defs, colors)
+    @md.Block::Paragraph(children~, ..) =>
+      wrap_spans(inline_spans(children, None, false, defs, colors), width)
+    @md.Block::FencedCode(info~, code~, ..) =>
+      code_block_lines(info, code, width, colors)
+    @md.Block::IndentedCode(code~, ..) =>
+      code_block_lines("", code, width, colors)
+    @md.Block::MathBlock(value~, ..) =>
+      code_block_lines("math", value, width, colors)
+    @md.Block::Blockquote(children~, ..) =>
+      prefix_lines(
+        render_blocks(children, rest_width(width, 2), defs, colors),
+        "│ ",
+        colors.quote,
+      )
+    @md.Block::Alert(kind~, children~, ..) => {
+      let label = "│ " + alert_label(kind) + " "
+      prefix_lines(
+        render_blocks(
+          children,
+          rest_width(width, display_width(label)),
+          defs,
+          colors,
+        ),
+        label,
+        colors.quote,
+      )
+    }
+    @md.Block::BulletList(items~, ..) =>
+      list_lines(items, None, width, defs, colors)
+    @md.Block::OrderedList(start~, items~, ..) =>
+      list_lines(items, Some(start), width, defs, colors)
+    @md.Block::Table(header~, alignments~, rows~, ..) =>
+      table_lines(header, alignments, rows, width, colors)
+    @md.Block::HtmlBlock(html~, ..) => {
+      let out : Array[StyledLine] = []
+      for line in split_lines(html) {
+        out.push(styled_line("  " + line, colors.code_block_border))
+      }
+      out
+    }
+    // 指令块（`:::name`）的元信息对终端读者没意义，只渲染里面的内容。
+    @md.Block::Directive(children~, ..) =>
+      render_blocks(children, width, defs, colors)
+    @md.Block::DefinitionList(items~, ..) =>
+      definition_lines(items, width, defs, colors)
+    @md.Block::FootnoteDefinition(label~, children~, ..) => {
+      let prefix = "[^" + label + "] "
+      prefix_lines(
+        render_blocks(
+          children,
+          rest_width(width, display_width(prefix)),
+          defs,
+          colors,
+        ),
+        prefix,
+        colors.quote,
+      )
+    }
+    @md.Block::Attributed(block~, ..) =>
+      render_block(block, width, defs, colors)
+    @md.Block::BlankLines(..) => [blank_line()]
+  }
+}
+
+///|
+fn alert_label(kind : @md.AlertKind) -> String {
+  match kind {
+    Note => "NOTE"
+    Tip => "TIP"
+    Important => "IMPORTANT"
+    Warning => "WARNING"
+    Caution => "CAUTION"
+  }
+}
+
+///|
+fn rest_width(width : Int32, used : Int32) -> Int32 {
+  if width > used {
+    width - used
+  } else {
+    1
+  }
+}
+
+///|
+/// 标题：整行加粗；h3 以下再用暗色 —— 一轮对话里 h1/h2 通常只有一个，
+/// 再往下如果都一样粗，层级反而看不出来。
+fn heading_lines(
+  level : Int32,
+  children : Array[@md.Inline],
+  width : Int32,
+  defs : Array[@md.LinkDefinition],
+  colors : MarkdownColors,
+) -> Array[StyledLine] {
+  let base_fg = if level >= 3 { Some(colors.quote) } else { None }
+  let spans = inline_spans(children, base_fg, true, defs, colors)
+  let bold_spans : Array[MarkdownSpan] = []
+  for span in spans {
+    bold_spans.push({ text: span.text, fg: span.fg, bold: true, })
+  }
+  wrap_spans(bold_spans, width)
+}
+
+///|
+/// 围栏代码 / 缩进代码 / 数学块：保留围栏标记与行结构，内容用代码色。
+/// ```diff 按行上色 —— 工具产出的补丁没人愿意在单色里找增删。
+fn code_block_lines(
+  info : String,
+  code : String,
+  width : Int32,
+  colors : MarkdownColors,
+) -> Array[StyledLine] {
+  let out : Array[StyledLine] = []
+  out.push(styled_line("  " + fence_label(info), colors.code_block_border))
+  let is_diff = first_word(info).to_lower() == "diff"
+  for raw in trim_trailing_newlines(code).split("\n") {
+    let line = raw.to_owned()
+    if line.is_empty() {
       out.push(blank_line())
       continue
     }
-    if is_rule(trimmed) {
-      out.push(dim_line(rule(width)))
-      continue
+    let fg = if is_diff {
+      diff_line_color(line, colors)
+    } else {
+      colors.code_block
     }
-    let heading = heading_level(trimmed)
-    if heading > 0 {
-      let content = drop_chars(trimmed, heading + 1)
-      let spans = parse_inline(content, None, true)
-      push_wrapped_spans(out, spans, width)
-      continue
+    for wrapped in wrap_prefixed("  ", line, width) {
+      out.push(styled_line(wrapped, fg, bold=is_diff_meta(line)))
     }
-    let indent = leading_spaces(chars)
-    let rest = drop_chars(chars, indent)
-    if list_marker(rest) is Some(content_at) {
-      let spans : Array[MarkdownSpan] = [
-        { text: spaces(indent) + "• ", fg: None, bold: false, },
-      ]
-      let body = parse_inline(drop_chars(rest, content_at), None, false)
-      for span in body {
-        spans.push(span)
-      }
-      push_wrapped_spans(out, spans, width)
-      continue
-    }
-    if rest.length() > 0 && rest[0] == '>' {
-      let mut body_at = 1
-      if body_at < rest.length() && rest[body_at] == ' ' {
-        body_at = body_at + 1
-      }
-      let spans : Array[MarkdownSpan] = [
-        {
-          text: spaces(indent) + "│ ",
-          fg: Some("rgb(150,152,160)"),
-          bold: false,
-        },
-      ]
-      let body = parse_inline(
-        drop_chars(rest, body_at),
-        Some("rgb(150,152,160)"),
-        false,
-      )
-      for span in body {
-        spans.push(span)
-      }
-      push_wrapped_spans(out, spans, width)
-      continue
-    }
-    let spans = parse_inline(chars, None, false)
-    push_wrapped_spans(out, spans, width)
   }
   out
 }
 
 ///|
-fn push_wrapped_spans(
-  out : Array[StyledLine],
-  spans : Array[MarkdownSpan],
+/// 围栏首行：```` ```lang ````。语言为空时仍然画围栏，与原文一致。
+fn fence_label(info : String) -> String {
+  let trimmed = info.trim(chars=" ").to_owned()
+  if trimmed.is_empty() {
+    "```"
+  } else {
+    "```" + trimmed
+  }
+}
+
+///|
+fn is_diff_meta(line : String) -> Bool {
+  line.has_prefix("diff ") ||
+  line.has_prefix("+++") ||
+  line.has_prefix("---") ||
+  line.has_prefix("index ")
+}
+
+///|
+fn diff_line_color(line : String, colors : MarkdownColors) -> String {
+  if line.has_prefix("+++") || line.has_prefix("---") {
+    colors.quote
+  } else if line.has_prefix("@@") {
+    colors.link
+  } else if line.has_prefix("+") {
+    colors.diff_add
+  } else if line.has_prefix("-") {
+    colors.diff_removed
+  } else {
+    colors.code_block
+  }
+}
+
+///|
+fn split_lines(text : String) -> Array[String] {
+  let out : Array[String] = []
+  for line in trim_trailing_newlines(text).split("\n") {
+    out.push(line.to_owned())
+  }
+  out
+}
+
+///|
+fn trim_trailing_newlines(text : String) -> String {
+  let mut end = text.length()
+  while end > 0 {
+    let c = text[end - 1]
+    if c == '\n' || c == '\r' {
+      end = end - 1
+    } else {
+      break
+    }
+  }
+  text[:end].to_owned()
+}
+
+///|
+/// 列表：每个 item 的正文按标记宽度缩进，嵌套列表靠这一层缩进自己叠上去。
+fn list_lines(
+  items : Array[@md.ListItem],
+  ordered_start : Int32?,
   width : Int32,
-) -> Unit {
-  for line in wrap_spans(spans, width) {
-    out.push(line)
-  }
-}
-
-///|
-fn is_fence(chars : Array[Char]) -> Bool {
-  let s = chars_to_string(chars)
-  s.has_prefix("```") || s.has_prefix("~~~")
-}
-
-///|
-fn is_blank(chars : Array[Char]) -> Bool {
-  for c in chars {
-    if c != ' ' && c != '\t' {
-      return false
+  defs : Array[@md.LinkDefinition],
+  colors : MarkdownColors,
+) -> Array[StyledLine] {
+  let out : Array[StyledLine] = []
+  let mut index = 0
+  for item in items {
+    let marker = list_marker(item, ordered_start, index)
+    let marker_width = display_width(marker)
+    let inner = render_blocks(
+      item.children,
+      rest_width(width, marker_width),
+      defs,
+      colors,
+    )
+    let indent = spaces(marker_width)
+    let mut first = true
+    for line in inner {
+      if line.text.is_empty() {
+        out.push(blank_line())
+      } else if first {
+        out.push(prefixed_line(line, marker, None))
+      } else {
+        out.push(prefixed_line(line, indent, None))
+      }
+      first = false
     }
-  }
-  true
-}
-
-///|
-fn is_rule(chars : Array[Char]) -> Bool {
-  if chars.length() < 3 {
-    return false
-  }
-  let marker = chars[0]
-  if marker != '-' && marker != '*' && marker != '_' {
-    return false
-  }
-  for c in chars {
-    if c != marker {
-      return false
-    }
-  }
-  true
-}
-
-///|
-/// 标题级别（`### x` → 3）；不是标题返回 0。
-fn heading_level(chars : Array[Char]) -> Int32 {
-  let mut hashes = 0
-  while hashes < chars.length() && chars[hashes] == '#' {
-    hashes = hashes + 1
-  }
-  if hashes == 0 || hashes > 6 {
-    return 0
-  }
-  if hashes >= chars.length() || chars[hashes] != ' ' {
-    return 0
-  }
-  hashes
-}
-
-///|
-/// 无序列表标记：返回正文起点（跳过 `- ` / `* ` / `+ `），不是列表返回 None。
-fn list_marker(chars : Array[Char]) -> Int32? {
-  if chars.length() >= 2 {
-    let marker = chars[0]
-    if (marker == '-' || marker == '*' || marker == '+') && chars[1] == ' ' {
-      return Some(2)
-    }
-  }
-  None
-}
-
-///|
-fn leading_spaces(chars : Array[Char]) -> Int32 {
-  let mut count = 0
-  while count < chars.length() && (chars[count] == ' ' || chars[count] == '\t') {
-    count = count + 1
-  }
-  count
-}
-
-///|
-fn trim_start_chars(chars : Array[Char]) -> Array[Char] {
-  drop_chars(chars, leading_spaces(chars))
-}
-
-///|
-fn drop_chars(chars : Array[Char], count : Int32) -> Array[Char] {
-  let out : Array[Char] = []
-  let mut index = count
-  while index < chars.length() {
-    out.push(chars[index])
     index = index + 1
   }
   out
 }
 
 ///|
-fn chars_to_string(chars : Array[Char]) -> String {
-  String::from_array(chars)
-}
-
-///|
-fn slice_text(chars : Array[Char], start : Int32, end : Int32) -> String {
-  let out : Array[Char] = []
-  let mut index = start
-  while index < end && index < chars.length() {
-    out.push(chars[index])
-    index = index + 1
+fn list_marker(
+  item : @md.ListItem,
+  ordered_start : Int32?,
+  index : Int32,
+) -> String {
+  let bullet = match item.checked {
+    Some(true) => "☑ "
+    Some(false) => "☐ "
+    None => "• "
   }
-  String::from_array(out)
+  match ordered_start {
+    Some(start) => (start + index).to_string() + ". "
+    None => bullet
+  }
 }
 
 ///|
-/// 行内解析：`code` / **bold** / [text](url)。找不到闭合就按原文保留。
-fn parse_inline(
-  chars : Array[Char],
-  base_fg : String?,
-  base_bold : Bool,
-) -> Array[MarkdownSpan] {
-  let spans : Array[MarkdownSpan] = []
-  let buffer : Array[Char] = []
-  let n = chars.length()
-  let mut i = 0
-  while i < n {
-    let c = chars[i]
-    if c == '`' {
-      let close = find_char(chars, i + 1, '`')
-      if close >= 0 {
-        flush_plain(spans, buffer, base_fg, base_bold)
-        spans.push({
-          text: slice_text(chars, i + 1, close),
-          fg: Some(color_md_code),
-          bold: false,
-        })
-        i = close + 1
-        continue
-      }
+/// 术语列表：`Term` 一行，定义各自缩进一行。
+fn definition_lines(
+  items : Array[@md.DefinitionItem],
+  width : Int32,
+  defs : Array[@md.LinkDefinition],
+  colors : MarkdownColors,
+) -> Array[StyledLine] {
+  let out : Array[StyledLine] = []
+  for item in items {
+    let term = inline_spans(item.term, None, true, defs, colors)
+    for line in wrap_spans(term, width) {
+      out.push(line)
     }
-    if c == '*' && i + 1 < n && chars[i + 1] == '*' {
-      let close = find_seq(chars, i + 2, "*")
-      if close >= 0 {
-        flush_plain(spans, buffer, base_fg, base_bold)
-        spans.push({
-          text: slice_text(chars, i + 2, close),
-          fg: base_fg,
-          bold: true,
-        })
-        i = close + 2
-        continue
-      }
-    }
-    if c == '[' {
-      let close_label = find_char(chars, i + 1, ']')
-      if close_label >= 0 &&
-        close_label + 1 < n &&
-        chars[close_label + 1] == '(' {
-        let close_url = find_char(chars, close_label + 2, ')')
-        if close_url >= 0 {
-          flush_plain(spans, buffer, base_fg, base_bold)
-          spans.push({
-            text: slice_text(chars, i + 1, close_label),
-            fg: Some(color_md_link),
-            bold: false,
-          })
-          let url = slice_text(chars, close_label + 2, close_url)
-          if !url.is_empty() {
-            spans.push({
-              text: " (" + url + ")",
-              fg: Some("rgb(150,152,160)"),
-              bold: false,
-            })
-          }
-          i = close_url + 1
-          continue
+    for definition in item.definitions {
+      let spans = inline_spans(definition, None, false, defs, colors)
+      for line in wrap_spans(spans, rest_width(width, 2)) {
+        if line.text.is_empty() {
+          out.push(blank_line())
+        } else {
+          out.push(prefixed_line(line, "  ", None))
         }
       }
     }
-    buffer.push(c)
-    i = i + 1
   }
-  flush_plain(spans, buffer, base_fg, base_bold)
+  out
+}
+
+///|
+/// 表格：列宽按内容算，整体放不下时从最宽的列开始收，直到塞进内容宽度。
+/// 单元格里只用纯文字 —— 每个单元格还要对齐补空格，保留行内样式会让
+/// `StyledLine` 的宽度算法和 padding 打架。
+fn table_lines(
+  header : Array[@md.TableCell],
+  alignments : Array[@md.TableAlign],
+  rows : Array[Array[@md.TableCell]],
+  width : Int32,
+  colors : MarkdownColors,
+) -> Array[StyledLine] {
+  let cols = header.length()
+  if cols == 0 {
+    return []
+  }
+  let header_texts : Array[String] = []
+  let widths : Array[Int32] = []
+  for cell in header {
+    let text = inline_plain(cell.children)
+    header_texts.push(text)
+    widths.push(display_width(text))
+  }
+  let row_texts : Array[Array[String]] = []
+  for row in rows {
+    let texts : Array[String] = []
+    let mut index = 0
+    for cell in row {
+      let text = inline_plain(cell.children)
+      if index < widths.length() && display_width(text) > widths[index] {
+        widths[index] = display_width(text)
+      }
+      texts.push(text)
+      index = index + 1
+    }
+    row_texts.push(texts)
+  }
+  fit_columns(widths, width)
+  let out : Array[StyledLine] = []
+  out.push(table_row(header_texts, widths, alignments, true))
+  let separator : Array[Char] = []
+  let mut column = 0
+  for column_width in widths {
+    if column > 0 {
+      // 列间 2 格（与表头/行的 `  ` 分隔对齐）。
+      separator.push('┼')
+      separator.push('─')
+    }
+    for _ in 0..<column_width {
+      separator.push('─')
+    }
+    column = column + 1
+  }
+  out.push(styled_line(String::from_array(separator), colors.quote_border))
+  for texts in row_texts {
+    out.push(table_row(texts, widths, alignments, false))
+  }
+  out
+}
+
+///|
+fn table_row(
+  texts : Array[String],
+  widths : Array[Int32],
+  alignments : Array[@md.TableAlign],
+  bold : Bool,
+) -> StyledLine {
+  let buf : Array[Char] = []
+  let mut index = 0
+  for text in texts {
+    if index >= widths.length() {
+      break
+    }
+    if index > 0 {
+      buf.push(' ')
+      buf.push(' ')
+    }
+    let align = if index < alignments.length() {
+      alignments[index]
+    } else {
+      Left
+    }
+    for c in fit_cell(text, widths[index], align) {
+      buf.push(c)
+    }
+    index = index + 1
+  }
+  plain_line(String::from_array(buf)) |> with_bold(bold)
+}
+
+///|
+fn with_bold(line : StyledLine, bold : Bool) -> StyledLine {
+  if !bold {
+    return line
+  }
+  let spans : Array[MarkdownSpan] = [{ text: line.text, fg: None, bold: true, }]
+  { ..line, bold: true, spans: Some(spans), }
+}
+
+///|
+fn fit_cell(text : String, width : Int32, align : @md.TableAlign) -> String {
+  let clipped = truncate_to(text, width)
+  let used = display_width(clipped)
+  let pad = if width > used { width - used } else { 0 }
+  match align {
+    Right => spaces(pad) + clipped
+    Center => {
+      let left = pad / 2
+      spaces(left) + clipped + spaces(pad - left)
+    }
+    _ => clipped + spaces(pad)
+  }
+}
+
+///|
+fn fit_columns(widths : Array[Int32], budget : Int32) -> Unit {
+  if widths.length() == 0 {
+    return
+  }
+  let mut total = 0
+  for column_width in widths {
+    total = total + column_width
+  }
+  total = total + 2 * (widths.length() - 1)
+  while total > budget {
+    let mut widest = 1
+    let mut widest_index = 0
+    let mut index = 0
+    for column_width in widths {
+      if column_width > widest {
+        widest = column_width
+        widest_index = index
+      }
+      index = index + 1
+    }
+    if widest <= 1 {
+      break
+    }
+    widths[widest_index] = widest - 1
+    total = total - 1
+  }
+}
+
+///|
+/// 给块加前缀（引用、列表项、脚注）：前缀单独一段样式，不抢正文颜色。
+fn prefix_lines(
+  lines : Array[StyledLine],
+  prefix : String,
+  fg : String,
+) -> Array[StyledLine] {
+  let out : Array[StyledLine] = []
+  for line in lines {
+    if line.text.is_empty() {
+      out.push(blank_line())
+    } else {
+      out.push(prefixed_line(line, prefix, Some(fg)))
+    }
+  }
+  out
+}
+
+///|
+fn prefixed_line(
+  line : StyledLine,
+  prefix : String,
+  fg : String?,
+) -> StyledLine {
+  let spans : Array[MarkdownSpan] = [{ text: prefix, fg, bold: false, }]
+  match line.spans {
+    Some(inner) =>
+      for span in inner {
+        spans.push(span)
+      }
+    None => spans.push({ text: line.text, fg: line.fg, bold: line.bold, })
+  }
+  {
+    ..line,
+    text: prefix + line.text,
+    fg: None,
+    bold: false,
+    spans: Some(spans),
+  }
+}
+
+///|
+/// 首段（```` ```diff ```` 的 `diff`）：语言名后面可能跟文件名。
+fn first_word(text : String) -> String {
+  let trimmed = text.trim(chars=" ").to_owned()
+  for word in trimmed.split(" ") {
+    return word.to_owned()
+  }
+  ""
+}
+
+///|
+/// 行内 AST → 带样式的段。相邻同款式的段会合并，界面上少几个 text 节点。
+fn inline_spans(
+  inlines : Array[@md.Inline],
+  base_fg : String?,
+  base_bold : Bool,
+  defs : Array[@md.LinkDefinition],
+  colors : MarkdownColors,
+) -> Array[MarkdownSpan] {
+  let spans : Array[MarkdownSpan] = []
+  for inline in inlines {
+    match inline {
+      @md.Inline::Text(content~, ..) =>
+        push_span(spans, content, base_fg, base_bold)
+      @md.Inline::SoftBreak(..) => push_span(spans, " ", base_fg, base_bold)
+      // 硬换行落成一个换行单元格，由 wrap_spans 断开。
+      @md.Inline::HardBreak(..) => push_span(spans, "\n", base_fg, base_bold)
+      // 终端没有斜体开关：强调只保留文字，不假装。
+      @md.Inline::Emphasis(children~, ..) =>
+        push_all(
+          spans,
+          inline_spans(children, base_fg, base_bold, defs, colors),
+        )
+      @md.Inline::Strong(children~, ..) =>
+        push_all(spans, inline_spans(children, base_fg, true, defs, colors))
+      @md.Inline::Strikethrough(children~, ..) =>
+        push_all(
+          spans,
+          inline_spans(children, base_fg, base_bold, defs, colors),
+        )
+      @md.Inline::Code(content~, ..) =>
+        push_span(spans, content, Some(colors.code), base_bold)
+      @md.Inline::Link(children~, url~, ..) =>
+        push_link(spans, children, url, base_bold, colors)
+      @md.Inline::RefLink(children~, label~, ..) => {
+        let url = lookup_definition(defs, label)
+        push_link(spans, children, url, base_bold, colors)
+      }
+      @md.Inline::Autolink(url~, ..) =>
+        push_span(spans, url, Some(colors.link), base_bold)
+      @md.Inline::Image(alt~, url~, ..) =>
+        push_span(
+          spans,
+          "![" + alt + "](" + url + ")",
+          Some(colors.quote),
+          base_bold,
+        )
+      @md.Inline::RefImage(alt~, label~, ..) =>
+        push_span(
+          spans,
+          "![" + alt + "][" + label + "]",
+          Some(colors.quote),
+          base_bold,
+        )
+      @md.Inline::WikiLink(target~, label~, ..) => {
+        let shown = if label.is_empty() { target } else { label }
+        push_span(spans, shown, Some(colors.link), base_bold)
+      }
+      @md.Inline::HtmlInline(html~, ..) =>
+        push_span(spans, html, Some(colors.quote), base_bold)
+      @md.Inline::FootnoteReference(label~, ..) =>
+        push_span(spans, "[^" + label + "]", Some(colors.quote), base_bold)
+      @md.Inline::Directive(name~, label~, ..) =>
+        push_span(
+          spans,
+          ":" + name + "[" + label + "]",
+          Some(colors.quote),
+          base_bold,
+        )
+    }
+  }
   spans
 }
 
 ///|
-fn flush_plain(
+/// 链接：文字用链接色，地址另起一段灰字（与 ela 的渲染一致）。
+fn push_link(
   spans : Array[MarkdownSpan],
-  buffer : Array[Char],
+  children : Array[@md.Inline],
+  url : String,
+  base_bold : Bool,
+  colors : MarkdownColors,
+) -> Unit {
+  let label = inline_plain(children)
+  push_span(spans, label, Some(colors.link), base_bold)
+  if !url.is_empty() && url != label {
+    push_span(spans, " (" + url + ")", Some(colors.quote), base_bold)
+  }
+}
+
+///|
+fn lookup_definition(
+  defs : Array[@md.LinkDefinition],
+  label : String,
+) -> String {
+  for def in defs {
+    if def.label.to_lower() == label.to_lower() {
+      return def.url
+    }
+  }
+  ""
+}
+
+///|
+/// 纯文字版本（表格单元格、单行摘要用）：样式会被丢掉。
+fn inline_plain(inlines : Array[@md.Inline]) -> String {
+  let buf : Array[Char] = []
+  append_plain(buf, inlines)
+  String::from_array(buf)
+}
+
+///|
+fn append_plain(buf : Array[Char], inlines : Array[@md.Inline]) -> Unit {
+  for inline in inlines {
+    match inline {
+      @md.Inline::Text(content~, ..) => push_chars(buf, content)
+      @md.Inline::Code(content~, ..) => push_chars(buf, content)
+      @md.Inline::SoftBreak(..) => buf.push(' ')
+      @md.Inline::HardBreak(..) => buf.push(' ')
+      @md.Inline::Emphasis(children~, ..) => append_plain(buf, children)
+      @md.Inline::Strong(children~, ..) => append_plain(buf, children)
+      @md.Inline::Strikethrough(children~, ..) => append_plain(buf, children)
+      @md.Inline::Link(children~, ..) => append_plain(buf, children)
+      @md.Inline::RefLink(children~, ..) => append_plain(buf, children)
+      @md.Inline::Autolink(url~, ..) => push_chars(buf, url)
+      @md.Inline::Image(alt~, ..) => push_chars(buf, alt)
+      @md.Inline::RefImage(alt~, ..) => push_chars(buf, alt)
+      @md.Inline::WikiLink(target~, label~, ..) =>
+        if label.is_empty() {
+          push_chars(buf, target)
+        } else {
+          push_chars(buf, label)
+        }
+      @md.Inline::HtmlInline(html~, ..) => push_chars(buf, html)
+      @md.Inline::FootnoteReference(label~, ..) =>
+        push_chars(buf, "[^" + label + "]")
+      @md.Inline::Directive(name~, label~, ..) =>
+        push_chars(buf, ":" + name + "[" + label + "]")
+    }
+  }
+}
+
+///|
+fn push_chars(buf : Array[Char], text : String) -> Unit {
+  for c in text {
+    buf.push(c)
+  }
+}
+
+///|
+fn push_span(
+  spans : Array[MarkdownSpan],
+  text : String,
   fg : String?,
   bold : Bool,
 ) -> Unit {
-  if buffer.is_empty() {
+  if text.is_empty() {
     return
   }
-  spans.push({ text: String::from_array(buffer), fg, bold, })
-  buffer.clear()
+  if spans.length() > 0 {
+    let index = spans.length() - 1
+    let last = spans[index]
+    if last.fg == fg && last.bold == bold && !last.text.contains("\n") {
+      spans[index] = { text: last.text + text, fg, bold, }
+      return
+    }
+  }
+  spans.push({ text, fg, bold, })
 }
 
 ///|
-fn find_char(chars : Array[Char], start : Int32, needle : Char) -> Int32 {
-  let mut index = start
-  while index < chars.length() {
-    if chars[index] == needle {
-      return index
-    }
-    index = index + 1
+fn push_all(dst : Array[MarkdownSpan], src : Array[MarkdownSpan]) -> Unit {
+  for span in src {
+    push_span(dst, span.text, span.fg, span.bold)
   }
-  -1
-}
-
-///|
-fn find_seq(chars : Array[Char], start : Int32, needle : String) -> Int32 {
-  let target = needle.to_array()
-  let mut index = start
-  while index + target.length() <= chars.length() {
-    let mut matched = true
-    let mut offset = 0
-    while offset < target.length() {
-      if chars[index + offset] != target[offset] {
-        matched = false
-        break
-      }
-      offset = offset + 1
-    }
-    if matched {
-      return index
-    }
-    index = index + 1
-  }
-  -1
 }
 
 ///|
 /// 带样式的折行：先铺成单元格，再按显示宽度贪心折，最后按样式合并成 span。
+/// `\n` 是硬换行，不走宽度判断。
 fn wrap_spans(spans : Array[MarkdownSpan], width : Int32) -> Array[StyledLine] {
+  let limit = if width > 0 { width } else { 1 }
   let cells : Array[MarkdownCell] = []
   for span in spans {
     for c in span.text {
-      cells.push({ c, fg: span.fg, bold: span.bold, })
+      if c == '\t' {
+        // 代码块里的 tab 按 4 格展开：终端里 tab 的落点不定，先把位置钉死。
+        for _ in 0..<4 {
+          cells.push({ c: ' ', fg: span.fg, bold: span.bold, })
+        }
+      } else {
+        cells.push({ c, fg: span.fg, bold: span.bold, })
+      }
     }
   }
   if cells.is_empty() {
     return [blank_line()]
   }
-  if width <= 0 {
-    return [cells_to_line(cells, 0, cells.length())]
-  }
   let out : Array[StyledLine] = []
-  let mut start = 0
-  while start < cells.length() {
-    let mut used : Int32 = 0
-    let mut index = start
-    let mut last_space = -1
-    while index < cells.length() {
-      let char_width = @core.char_display_width(cells[index].c)
-      if used + char_width > width && index > start {
-        break
-      }
-      if cells[index].c == ' ' {
-        last_space = index
-      }
-      used = used + char_width
+  let mut line_start = 0
+  let mut used : Int32 = 0
+  let mut last_space = -1
+  let mut index = 0
+  while index < cells.length() {
+    let cell = cells[index]
+    if cell.c == '\n' {
+      out.push(cells_to_line(cells, line_start, index))
       index = index + 1
+      line_start = index
+      used = 0
+      last_space = -1
+      continue
     }
-    if index >= cells.length() {
-      out.push(cells_to_line(cells, start, cells.length()))
-      break
+    let char_width = @core.char_display_width(cell.c)
+    if used + char_width > limit && index > line_start {
+      if last_space > line_start {
+        out.push(cells_to_line(cells, line_start, last_space))
+        line_start = last_space + 1
+      } else {
+        out.push(cells_to_line(cells, line_start, index))
+        line_start = index
+      }
+      used = 0
+      last_space = -1
+      let mut scan = line_start
+      while scan <= index && scan < cells.length() {
+        if cells[scan].c == ' ' {
+          last_space = scan
+        }
+        used = used + @core.char_display_width(cells[scan].c)
+        scan = scan + 1
+      }
+      index = index + 1
+      continue
     }
-    if last_space > start {
-      out.push(cells_to_line(cells, start, last_space))
-      start = last_space + 1
-    } else {
-      out.push(cells_to_line(cells, start, index))
-      start = index
+    if cell.c == ' ' {
+      last_space = index
     }
+    used = used + char_width
+    index = index + 1
+  }
+  if line_start < cells.length() {
+    out.push(cells_to_line(cells, line_start, cells.length()))
   }
   if out.is_empty() {
     out.push(blank_line())
@@ -446,4 +888,26 @@ fn slice_cells(
     index = index + 1
   }
   String::from_array(out)
+}
+
+///|
+fn trim_blank_edges(lines : Array[StyledLine]) -> Array[StyledLine] {
+  let out : Array[StyledLine] = []
+  let mut started = false
+  for line in lines {
+    if !started && line.text.is_empty() {
+      continue
+    }
+    if !line.text.is_empty() {
+      started = true
+    }
+    out.push(line)
+  }
+  while out.length() > 0 && out[out.length() - 1].text.is_empty() {
+    let _ = out.pop()
+  }
+  if out.is_empty() {
+    out.push(blank_line())
+  }
+  out
 }

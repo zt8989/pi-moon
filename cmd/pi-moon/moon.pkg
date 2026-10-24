@@ -10,7 +10,9 @@ import {
   "pi-moon/core/provider",
   "pi-moon/core/tools",
   "pi-moon/core/session",
+  "NoahLiu/mdparse" @md,
   "mizchi/tui/core",
+  "mizchi/tui/render",
   "mizchi/tui/events",
   "mizchi/tui/io",
   "mizchi/tui/vnode",
@@ -19,6 +21,8 @@ import {
   "moonbitlang/async/stdio",
   "moonbitlang/core/env",
   "moonbitlang/core/json",
+  "moonbitlang/core/math",
+  "moonbitlang/core/string",
 }
 
 pkgtype(kind: "executable")

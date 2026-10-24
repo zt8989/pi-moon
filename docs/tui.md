@@ -35,10 +35,46 @@ ela 的 `applyLayout()` 是「顶行 / 中间页 / 底部区」三段，这里�
 - **`(auto)`** 只在自动压缩开着、且知道窗口大小时出现（与 ela 同一个判定）；
 - **队列面板在 composer 上方**：空队列一行不占，非空时每行缩进一格。
 
-底色用 16 色名字（`blue` / `green` / `red` / `magenta`），不用 `rgb()`：tui.mbt
-的渲染器把 rgb 量化到 256 色立方（6×6×6），pi 那些很暗的底色
-（`rgb(41,49,73)` 与 `rgb(37,65,49)`）会双双落成同一个 `#005f5f`，用户块与
-工具块就分不出来了。
+## 颜色：来自主题，不写死
+
+所有颜色都从 **pi 的主题**算出来（`cmd/pi-moon/tui_theme.mbt`），渲染代码里
+没有 RGB 常量：
+
+```text
+settings.json 的 theme
+  ├─ "light/dark"（自动形式）→ 按终端深浅挑一边
+  ├─ "system"               → pi 会按终端上报的颜色现算；这里退化成 dark/light
+  └─ 名字                    → <agent dir>/themes/<name>.json（pi 的自定义主题目录）
+找不到文件 → 内嵌的 dark / light（`tui_theme_data.mbt`，原样照搬 pi 的 JSON）
+```
+
+解析规则与 pi 一致：`vars` 互相引用先展开，颜色支持 `#rgb` / `#rrggbb` /
+`okhsl(h s% l%)` / `oklch(l c h)` / ANSI 索引数字 / `""`（终端默认色）。
+OKHSL / OKLCH → sRGB 是 Björn Ottosson 参考实现的移植（MIT），系数与 pi 的
+`oklab.js` 逐项一致 —— **同一个主题，两边必须算出一模一样的 RGB**，
+`tui_theme_wbtest.mbt` 里那组断言就是拿 pi 的实际输出钉的。
+
+于是换 `settings.json` 的 `theme` 就等于换整套界面配色：用户块、工具块、
+压缩摘要、思考灰字、markdown 的标题 / 链接 / 行内 code / diff 增删、
+composer 框线的思考级别色（`thinkingOff`..`thinkingMax`）全部跟着走。
+
+**唯一的例外是面板底色**（`userMessageBg` / `toolSuccessBg` / …），它跟终端
+能力走：
+
+- **24-bit 终端**：用主题原值（dark 下用户块 `rgb(33,59,73)`、工具成功
+  `rgb(37,65,49)`、失败 `rgb(91,40,42)`、进行中 `rgb(52,56,58)`）；
+- **只有 256 色**：退回 16 色名字（`blue` / `green` / `red` / `magenta`）。
+  默认渲染把 rgb 量化到 256 色立方（6×6×6），pi 那几块很暗的底色会双双落成
+  同一个 `#005f5f`，用户块与工具块就分不出来了。前景色没这个问题（它们不挨着
+  铺），一律用主题值。
+
+“是不是 24-bit”先问 tui 的 `ColorMode::detect()`（`COLORTERM` / `TERM`），
+再补它看不到的那几个：Windows Terminal 只给 `WT_SESSION`，VS Code 只给
+`TERM_PROGRAM`，老终端用 `ConEmuANSI=ON` / `ANSICON`。都不广告就回 256 色 ——
+猜成 TrueColor 而终端不支持，那几块底色会整段变成默认色。
+
+终端是深底还是浅底：pi 优先问终端自己（OSC 11），这里退一步看 `COLORFGBG`
+（vim / tmux 都在用），判不出来按 dark。
 
 **命令反馈卡**（ela 的 `statusCards`）不在底栏，而是钉在**对话流里**：锚点是
 创建时的 messages 条数，新消息把它往上顶；同一位置连续提示就地替换（不刷屏），
@@ -46,16 +82,38 @@ ela 的 `applyLayout()` 是「顶行 / 中间页 / 底部区」三段，这里�
 
 ## markdown
 
-assistant 正文与用户块都过一遍最小 markdown：
+assistant 正文与用户块都过 markdown，但**解析和渲染分两层**：
 
-- **块级**：围栏代码（保留 ```` ``` ```` 标记、内容用代码色）、`#` 标题（去井号、
-  整行加粗）、`-` 无序列表（换成 `•`）、`>` 引用（`│` + 灰）、`---` 分隔线；
-- **行内**：`` `code` ``（magenta）、`**粗体**`、`[text](url)`（text 青色、url 灰）；
-- **折行按单元格宽度做**：样式先铺到字符上再折，`**粗体**` 被折到两行时
-  两段都还是粗体——先拼字符串再折会把样式丢掉。
+- **解析**交给 `NoahLiu/mdparse`（`mizchi/markdown` 的解析链路 fork，只留
+  CommonMark CST）。它给的是 AST，不是 HTML 字符串，所以实体的解码、
+  强调标记的配对、链接定义这些细节由解析器负责；
+- **渲染**在 `tui_markdown.mbt`：AST → `StyledLine`。终端能给的样式只有
+  前景色 + 粗体，这一层只做这个映射。
 
-不做的：斜体（vnode 的 text 没有开关）、表格、嵌套列表、HTML、有序列表改写。
-按原文显示比「猜错了把内容吃掉」安全。
+块级：
+
+| 块 | 画法 |
+| --- | --- |
+| 标题 | 去井号、整行加粗；h3 以下再用暗色，层级才分得出来 |
+| 围栏 / 缩进代码 / 数学块 | 保留 ```` ```lang ```` 行（`mdCodeBlockBorder`）、内容用 `mdCodeBlock`、行结构原样 |
+| ```` ```diff ```` | 按行上色：`+` / `-` 用主题的 `toolDiffAdded` / `toolDiffRemoved`，`@@` 用 `mdLink`，`diff` / `+++` / `---` 加粗暗色 |
+| 无序 / 有序列表 | `•` / `1.`，嵌套按外层标记宽度缩进 |
+| 任务列表 | `☑` / `☐` |
+| 引用 / GitHub alert | `│ ` 灰前缀（alert 带 `NOTE` / `WARNING` 标签） |
+| 表格 | 列宽按内容算，超宽从最宽的列收；分隔线 `──┼──`，按 `:---:` 对齐 |
+| 分隔线 | 整行 `─` |
+| 术语列表 / 脚注定义 | 术语加粗，定义缩进两格 |
+
+行内：`` `code` ``（主题 `mdCode`）、`**粗体**`、`[text](url)`（主题 `mdLink` + 灰 url）、
+引用式链接（从文档定义里解出 url）、autolink、实体（`&amp;` → `&`）、
+硬换行（行尾两空格 / `\`）真的断行。
+
+**折行按单元格宽度做**：样式先铺到字符上再折，`**粗体**` 被折到两行时
+两段都还是粗体——先拼字符串再折会把样式丢掉。
+
+不做的：斜体（vnode 的 text 没有开关，`*强调*` 只保留文字，不假装斜体）、
+表格单元格里的行内样式（单元格要先算列宽再补空格，保留 span 会和宽度
+算法打架，所以只留纯文字）、图片（按 `![alt](url)` 原文显示）。
 
 ## 三个任务，一条规则
 
@@ -193,14 +251,34 @@ PTY 里验证过）。输入侧仍是 `_getch` 的代码页字节，见上面第
 
 ## 依赖与版本钉法
 
-`moon.mod` 里除了 `mizchi/tui@0.10.2`，还显式列了 7 个传递依赖
+**TUI 本身是一条本地 fork**：`vendor/tui` 是 git submodule
+（`https://github.com/zt8989/tui.mbt.git`，分支 `zt8989/true-color`，在 0.10.2
+之上加了 24-bit 颜色），`moon.work` 把它列为 workspace 成员，于是
+`mizchi/tui` 这个名字解析到本地那一份，而不是 registry 的 0.10.2。
+
+```bash
+git clone --recurse-submodules <repo>   # 不带 submodule 就编不过（缺 ColorMode）
+moon work sync                          # 升级 fork 后同步成员间的依赖版本
+moon fmt cmd/pi-moon                    # 注意：仓库根下的 `moon fmt` 会连 vendor/tui 一起格式化
+```
+
+`moon.mod` 里仍然写着 `mizchi/tui@0.10.2` 和 7 个传递依赖
 （`crater-core` / `crater-layout` / `css` / `layout` / `signals` / `syntree` /
-`tui-terminal-buffer`）。不是装饰：tui 0.10.2 的清单钉的是旧版本，其中
+`tui-terminal-buffer`）。后 7 个不是装饰：tui 0.10.2 的清单钉的是旧版本，其中
 `crater-layout@0.18.0`、`css@0.2.0`、`tui-terminal-buffer@0.1.3` 还是
 `moon.mod.json` 格式，当前 moon 直接拒绝安装。显式列成最新的 `moon.mod`
 版本，解析器就会用能装的那一份。
 
 升级 tui 时先看这 7 个是否还需要（上游改成新清单后就能删掉）。
+
+主题数据在 `cmd/pi-moon/tui_theme_data.mbt`：pi 的 `dark.json` / `light.json`
+原样内嵌（`#|` 多行字符串），升级 pi 后重新生成，别手改 —— 那两份只是「没装
+pi 也能跑」的兜底，磁盘上有主题文件时以磁盘为准。
+
+markdown 侧的依赖只有一个：`NoahLiu/mdparse@0.1.0`（CommonMark CST，
+零传递依赖，原生可编译）。不直接用上游 `mizchi/markdown`：它把编译器、
+字体、图片渲染一起拖进来，还会顶到 `moonbitlang/async@0.22`，而 tui
+钉的是 0.21。
 
 ## 手动验证
 

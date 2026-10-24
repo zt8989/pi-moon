@@ -105,6 +105,8 @@ pub(all) struct TuiState {
   mut session_label : String
   mut last_ctrl_c : Int64
   mut writer : @session.SessionWriter?
+  /// 底色：24-bit 终端用 pi 的原值，否则退回 16 色名字（见 `tui_color.mbt`）。
+  mut palette : Palette
 }
 
 ///|
@@ -158,6 +160,7 @@ pub fn TuiState::new() -> TuiState {
     session_label: "",
     last_ctrl_c: 0L,
     writer: None,
+    palette: Palette::ansi256(),
   }
 }
 
@@ -252,9 +255,15 @@ pub async fn run_tui(
     session_path
   }
   pi_enable_vt_output()
-  let (app, cleanup) = @vnode.init_vnode_terminal(width, height, fn(raw) {
-    @io.print_raw(raw)
-  })
+  let color_mode = tui_color_mode()
+  let theme = load_theme(config.agent_dir)
+  tui.palette = Palette::from_theme(theme, color_mode)
+  let (app, cleanup) = @vnode.init_vnode_terminal(
+    width,
+    height,
+    fn(raw) { @io.print_raw(raw) },
+    color_mode~,
+  )
   let failure = try {
     @async.with_task_group(async fn(group) {
       group.spawn_bg(async fn() { tui_render_loop(app, tui, agent) })

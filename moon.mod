@@ -21,6 +21,9 @@ description = "Elm-architecture code agent core with a pi-compatible OpenAI prov
 
 import {
   "conglinyizhi/moonbit-llm-faceoff@0.2.0",
+  // markdown 解析：CommonMark CST（mizchi/markdown 的解析链路 fork），
+  // TUI 只负责把 AST 画成带样式的行。
+  "NoahLiu/mdparse@0.1.0",
   "moonbitlang/async@0.21.3",
   // TUI：实际编译用的是 vendor/tui（moon.work 的成员，0.10.2 + 24-bit 颜色的
   // fork）；registry 这一份只提供模块名与传递依赖的版本约束。

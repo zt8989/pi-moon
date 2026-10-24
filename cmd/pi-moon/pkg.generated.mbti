@@ -3,6 +3,7 @@ package "pi-moon/cmd/pi-moon"
 
 import {
   "mizchi/signals/ui",
+  "mizchi/tui/render",
   "mizchi/tui/vnode",
   "moonbitlang/core/debug",
   "pi-moon/core/action",
@@ -17,9 +18,11 @@ pub fn backspace(String, Int32) -> (String, Int32)
 
 pub fn blank_line() -> StyledLine
 
+pub fn builtin_theme(String, String) -> Theme
+
 pub fn char_count(String) -> Int32
 
-pub fn chat_lines(@state.AgentState, Bool, Int32, Array[StatusCard]) -> Array[StyledLine]
+pub fn chat_lines(@state.AgentState, Bool, Int32, Array[StatusCard], palette? : Palette) -> Array[StyledLine]
 
 pub fn clamp_cursor(Int32, Int32) -> Int32
 
@@ -29,17 +32,15 @@ pub fn cursor_right(Int32, Int32) -> Int32
 
 pub fn delete_forward(String, Int32) -> (String, Int32)
 
-pub fn dim_line(String) -> StyledLine
-
 pub fn display_width(String) -> Int32
 
-pub fn editor_top_border(@state.AgentState, Int32, Int64) -> StyledLine
+pub fn editor_top_border(@state.AgentState, Int32, Int64, palette? : Palette) -> StyledLine
 
 pub fn first_lines(String, Int32) -> Array[String]
 
 pub fn flush_ui_actions(TuiState, @runtime.Dispatch, TuiBridge) -> Unit
 
-pub fn footer_lines(@state.AgentState, Int32) -> Array[StyledLine]
+pub fn footer_lines(@state.AgentState, Int32, palette? : Palette) -> Array[StyledLine]
 
 pub fn format_percent(Double) -> String
 
@@ -49,7 +50,13 @@ pub fn insert_text(String, Int32, String) -> (String, Int32)
 
 pub fn line_count(String) -> Int32
 
-pub fn markdown_lines(String, Int32) -> Array[StyledLine]
+pub async fn load_theme(String) -> Theme
+
+pub fn markdown_lines(String, Int32, colors? : MarkdownColors) -> Array[StyledLine]
+
+pub fn okhsl_to_rgb(Double, Double, Double) -> (Int32, Int32, Int32)
+
+pub fn oklch_to_rgb(Double, Double, Double) -> (Int32, Int32, Int32)
 
 pub fn one_decimal(Double) -> String
 
@@ -59,9 +66,13 @@ pub fn pad_to_width(String, Int32) -> String
 
 pub fn page_height(Int32, Int32) -> Int32
 
+pub fn parse_color(String) -> String?
+
+pub fn parse_theme(String, String) -> Theme?
+
 pub fn plain_line(String) -> StyledLine
 
-pub fn queue_lines(@state.AgentState, Int32) -> Array[StyledLine]
+pub fn queue_lines(@state.AgentState, Int32, palette? : Palette) -> Array[StyledLine]
 
 pub fn render_editor(String, Int32, Int32) -> String
 
@@ -75,11 +86,13 @@ pub fn spaces(Int32) -> String
 
 pub fn styled_line(String, String, bold? : Bool, bg? : String) -> StyledLine
 
-pub fn tab_nodes(@state.AgentState, TuiPage, Int32) -> Array[@ui.Node[@vnode.TuiEvent, @vnode.TuiAttrValue]]
+pub fn tab_nodes(@state.AgentState, TuiPage, Int32, palette? : Palette) -> Array[@ui.Node[@vnode.TuiEvent, @vnode.TuiAttrValue]]
 
-pub fn trace_lines(@state.AgentState, Int32) -> Array[StyledLine]
+pub fn trace_lines(@state.AgentState, Int32, palette? : Palette) -> Array[StyledLine]
 
 pub fn truncate_to(String, Int32) -> String
+
+pub fn tui_color_mode() -> @render.ColorMode
 
 pub fn tui_view(TuiState, @state.AgentState) -> @ui.Node[@vnode.TuiEvent, @vnode.TuiAttrValue]
 
@@ -108,11 +121,51 @@ type CompactSnapshot
 
 type MarkdownCell
 
+pub(all) struct MarkdownColors {
+  code : String
+  link : String
+  link_url : String
+  code_block : String
+  code_block_border : String
+  heading : String
+  quote : String
+  quote_border : String
+  hr : String
+  list_bullet : String
+  diff_add : String
+  diff_removed : String
+  diff_context : String
+} derive(Eq, @debug.Debug)
+pub fn MarkdownColors::defaults() -> Self
+pub fn MarkdownColors::from_theme(Theme) -> Self
+
 pub(all) struct MarkdownSpan {
   text : String
   fg : String?
   bold : Bool
 } derive(Eq, @debug.Debug)
+
+pub(all) struct Palette {
+  user_bg : String
+  tool_pending_bg : String
+  tool_success_bg : String
+  tool_error_bg : String
+  compaction_bg : String
+  text : String
+  muted : String
+  dim : String
+  accent : String
+  border : String
+  success : String
+  error : String
+  warning : String
+  thinking : Map[String, String]
+  md : MarkdownColors
+} derive(Eq, @debug.Debug)
+pub fn Palette::ansi256() -> Self
+pub fn Palette::from_theme(Theme, @render.ColorMode) -> Self
+pub fn Palette::thinking_color(Self, String) -> String
+pub fn Palette::true_color() -> Self
 
 pub(all) struct Picker {
   kind : PickerKind
@@ -150,6 +203,14 @@ pub(all) struct StyledLine {
   bold : Bool
   spans : Array[MarkdownSpan]?
 } derive(Eq, @debug.Debug)
+
+pub(all) struct Theme {
+  name : String
+  appearance : String
+  colors : Map[String, String]
+}
+pub fn Theme::color(Self, String) -> String?
+pub fn Theme::color_or(Self, String, String) -> String
 
 pub(all) struct TuiBridge {
   mut agent : @runtime.Agent?
@@ -200,6 +261,7 @@ pub(all) struct TuiState {
   mut session_label : String
   mut last_ctrl_c : Int64
   mut writer : @session.SessionWriter?
+  mut palette : Palette
 }
 pub fn TuiState::new() -> Self
 

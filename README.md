@@ -54,7 +54,10 @@ reducer 里没有一个 `await`、没有一个 `fetch`、也没有 while。真�
   composer（工作状态嵌在上框线）+ 两行底栏；生成中 Enter 进 steer、Alt+Enter
   followUp、Ctrl+U 取回队列，Esc 中断或取回，Ctrl+C×2 退出，工具块折叠；
   `Ctrl+L` / `/thinking` / `/resume` 的模型、思考级别、会话面板覆盖 composer；
-  assistant / user 文本走最小 markdown（标题、列表、引用、围栏代码、行内 code/bold/link）。
+  assistant / user 文本走 markdown（AST 解析 + 终端渲染：标题、列表、任务列表、
+  引用、表格、围栏代码、```diff 上色、行内 code/bold/link）；**界面颜色全部来自
+  pi 的主题**（`settings.json` 的 `theme`，含 light / 自定义主题），24-bit 终端
+  用原值，只有 256 色时面板底色退回 16 色名字。
   一次性与管道行为不变（见 [docs/tui.md](docs/tui.md)）。
 
 **还没有**（下一步逐步接）：Web 界面、pi 扩展、TUI 的各工具专用渲染器 /
@@ -162,8 +165,10 @@ common → message → compact → trace → action → state → loop → runti
 - [`conglinyizhi/moonbit-llm-faceoff`](https://github.com/conglinyizhi/moonbit-llm-faceoff)
   —— 连接设置与 SSE 解析（详见 [docs/provider.md](docs/provider.md)）；
 - [`moonbitlang/async`](https://github.com/moonbitlang/async) —— HTTP 客户端与事件循环；
-- [`mizchi/tui`](https://github.com/mizchi/tui.mbt) —— 终端渲染与按键（详见
-  [docs/tui.md](docs/tui.md)；它那几个旧清单格式的传递依赖在 `moon.mod` 里显式钉着）。
+- [`mizchi/tui`](https://github.com/mizchi/tui.mbt) —— 终端渲染与按键。这里用的是
+  **本仓库的 fork**（`vendor/tui` submodule，`zt8989/true-color` 分支，加了 24-bit
+  颜色），通过 `moon.work` 当 workspace 成员接进来；`moon.mod` 里那 7 个旧清单
+  格式的传递依赖因此仍显式钉着（详见 [docs/tui.md](docs/tui.md)）。
 
 
 ## 环上每一步
