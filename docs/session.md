@@ -7,7 +7,16 @@
 ## 文件里有什么
 
 默认位置：`<agent dir>/sessions/<毫秒时间戳>.jsonl`（与 pi 的配置同址，
-`~/.pi/agent/sessions/`）。每行一个 `op`：
+`~/.pi/agent/sessions/`）。
+
+> **与 ela / pi 的目录约定对齐（计划中）**：ela 与 pi 用
+> `sessions/--<cwd 编码>--/<ISO 时间戳>_<UUIDv7>.jsonl`，轨迹单独放
+> `traces/--<cwd 编码>--/<同名>.jsonl`；`ela --session <id>` 按 id 扫目录恢复。
+> pi-moon 目前的单文件混合格式（messages + 轨迹在一个 JSONL 里）将在切换到
+> 「sessions / traces 双文件 + cwd 子目录 + id 命名」布局时一并迁移，见
+> ela 侧的说明（event-loop-agent `docs/architecture/trace.md` 的「盘上位置」一节）。
+
+每行一个 `op`：
 
 | op | 内容 | 什么时候写 |
 | --- | --- | --- |
