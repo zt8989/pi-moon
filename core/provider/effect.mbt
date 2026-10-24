@@ -17,6 +17,14 @@ pub(all) struct ProviderHooks {
   on_thinking : async (String) -> Unit
   /// 工具执行中的增量（工具名，当前**全文**）。只对 shell 工具有意义。
   on_tool_progress : async (String, Array[@message.Content]) -> Unit
+  /// 用户按了 Esc。
+  ///
+  /// 中断必须由 effect 自己发起：`Dispatch.send()` 是同步的，界面没有别的办法
+  /// 在一条流跑到一半时把「停止」送进环里。effect 在分片边界查这个谓词，
+  /// 真就回一条 `llm.failed(kind=aborted)` —— 半截输出不会进 messages。
+  ///
+  /// 默认恒为 `false`：一次性 CLI 与测试的行为一个字都不变。
+  should_abort : () -> Bool
 }
 
 ///|
@@ -25,6 +33,7 @@ pub fn noop_hooks() -> ProviderHooks {
     on_content: async fn(_) { () },
     on_thinking: async fn(_) { () },
     on_tool_progress: async fn(_, _) { () },
+    should_abort: fn() { false },
   }
 }
 
@@ -96,6 +105,12 @@ async fn stream_completion(
   }
   let accumulator = StreamAccumulator::new()
   while !accumulator.done {
+    // 中断在**分片边界**生效：已经收到的字照常进 state（界面看得见它停在哪），
+    // 但这条 assistant 消息不会落进 messages。
+    if (hooks.should_abort)() {
+      dispatch.send(abort_failure())
+      return
+    }
     let line = read_sse_line(client, options.idle_timeout_ms) catch {
       @async.TimeoutError => {
         dispatch.send(
@@ -152,6 +167,17 @@ async fn stream_completion(
   }
   let part = accumulator.to_assistant_part(resolved.model)
   dispatch.send(@action.LlmDone({ message: part, node_id: None, }))
+}
+
+///|
+/// 用户中断的 `llm.failed`。`Aborted` 不可重试，因此它一定收工。
+fn abort_failure() -> @action.AgentAction {
+  @action.LlmFailed({
+    error: "用户中断",
+    kind: @common.Aborted,
+    node_id: None,
+    cause: Some(@common.CauseUser),
+  })
 }
 
 ///|
@@ -256,7 +282,29 @@ async fn run_tools_with_hooks(
   for definition in state.prompt.tools {
     enabled.push(definition.name)
   }
-  for call in calls {
+  let mut index = 0
+  while index < calls.length() {
+    // 工具批次里的中断点：正在跑的那一条**不打断**（进程已经起来了，硬停会留下
+    // 半截文件），从下一条起补失败结果再收工 —— 每个 toolCall 都必须有结果，
+    // 否则下一轮请求就是非法消息序列。
+    if (hooks.should_abort)() {
+      while index < calls.length() {
+        let skipped = calls[index]
+        dispatch.send(
+          @action.ToolResult({
+            tool_call_id: skipped.id,
+            tool_name: skipped.name,
+            content: [@message.Text("用户中断，未执行")],
+            is_error: true,
+            timestamp: @env.now().reinterpret_as_int64(),
+          }),
+        )
+        index = index + 1
+      }
+      dispatch.send(abort_failure())
+      return
+    }
+    let call = calls[index]
     dispatch.send(@action.ToolStart(call))
     let env : Map[String, String] = Map([])
     if !state.session_id.is_empty() {
@@ -288,6 +336,7 @@ async fn run_tools_with_hooks(
         timestamp: @env.now().reinterpret_as_int64(),
       }),
     )
+    index = index + 1
   }
   dispatch.send(@action.ToolBatchDone(calls.length()))
 }

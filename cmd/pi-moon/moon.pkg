@@ -10,6 +10,10 @@ import {
   "pi-moon/core/provider",
   "pi-moon/core/tools",
   "pi-moon/core/session",
+  "mizchi/tui/core",
+  "mizchi/tui/events",
+  "mizchi/tui/io",
+  "mizchi/tui/vnode",
   "moonbitlang/async",
   "moonbitlang/async/stdio",
   "moonbitlang/core/env",
@@ -21,3 +25,7 @@ pkgtype(kind: "executable")
 supported_targets = "+native"
 
 warnings = "-79-67"
+
+options(
+  "native-stub": [ "tty.c" ],
+)

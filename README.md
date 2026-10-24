@@ -25,7 +25,7 @@ reducer 里没有一个 `await`、没有一个 `fetch`、也没有 while。真�
 [redux-loop](https://github.com/redux-loop/redux-loop) 的形状：`update` 返回
 `(model, Cmd)`，而 `Cmd` 是可检视的数据。
 
-## 现状：v0.6 循环核心 + provider + 工具 + 会话 + 压缩
+## 现状：v0.7 循环核心 + provider + 工具 + 会话 + 压缩 + 终端界面
 
 - 三张表：**迁移表**（action → 下一个状态）、**接线表**（action → Cmd）、
   **effect 表**（`RunAgent` / `RunTools` / `RunCompact` 的真正实现）；
@@ -48,17 +48,22 @@ reducer 里没有一个 `await`、没有一个 `fetch`、也没有 while。真�
   （REPL 里用 `/tools read,bash`；见 [docs/tools.md](docs/tools.md)）；
 - **上下文压缩**：`compact.request / done / failed` 三个 action + pi 的切点算法；
   三种触发（手动 `/compact` / 超阈值 / provider 报溢出），摘要是**一条普通消息**，
-  落盘后可恢复（见 [docs/compact.md](docs/compact.md)）。
+  落盘后可恢复（见 [docs/compact.md](docs/compact.md)）；
+- **全屏 TUI**：默认交互模式（不带 `-p`，stdin 是终端）。三任务结构
+  （键位 / 渲染 / driver），Esc 中断、Ctrl+C×2 退出、工具输出折叠、输入历史；
+  一次性模式与管道输入的行为不变（见 [docs/tui.md](docs/tui.md)）。
 
-**还没有**（下一步逐步接）：pi 扩展、TUI / Web。
+**还没有**（下一步逐步接）：Web 界面、pi 扩展、TUI 的 steer / 轨迹页 /
+模型选择器（见 [docs/tui.md](docs/tui.md) 的「与 ela 的差距」）。
 
 ## 跑起来
 
 ```bash
-moon test                        # 70 个测试：纯表 + 整环 + 轨迹树 + provider + 工具 + 会话 + 压缩
+moon test                        # 86 个测试：纯表 + 整环 + 轨迹树 + provider + 工具 + 会话 + 压缩 + TUI
 
 # 真实模型：读 ~/.pi/agent/ 下与 pi 同一份配置
-moon run cmd/pi-moon -- -p "用一句话说明什么是 Elm 架构"
+moon run cmd/pi-moon                    # 全屏 TUI（默认落盘，可 -c 恢复）
+moon run cmd/pi-moon -- -p "用一句话说明什么是 Elm 架构"   # 一次性模式
 moon run cmd/pi-moon -- --list-models
 moon run cmd/pi-moon -- -P deepseek -m deepseek-chat --thinking low -p "..."
 
@@ -72,11 +77,11 @@ moon run cmd/pi-moon -- --no-tools -p "..."
 moon run cmd/pi-moon -- -t bash --show-tool-progress \
   -p '用 bash 执行：for i in 1 2 3; do printf "step$i "; sleep 0.4; done'
 
-# 会话：新建 / 恢复最新 / 多轮 REPL
+# 会话：新建 / 恢复最新 / 交互
 moon run cmd/pi-moon -- -p "记住 42"
 moon run cmd/pi-moon -- -c -p "我刚才让你记住什么？"
-moon run cmd/pi-moon -- -i -s logs/today.jsonl
-moon run cmd/pi-moon -- -i        # REPL 里 /tools read,bash 可中途换工具；/compact 压缩上下文
+moon run cmd/pi-moon -- -i -s logs/today.jsonl  # -i 与不带参数同义（TUI）
+moon run cmd/pi-moon -- -i        # TUI 里 /tools 换工具；/compact 压缩上下文
 moon run cmd/pi-moon -- --no-session -p "..."
 
 # 离线演示：假 provider / 假工具，看两棵轨迹树
@@ -131,7 +136,7 @@ moon run cmd/main
 | `core/provider` | pi 配置解析 + OpenAI 兼容请求 / SSE + 真实 effect 表 |
 | `core/tools` | 八个内置工具：定义 / 执行 / 与 pi 一致的启用状态 |
 | `core/session` | JSONL 会话：增量落盘、回放成 messages / trace / 装载段 |
-| `cmd/pi-moon` | 命令行：一条 prompt 跑真实模型 |
+| `cmd/pi-moon` | 命令行 + 全屏 TUI：参数解析、会话落盘、`tui_*.mbt`（输入 / 排版 / 渲染 / 驱动） |
 | `cmd/main` | 离线演示（假 provider / 假工具） |
 
 依赖方向是一条直线：
@@ -148,11 +153,13 @@ common → message → compact → trace → action → state → loop → runti
 
 没有循环依赖，也没有全局状态。
 
-依赖两个外部包：
+依赖三个外部包：
 
 - [`conglinyizhi/moonbit-llm-faceoff`](https://github.com/conglinyizhi/moonbit-llm-faceoff)
   —— 连接设置与 SSE 解析（详见 [docs/provider.md](docs/provider.md)）；
-- [`moonbitlang/async`](https://github.com/moonbitlang/async) —— HTTP 客户端与事件循环。
+- [`moonbitlang/async`](https://github.com/moonbitlang/async) —— HTTP 客户端与事件循环；
+- [`mizchi/tui`](https://github.com/mizchi/tui.mbt) —— 终端渲染与按键（详见
+  [docs/tui.md](docs/tui.md)；它那几个旧清单格式的传递依赖在 `moon.mod` 里显式钉着）。
 
 
 ## 环上每一步
@@ -189,7 +196,9 @@ common → message → compact → trace → action → state → loop → runti
   `step.start + agent.run`」，而不是真的去调模型。
 
 所以核心里有一个极小的 TEA（`AgentAction` / `AgentState` / `Cmd` /
-`reduce` / `Agent`），形状与 rabbita 的 update 循环同构。等做界面时：
+`reduce` / `Agent`），形状与 rabbita 的 update 循环同构。终端界面已经按这个
+形状接上了（`cmd/pi-moon/tui*.mbt` 读 `Agent.state`、把操作变成 action/
+命令）；等做 **Web** 界面时同理：
 
 - 界面订阅 `Agent.state`、渲染 `Html`、把用户操作 dispatch 回来；
 - `RunAgent` / `RunTools` 这两条 effect 用 rabbita 的异步 Cmd
@@ -211,6 +220,7 @@ common → message → compact → trace → action → state → loop → runti
 | `packages/core/src/tools.ts`（内置工具 + 开关） | `core/tools/`（八个工具 + `resolve_tool_selection`） |
 | `packages/core/src/trace-store.ts` + `trace-file.ts` | `core/session/`（JSONL 记录 / 回放） |
 | `packages/core/src/session-recorder.ts` + `session-file.ts` | `core/session/` + CLI 的 `--session` / `--continue` |
+| `packages/tui/src/app.ts` + `keybindings.ts` | `cmd/pi-moon/tui*.mbt`（tui.mbt 框架；见 [docs/tui.md](docs/tui.md)） |
 | `redux-loop` 的 `install()` | `core/runtime/runtime.mbt` 的 `Agent::run` |
 
 语义上刻意保留的几件事：
@@ -237,6 +247,8 @@ common → message → compact → trace → action → state → loop → runti
 
 ## 下一步（按顺序）
 
-1. **界面**：rabbita（Web）与终端渲染共用同一份 state；跨包只碰 `Agent` 的
+1. **TUI 迭代**：steer 在工具批次边界投递、轨迹页（`Ctrl+R`）、模型 / 思考 /
+   会话选择器、markdown（与 ela 的差距清单见 [docs/tui.md](docs/tui.md)）。
+2. **Web 界面**：rabbita 与终端共用同一份 state；跨包只碰 `Agent` 的
    `state` / `send`。
-2. **pi 扩展**：`extension.event` / 扩展命令 / 生命周期。
+3. **pi 扩展**：`extension.event` / 扩展命令 / 生命周期。

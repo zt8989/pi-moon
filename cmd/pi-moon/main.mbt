@@ -8,13 +8,13 @@
 let usage : String = "pi-moon — Elm architecture agent core in MoonBit\n" +
   "\n" +
   "用法:\n" +
+  "  pi-moon                      全屏 TUI（默认落盘，可 -c 恢复）\n" +
   "  pi-moon -p \"你的问题\"        跑一条就退出\n" +
-  "  pi-moon -i                   多轮 REPL（默认落盘，可 -c 恢复）\n" +
   "  pi-moon --list-models          看 pi 配置里有什么 provider / model\n" +
-  "  echo \"问题\" | pi-moon          从 stdin 读 prompt\n" +
+  "  echo \"问题\" | pi-moon          从 stdin 读 prompt（不启 TUI）\n" +
   "\n" +
   "选项:\n" +
-  "  -p, --prompt <text>      用户消息；省略且不 -i 则读 stdin\n" +
+  "  -p, --prompt <text>      用户消息；省略时：终端进 TUI，管道读 stdin\n" +
   "  -P, --provider <name>    覆盖 settings.json 的 defaultProvider\n" +
   "  -m, --model <id>         覆盖 settings.json 的 defaultModel\n" +
   "      --api-key <key>      覆盖 models.json / auth.json / 环境变量\n" +
@@ -31,7 +31,8 @@ let usage : String = "pi-moon — Elm architecture agent core in MoonBit\n" +
   "  -s, --session <file>     会话文件（存在则恢复，否则新建）\n" +
   "  -c, --continue           恢复 sessions 目录里最新的会话\n" +
   "      --no-session         不落盘 / 不恢复\n" +
-  "  -i, --interactive        多轮 REPL（/tools 换工具；/compact 压缩上下文；/exit 退出；/continue 续跑）\n" +
+  "  -i, --interactive        全屏 TUI（与不带参数相同；管道输入时退回逐行 REPL）\n" +
+  "                             TUI 里 /tools 换工具，/compact 压缩上下文，/exit 退出\n" +
   "      --no-trace           不打印轨迹树\n" +
   "  -h, --help               显示这段文字"
 
@@ -657,17 +658,27 @@ async fn run(args : CliArgs) -> Unit {
   for tool in current_tools {
     active_tool_names.push(tool.name)
   }
+  // 界面状态要在 hooks **之前**建：Esc 的中断标志就住在它里面。
+  let tui_mode = wants_tui(args)
+  let tui : TuiState? = if tui_mode { Some(TuiState::new()) } else { None }
   let hooks : @provider.ProviderHooks = {
-    on_content: async fn(text) { @stdio.stdout.write(text) catch { _ => () } },
+    on_content: async fn(text) {
+      // TUI 下不往 stdout 写字：整帧由渲染循环统一画，这里再写就成两路输出。
+      if !tui_mode {
+        @stdio.stdout.write(text) catch {
+          _ => ()
+        }
+      }
+    },
     on_thinking: async fn(text) {
-      if args.show_thinking {
+      if !tui_mode && args.show_thinking {
         @stdio.stderr.write(text) catch {
           _ => ()
         }
       }
     },
     on_tool_progress: async fn(tool_name, blocks) {
-      if args.show_tool_progress {
+      if !tui_mode && args.show_tool_progress {
         let text = @message.contents_text(blocks)
         let line = match text.rev_find("\n") {
           Some(index) => text[index + 1:].to_owned()
@@ -677,6 +688,12 @@ async fn run(args : CliArgs) -> Unit {
         @stdio.stderr.write("\r\u{001b}[2K[" + tool_name + "] " + line) catch {
           _ => ()
         }
+      }
+    },
+    should_abort: fn() {
+      match tui {
+        Some(tui) => tui.abort
+        None => false
       }
     },
   }
@@ -695,6 +712,11 @@ async fn run(args : CliArgs) -> Unit {
   // stdout 只留给模型回答：诊断与工具日志全走 stderr（先收集，跑完再打）。
   let notices : Array[String] = []
   agent.observe(action => {
+    // 每归约一条 action 就标脏：流式 token 到达时下一帧就会带上它。
+    match tui {
+      Some(tui) => tui.dirty = true
+      None => ()
+    }
     match action {
       @action.LlmFailed(data) =>
         notices.push("[llm failed: " + data.kind.name() + "] " + data.error)
@@ -757,23 +779,42 @@ async fn run(args : CliArgs) -> Unit {
       return
     }
   }
-  eprintln(
-    "[" +
-    agent.state.provider_name +
-    "/" +
-    agent.state.model_id +
-    " (thinking=" +
-    agent.state.thinking_level +
-    ")]  tools=" +
-    (if active_tool_names.is_empty() {
-      "(none)"
-    } else {
-      active_tool_names.join(",")
-    }) +
-    "  session=" +
-    session_path.unwrap_or("(不落盘)") +
-    "  按 Ctrl-C 中断（流式输出在 stdout，诊断在 stderr）",
-  )
+  if !tui_mode {
+    eprintln(
+      "[" +
+      agent.state.provider_name +
+      "/" +
+      agent.state.model_id +
+      " (thinking=" +
+      agent.state.thinking_level +
+      ")]  tools=" +
+      (if active_tool_names.is_empty() {
+        "(none)"
+      } else {
+        active_tool_names.join(",")
+      }) +
+      "  session=" +
+      session_path.unwrap_or("(不落盘)") +
+      "  按 Ctrl-C 中断（流式输出在 stdout，诊断在 stderr）",
+    )
+  }
+  // 交互模式：终端上没人给 `-p` 就是全屏 TUI（与 pi 的默认行为一致）。
+  // 管道进来的 stdin 不算交互（`wants_tui` 只问 stdin 本身）。
+  if tui_mode {
+    match tui {
+      Some(tui) => {
+        tui.writer = writer
+        run_tui(
+          agent,
+          tui,
+          config.compaction.enabled,
+          session_path.unwrap_or("(不落盘)"),
+        )
+        return
+      }
+      None => ()
+    }
+  }
   // 一次性 prompt：`-p` 给了就跑；没给且不是交互模式则把 stdin 整段当 prompt。
   let one_shot : String? = match args.prompt {
     Some(prompt) => Some(prompt.trim(chars=" \t\r\n").to_owned())

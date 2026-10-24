@@ -1,7 +1,71 @@
 // Generated using `moon info`, DON'T EDIT IT
 package "pi-moon/cmd/pi-moon"
 
+import {
+  "mizchi/signals/ui",
+  "mizchi/tui/vnode",
+  "moonbitlang/core/debug",
+  "pi-moon/core/runtime",
+  "pi-moon/core/session",
+  "pi-moon/core/state",
+}
+
 // Values
+pub fn backspace(String, Int32) -> (String, Int32)
+
+pub fn blank_line() -> StyledLine
+
+pub fn char_count(String) -> Int32
+
+pub fn clamp_cursor(Int32, Int32) -> Int32
+
+pub fn cursor_left(Int32) -> Int32
+
+pub fn cursor_right(Int32, Int32) -> Int32
+
+pub fn delete_forward(String, Int32) -> (String, Int32)
+
+pub fn dim_line(String) -> StyledLine
+
+pub fn display_width(String) -> Int32
+
+pub fn first_lines(String, Int32) -> Array[String]
+
+pub fn footer_text(@state.AgentState, Bool, String, Int32) -> String
+
+pub fn header_text(@state.AgentState) -> String
+
+pub fn insert_text(String, Int32, String) -> (String, Int32)
+
+pub fn line_count(String) -> Int32
+
+pub fn plain_line(String) -> StyledLine
+
+pub fn render_editor(String, Int32, Int32) -> String
+
+pub async fn run_tui(@runtime.Agent, TuiState, Bool, String) -> Unit
+
+pub fn spaces(Int32) -> String
+
+pub fn styled_line(String, String, bold? : Bool) -> StyledLine
+
+pub fn transcript_height(Int32) -> Int32
+
+pub fn transcript_lines(@state.AgentState, Bool, Int32) -> Array[StyledLine]
+
+pub fn transcript_width(Int32) -> Int32
+
+pub fn truncate_to(String, Int32) -> String
+
+pub fn tui_view(TuiState, @state.AgentState) -> @ui.Node[@vnode.TuiEvent, @vnode.TuiAttrValue]
+
+pub fn visible_lines(Array[StyledLine], Int32, Int32) -> Array[StyledLine]
+
+pub fn wants_tui(CliArgs) -> Bool
+
+pub fn wrap_prefixed(String, String, Int32) -> Array[String]
+
+pub fn wrap_text(String, Int32) -> Array[String]
 
 // Errors
 pub suberror CliError {
@@ -15,6 +79,42 @@ pub fn CliError::to_string(Self) -> String
 type CliArgs
 
 type CompactSnapshot
+
+pub(all) struct StyledLine {
+  text : String
+  fg : String?
+  bold : Bool
+} derive(Eq, @debug.Debug)
+
+pub(all) enum TuiCommand {
+  Submit(String)
+  Continue
+  Compact
+  Tools(Array[String])
+  ListTools
+  Exit
+} derive(@debug.Debug)
+
+pub(all) struct TuiState {
+  mut width : Int32
+  mut height : Int32
+  mut input : String
+  mut cursor : Int32
+  mut history : Array[String]
+  mut history_pos : Int32
+  mut scroll : Int32
+  mut expanded : Bool
+  mut busy : Bool
+  mut abort : Bool
+  mut quit : Bool
+  mut dirty : Bool
+  mut notice : String
+  mut notice_at : Int64
+  mut commands : Array[TuiCommand]
+  mut last_ctrl_c : Int64
+  mut writer : @session.SessionWriter?
+}
+pub fn TuiState::new() -> Self
 
 // Type aliases
 
