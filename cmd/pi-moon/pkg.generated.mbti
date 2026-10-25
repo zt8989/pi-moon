@@ -7,6 +7,7 @@ import {
   "mizchi/tui/vnode",
   "moonbitlang/core/debug",
   "pi-moon/core/action",
+  "pi-moon/core/context",
   "pi-moon/core/provider",
   "pi-moon/core/runtime",
   "pi-moon/core/session",
@@ -22,7 +23,7 @@ pub fn builtin_theme(String, String) -> Theme
 
 pub fn char_count(String) -> Int32
 
-pub fn chat_lines(@state.AgentState, Bool, Int32, Array[StatusCard], palette? : Palette) -> Array[StyledLine]
+pub fn chat_lines(@state.AgentState, Bool, Int32, Array[StatusCard], Array[String], palette? : Palette) -> Array[StyledLine]
 
 pub fn clamp_cursor(Int32, Int32) -> Int32
 
@@ -78,7 +79,7 @@ pub fn render_editor(String, Int32, Int32) -> String
 
 pub fn rule(Int32) -> String
 
-pub async fn run_tui(@runtime.Agent, TuiState, @provider.PiConfig, Bool, String) -> Unit
+pub async fn run_tui(@runtime.Agent, TuiState, @provider.PiConfig, Bool, String, String, Array[@context.Skill]) -> Unit
 
 pub fn shorten_home(String, String) -> String
 
@@ -218,6 +219,7 @@ type ToolBodyLine derive(Eq, @debug.Debug)
 
 pub(all) struct TuiBridge {
   mut agent : @runtime.Agent?
+  mut skills : Array[@context.Skill]
 }
 pub fn TuiBridge::new() -> Self
 
@@ -255,6 +257,7 @@ pub(all) struct TuiState {
   mut quit : Bool
   mut dirty : Bool
   mut cards : Array[StatusCard]
+  mut banner : Array[String]
   mut message_count : Int32
   mut commands : Array[TuiCommand]
   mut pending_actions : Array[@action.AgentAction]
@@ -263,6 +266,7 @@ pub(all) struct TuiState {
   mut picker_confirm : Bool
   mut session_path : String
   mut session_label : String
+  mut session_id : String
   mut last_ctrl_c : Int64
   mut writer : @session.SessionWriter?
   mut palette : Palette

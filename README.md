@@ -41,14 +41,22 @@ reducer 里没有一个 `await`、没有一个 `fetch`、也没有 while。真�
   `settings.json` 的 `defaultTools` 支持 `+name` / `-name`（见 [docs/tools.md](docs/tools.md)）；
 - **流式工具输出**：shell 命令边跑边读，`ToolProgress` 每 100ms 回到环上；
   `--show-tool-progress` 能在 stderr 直接看到中间输出；
-- **会话落盘 / 恢复**：JSONL 追加写（messages + add/close 轨迹节点 +
-  prompt/model / tools.changed 装载段），`-s` / `-c` 恢复，`-i` 多轮 REPL
+- **会话落盘 / 恢复**：与 pi 同构的双文件布局 ——
+  `sessions/--<cwd>--/<ISO 时间戳>_<UUIDv7>.jsonl`（header + 消息）与
+  `traces/--<cwd>--/<同名>.jsonl`（装载段 + add/close 轨迹）；退出提示
+  `To resume this session: pi-moon --session <id>`，`-s` / `-c` / `--session <id>` 恢复
   （见 [docs/session.md](docs/session.md)）；
 - **会话中途换工具**：`tools.changed` 只改当前集，下一次请求追加一条声明消息
   （REPL 里用 `/tools read,bash`；见 [docs/tools.md](docs/tools.md)）；
 - **上下文压缩**：`compact.request / done / failed` 三个 action + pi 的切点算法；
   三种触发（手动 `/compact` / 超阈值 / provider 报溢出），摘要是**一条普通消息**，
   落盘后可恢复（见 [docs/compact.md](docs/compact.md)）；
+- **项目上下文与技能**：`AGENTS.md` 一族（家目录 + 祖先链）拼进 system prompt 的
+  `<project_context>` 段；`SKILL.md` 扫 `~/.pi/agent/skills`、`~/.agents/skills`、
+  `<cwd>/.pi/skills` 与祖先链的 `.agents/skills`（`--skill` 可加），清单进
+  `<skills>` 段、正文模型按需自己 read，`/skill:<名字>` 显式展开；启动横幅报
+  `[Context]` / `[Skills]` / `[Skill conflicts]`
+  （见 [docs/context.md](docs/context.md)）；
 - **全屏 TUI**：默认交互模式（不带 `-p`，stdin / stdout 都是终端）。布局与
   ela 同形：顶行页签 + 统计 / 中间页（对话或轨迹，`Ctrl+R`）/ 队列面板 + 空隙 +
   composer（工作状态嵌在上框线）+ 两行底栏；生成中 Enter 进 steer、Alt+Enter
@@ -135,6 +143,7 @@ moon run cmd/main
 | `core/common` | 标量枚举与纯策略：Phase / 错误分类 / StopCause 文案 |
 | `core/message` | 对话消息：user / assistant / toolResult / system + 内容块 |
 | `core/compact` | 压缩纯策略：token 估算、切点算法、摘要消息与提示词。纯函数 |
+| `core/context` | 上下文文件与技能装载：AGENTS.md 一族发现、SKILL.md 扫描、prompt 段渲染。纯函数 + fs |
 | `core/trace` | 轨迹树：节点、tip 规则、统计、lazygit 风格渲染。纯函数 |
 | `core/action` | `AgentAction` 全部变体与载荷（一切皆 Action） |
 | `core/state` | `AgentState` 与初始状态。状态只能由 action 改 |
@@ -153,10 +162,10 @@ common → message → compact → trace → action → state → loop → runti
                                                               └──► cmd/main
 ```
 
-`core/compact` 只依赖 `message`（切点算法可以脱离环单独测）；`core/tools` 只依赖
-`action` / `message`；`core/provider` 额外依赖它（`RunTools` effect 调
-`@tools.execute`）。`core/session` 只依赖数据层（`action` / `message` /
-`state` / `trace`），CLI 用它落盘与恢复。
+`core/compact` 只依赖 `message`（切点算法可以脱离环单独测）；`core/context` 只依赖
+fs（发现与渲染都不碰环）；`core/tools` 只依赖 `action` / `message`；`core/provider`
+额外依赖它（`RunTools` effect 调 `@tools.execute`）。`core/session` 只依赖数据层
+（`action` / `message` / `state` / `trace`），CLI 用它落盘与恢复。
 
 没有循环依赖，也没有全局状态。
 

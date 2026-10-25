@@ -27,8 +27,10 @@ let usage : String = "pi-moon — Elm architecture agent core in MoonBit\n" +
   "  -t, --tools <list>       替换默认工具选择（逗号分隔，例如 read,grep,ls）\n" +
   "  -xt, --exclude-tools <list>  从选择里去掉几个工具（逗号分隔）\n" +
   "      --no-tools           关闭全部内置工具\n" +
+  "      --skill <path>       额外的技能文件或目录（可重复；默认扫\n" +
+  "                             ~/.pi/agent/skills 与 <cwd>/.pi/skills）\n" +
   "      --show-tool-progress 把工具输出（取最后一行）实时打到 stderr\n" +
-  "  -s, --session <file>     会话文件（存在则恢复，否则新建）\n" +
+  "  -s, --session <file|id>  会话文件路径或会话 id（存在则恢复，否则新建）\n" +
   "  -c, --continue           恢复 sessions 目录里最新的会话\n" +
   "      --no-session         不落盘 / 不恢复\n" +
   "  -i, --interactive        全屏 TUI（与不带参数相同；管道输入时退回逐行 REPL）\n" +
@@ -69,6 +71,8 @@ struct CliArgs {
   mut idle_timeout_ms : Int32
   mut tools : String?
   mut exclude_tools : String?
+  /// `--skill` 给的额外技能文件 / 目录（可重复）。
+  skill_paths : Array[String]
   mut no_tools : Bool
   mut show_tool_progress : Bool
   mut session : String?
@@ -95,6 +99,7 @@ fn default_args() -> CliArgs {
     idle_timeout_ms: 120000,
     tools: None,
     exclude_tools: None,
+    skill_paths: [],
     no_tools: false,
     show_tool_progress: false,
     session: None,
@@ -220,6 +225,11 @@ fn parse_args(argv : Array[String]) -> CliArgs raise CliError {
         index = next
       }
       "--no-tools" => args.no_tools = true
+      "--skill" => {
+        let (value, next) = option_value(argv, index, inline, flag)
+        args.skill_paths.push(value)
+        index = next
+      }
       "--show-tool-progress" => args.show_tool_progress = true
       "-s" | "--session" => {
         let (value, next) = option_value(argv, index, inline, flag)
@@ -238,8 +248,18 @@ fn parse_args(argv : Array[String]) -> CliArgs raise CliError {
 
 ///|
 /// system prompt：与 pi 同形 —— 交代工作目录、列出**当前开启**的工具，再附上
-/// 工具自己的使用提示（pi 的 `promptSnippet` / `promptGuidelines`）。
-fn build_system_prompt(cwd : String, tool_names : Array[String]) -> String {
+/// 工具自己的使用提示（pi 的 `promptSnippet` / `promptGuidelines`）；
+/// 末尾拼上项目上下文（AGENTS.md 一族）与技能清单两个段。
+///
+/// 技能清单只列「名字 + 描述 + 文件位置」，正文不进 prompt：任务对上号时模型
+/// 自己用 read 去读。开不了任何读文件工具时清单也照发 —— 反正工具表是动的，
+/// 这条会话中途开了 read 就能用。
+fn build_system_prompt(
+  cwd : String,
+  tool_names : Array[String],
+  context_files : Array[@context.ContextFile],
+  skills : Array[@context.Skill],
+) -> String {
   let lines : Array[String] = [
     "You are pi-moon, a concise coding assistant running in a terminal.",
     "Answer in the user's language.",
@@ -268,6 +288,27 @@ fn build_system_prompt(cwd : String, tool_names : Array[String]) -> String {
         lines.push(guideline)
       }
     }
+    lines.push("")
+    lines.push(
+      "In addition to the tools above, you may have access to other custom tools depending on the project.",
+    )
+  }
+  if !context_files.is_empty() {
+    lines.push("")
+    lines.push(@context.render_project_context(context_files))
+  }
+  // pi 的口径：read 优先，没有 read 就用 bash（能用 shell 读文件）。
+  let read_tool = if tool_names.contains("read") {
+    "read"
+  } else if tool_names.contains("bash") {
+    "bash"
+  } else {
+    ""
+  }
+  let skills_prompt = @context.render_skills_prompt(skills, read_tool)
+  if !skills_prompt.is_empty() {
+    lines.push("")
+    lines.push(skills_prompt)
   }
   lines.join("\n")
 }
@@ -371,41 +412,49 @@ fn session_directory(config : @provider.PiConfig) -> String {
 }
 
 ///|
-/// 本次用哪个会话文件：
+/// 本次用哪份会话（与 pi 同构的两份文件）：
 ///
 /// - `--no-session` → None（不读不写）
-/// - `--session <file>` → 就用它（存在则恢复）
-/// - `--continue` → 目录里最新的那份；没有则新建
-/// - 其余 → 新建（时间戳命名，与 `--continue` 的排序一致）
-async fn resolve_session_path(
+/// - `--session <路径或id>` → 恢复（路径直接用；id 先在 cwd 目录扫，再扫其它目录）
+/// - `--continue` → cwd 目录里最新的那份；没有则新建
+/// - 其余 → 新建（`<ISO 时间戳>_<id>.jsonl`，sessions/ 与 traces/ 各一份）
+async fn resolve_session_paths(
   config : @provider.PiConfig,
   args : CliArgs,
-) -> String? {
+  cwd : String,
+) -> @session.SessionPaths? {
   if args.no_session {
     return None
   }
   match args.session {
-    Some(path) => Some(path)
+    Some(target) => {
+      // 先当路径：给的是文件路径就直接用（老习惯不变）。
+      if (@fs.exists(target) catch { _ => false }) {
+        let id = @session.session_id_from_path(target)
+        return Some(
+          {
+            session: target,
+            trace: target + ".trace",
+            id,
+          },
+        )
+      }
+      // 再当 id：找不到给明确错误（pi 同样拒绝静默换会话）。
+      Some(@session.resolve_session_paths(config.agent_dir, cwd, target))
+    }
     None => {
-      let directory = session_directory(config)
       if args.continue_session {
+        // cwd 目录里最新的；没有就新建。
+        let directory = session_directory(config) + "/" + @session.encode_cwd(cwd)
         match @session.latest_session(directory) {
-          Some(path) => Some(path)
-          None =>
-            Some(
-              @session.new_session_path(
-                directory,
-                @env.now().reinterpret_as_int64(),
-              ),
-            )
+          Some(path) => {
+            let id = @session.session_id_from_path(path)
+            Some({ session: path, trace: path + ".trace", id, })
+          }
+          None => Some(@session.new_session_paths(config.agent_dir, cwd, @env.now().reinterpret_as_int64()))
         }
       } else {
-        Some(
-          @session.new_session_path(
-            directory,
-            @env.now().reinterpret_as_int64(),
-          ),
-        )
+        Some(@session.new_session_paths(config.agent_dir, cwd, @env.now().reinterpret_as_int64()))
       }
     }
   }
@@ -576,7 +625,65 @@ async fn report_compaction(
 }
 
 ///|
-async fn run(args : CliArgs) -> Unit {
+/// 启动横幅（elA 的 `buildStartupBanner` 同形）：进了 prompt 的上下文文件、
+/// 技能名单、装载诊断。横幅画在对话页顶部随对话滚走 —— 技能名要反复对照
+/// 打命令，但不能永远占着首屏，这是两个要求的交集。
+fn build_banner(
+  cwd : String,
+  context_files : Array[@context.ContextFile],
+  skills : Array[@context.Skill],
+  diagnostics : Array[String],
+  system_prompt : String,
+) -> Array[String] {
+  let home = match @env.get_env_vars().get("USERPROFILE") {
+    Some(home) => home
+    None => @env.get_env_vars().get("HOME").unwrap_or("")
+  }
+  let blocks : Array[String] = []
+  // 恢复的会话 prompt 是旧的那份：报「进了 prompt 的文件」不能拿现在磁盘上
+  // 的清单冒充 —— 模型这轮实际收到的是 system_prompt 里写着的那些。
+  // 简化口径：新旧 prompt 都来自同一次装载（新会话或同一次启动），照实报；
+  // 只有能从 prompt 文本里认出来时才报，认不出（旧会话的老格式）就报当前的。
+  let in_prompt : Array[@context.ContextFile] = []
+  for file in context_files {
+    if system_prompt.contains("path=\"" + file.path + "\"") {
+      in_prompt.push(file)
+    }
+  }
+  let shown_files = if in_prompt.is_empty() && system_prompt.contains("<project_context>") {
+    context_files
+  } else {
+    in_prompt
+  }
+  if !shown_files.is_empty() {
+    let labels : Array[String] = []
+    for file in shown_files {
+      labels.push(@context.context_display_path(file.path, cwd, home))
+    }
+    blocks.push("[Context] " + labels.join(", "))
+  }
+  let names : Array[String] = []
+  for skill in skills {
+    if system_prompt.contains("<name>" + skill.name + "</name>") {
+      names.push(skill.name)
+    } else if !system_prompt.contains("<available_skills>") {
+      // prompt 没有技能段（比如 --no-tools 连 read 都没开）：装了也照报，
+      // 但标出来 —— 它没进这轮 prompt。
+      names.push(skill.name + "*")
+    }
+  }
+  if !names.is_empty() {
+    names.sort_by(fn(a, b) { a.compare(b) })
+    blocks.push("[Skills] " + names.join(", "))
+  }
+  if !diagnostics.is_empty() {
+    blocks.push("[Skill conflicts] " + diagnostics.join("; "))
+  }
+  blocks
+}
+
+///|
+async fn run(args : CliArgs) -> Unit raise {
   let config = @provider.load_pi_config(agent_dir?=args.agent_dir)
   for diagnostic in config.diagnostics {
     eprintln("[config] " + diagnostic)
@@ -607,22 +714,43 @@ async fn run(args : CliArgs) -> Unit {
     Some(cwd) => cwd
     None => "."
   }
-  // 新会话的「默认装载」：当前配置 + 当前工具选择。
+  // 新会话的「默认装载」：当前配置 + 当前工具选择 + 上下文文件 + 技能。
+  // 恢复会话时这三份只在 fallback 里用 —— prompt 是装载时定下的，原样回来。
   let fallback_tool_names = selected_tools(config, args)
+  let context_files = @context.load_context_files(cwd, config.agent_dir)
+  let env = @env.get_env_vars()
+  let home = match env.get("USERPROFILE") {
+    Some(home) => home
+    None => env.get("HOME").unwrap_or("")
+  }
+  let skill_registry = @context.load_skill_registry(
+    cwd,
+    config.agent_dir,
+    home_dir=home,
+    extra_paths=args.skill_paths,
+  )
+  for diagnostic in skill_registry.diagnostics {
+    eprintln("[skills] " + diagnostic)
+  }
   let fallback_prompt : @action.PromptInitData = {
-    system_prompt: build_system_prompt(cwd, fallback_tool_names),
+    system_prompt: build_system_prompt(
+      cwd,
+      fallback_tool_names,
+      context_files,
+      skill_registry.skills,
+    ),
     tools: @tools.definitions_for(fallback_tool_names),
   }
   let fallback_model = resolved_model_spec(resolved)
-  // 会话文件：存在就恢复，不存在就新建。
-  let session_path = resolve_session_path(config, args)
-  let session_id = match session_path {
-    Some(path) => @session.session_id_from_path(path)
+  // 会话两份文件：存在就恢复，不存在就新建。
+  let paths = resolve_session_paths(config, args, cwd)
+  let session_id = match paths {
+    Some(paths) => paths.id
     None => "s-" + @env.now().to_string()
   }
-  let loaded = match session_path {
-    Some(path) =>
-      @session.load_session(path, session_id) catch {
+  let loaded = match paths {
+    Some(paths) =>
+      @session.load_session(paths.session, session_id) catch {
         err => {
           eprintln("[session] " + err.to_string())
           None
@@ -719,6 +847,7 @@ async fn run(args : CliArgs) -> Unit {
     fn() { @env.now().reinterpret_as_int64() },
   )
   bridge.agent = Some(agent)
+  bridge.skills = skill_registry.skills
   // stdout 只留给模型回答：诊断与工具日志全走 stderr（先收集，跑完再打）。
   let notices : Array[String] = []
   agent.observe(action => {
@@ -738,12 +867,12 @@ async fn run(args : CliArgs) -> Unit {
       _ => ()
     }
   })
-  let mut writer : @session.SessionWriter? = match session_path {
-    Some(path) =>
+  let mut writer : @session.SessionWriter? = match paths {
+    Some(paths) =>
       Some(
         match loaded {
-          Some(loaded) => @session.SessionWriter::restored(path, loaded)
-          None => @session.SessionWriter::new(path)
+          Some(loaded) => @session.SessionWriter::restored(paths.session, paths.trace, loaded)
+          None => @session.SessionWriter::new(paths.session, paths.trace, session_id)
         },
       )
     None => None
@@ -768,7 +897,9 @@ async fn run(args : CliArgs) -> Unit {
       }
       eprintln(
         "[session] 恢复 " +
-        session_path.unwrap_or("(内存)") +
+        paths.unwrap_or(
+          { session: "(内存)", trace: "", id: session_id, },
+        ).session +
         "（" +
         loaded.messages.length().to_string() +
         " 条消息 / " +
@@ -808,7 +939,10 @@ async fn run(args : CliArgs) -> Unit {
         active_tool_names.join(",")
       }) +
       "  session=" +
-      session_path.unwrap_or("(不落盘)") +
+      (match paths {
+        Some(paths) => paths.id
+        None => "(不落盘)"
+      }) +
       "  按 Ctrl-C 中断（流式输出在 stdout，诊断在 stderr）",
     )
   }
@@ -818,12 +952,27 @@ async fn run(args : CliArgs) -> Unit {
     match tui {
       Some(tui) => {
         tui.writer = writer
+        tui.banner = build_banner(
+          cwd,
+          context_files,
+          skill_registry.skills,
+          skill_registry.diagnostics,
+          prompt_data.system_prompt,
+        )
         run_tui(
           agent,
           tui,
           config,
           config.compaction.enabled,
-          session_path.unwrap_or(""),
+          (match paths {
+            Some(paths) => paths.session
+            None => ""
+          }),
+          (match paths {
+            Some(paths) => paths.id
+            None => ""
+          }),
+          skill_registry.skills,
         )
         return
       }
@@ -848,6 +997,12 @@ async fn run(args : CliArgs) -> Unit {
         usage_failure("missing value for -p/--prompt (or stdin)")
         return
       } else {
+        let text = expand_skill_input(text, skill_registry.skills) catch {
+          err => {
+            eprintln("[skill] " + err.to_string())
+            return
+          }
+        }
         agent.send(@action.UserMessage({ text, content: [], })) catch {
           err => {
             runtime_failure(err.to_string())
@@ -939,6 +1094,12 @@ async fn run(args : CliArgs) -> Unit {
           }
         }
       } else {
+        let text = expand_skill_input(text, skill_registry.skills) catch {
+          err => {
+            eprintln("[error] " + err.to_string())
+            break
+          }
+        }
         agent.send(@action.UserMessage({ text, content: [], })) catch {
           err => {
             eprintln("[error] " + err.to_string())
@@ -964,6 +1125,14 @@ async fn run(args : CliArgs) -> Unit {
     eprintln(notice)
   }
   print_report(agent, !args.no_trace)
+  // 恢复提示：同 TUI 退出 —— 真落过盘、说过话才提。
+  match paths {
+    Some(paths) =>
+      if agent.state.messages.length() > 0 {
+        eprintln("To resume this session: pi-moon --session " + paths.id)
+      }
+    None => ()
+  }
   let _ = writer
 }
 
@@ -1013,5 +1182,7 @@ async fn main {
     println(usage)
     return
   }
-  run(args)
+  run(args) catch {
+    err => runtime_failure(err.to_string())
+  }
 }

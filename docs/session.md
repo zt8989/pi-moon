@@ -4,27 +4,40 @@
 **messages / 轨迹树 / prompt / model** 原样装回去。没有它，`pi-moon` 每次
 `-p` 都是一次性的；有了它，才有了「上次聊到哪了」。
 
-## 文件里有什么
+## 盘上布局（与 pi / ela 同构）
 
-默认位置：`<agent dir>/sessions/<毫秒时间戳>.jsonl`（与 pi 的配置同址，
-`~/.pi/agent/sessions/`）。
+同一个会话**两份文件**同名不同目录：
 
-> **与 ela / pi 的目录约定对齐（计划中）**：ela 与 pi 用
-> `sessions/--<cwd 编码>--/<ISO 时间戳>_<UUIDv7>.jsonl`，轨迹单独放
-> `traces/--<cwd 编码>--/<同名>.jsonl`；`ela --session <id>` 按 id 扫目录恢复。
-> pi-moon 目前的单文件混合格式（messages + 轨迹在一个 JSONL 里）将在切换到
-> 「sessions / traces 双文件 + cwd 子目录 + id 命名」布局时一并迁移，见
-> ela 侧的说明（event-loop-agent `docs/architecture/trace.md` 的「盘上位置」一节）。
+```text
+<agent dir>/                                    （~/.pi/agent，与 pi 同址）
+  sessions/
+    --<cwd 编码>--/                             C:\Users\me\proj → --C--Users-me-proj--
+      2026-10-25T05-42-16-901Z_<UUIDv7>.jsonl   会话：header + 模型变更 + 消息 + 压缩
+  traces/
+    --<cwd 编码>--/
+      2026-10-25T05-42-16-901Z_<UUIDv7>.jsonl   轨迹：装载段 + add/close
+```
 
-每行一个 `op`：
+- **cwd 编码**：`/`、\、`:`、空格全换成 `-`，与 pi 的 `encodeCwd` 同一规则；
+- **文件名**：`<ISO 时间戳（`:`→`-`）>_<id>.jsonl`；id 是 UUIDv7（时间有序，与 pi 同形状，粘给 pi 的 `--session` 也能用）；
+- 轨迹不混进 sessions/：轨迹落盘频繁，混在一起「读一个会话」得先跳过一堆无关记录（ela 的同一个理由）。
+
+### sessions 文件里有什么
+
+| op / type | 内容 | 什么时候写 |
+| --- | --- | --- |
+| `type: session`（header） | version / id / timestamp / cwd | 文件第一次落盘时（恢复旧文件不重写） |
+| `model.init` | provider / model / thinking / 能力 / context window | 首次，以及模型或档位变化时 |
+| `message` | 一条对话消息（user / assistant / toolResult / system） | 消息第一次出现时 |
+| `compact` | 压缩后的**整份** messages（重置历史） | `state.compaction_epoch` 变化时 |
+
+### traces 文件里有什么
 
 | op | 内容 | 什么时候写 |
 | --- | --- | --- |
 | `prompt.init` | system prompt + **装载时**那批工具（head） | 会话第一次落盘时 |
 | `tools.changed` | **当前**工具集（中途换过才有） | 工具集第一次落盘时，以及此后每次变化时 |
-| `model.init` | provider / model / thinking / 能力 / context window | 首次，以及模型或档位变化时 |
-| `message` | 一条对话消息（user / assistant / toolResult / system） | 消息第一次出现时 |
-| `compact` | 压缩后的**整份** messages（重置历史） | `state.compaction_epoch` 变化时 |
+| `model.init` | 同 sessions 侧 | 同 sessions 侧 |
 | `add` | 轨迹节点的**完整**字段（带 `seq`） | 节点第一次出现时 |
 | `close` | 节点的闭合补丁（id / status / ended_at） | 之前 add 过、后来闭合时 |
 
@@ -50,11 +63,8 @@ CLI 在**一个回合跑完**后 flush 一次（以及启动装载后、退出�
    │
    ▼
 SessionWriter::flush(state)
-   ├─ prompt.init（没写过才写）
-   ├─ model.init（模型/档位变了才写）
-   ├─ add 新节点 / close 刚闭合的节点
-   ├─ compact（压缩换过历史才写：整份新 messages）
-   └─ message（按条数游标追加）
+   ├─ sessions 侧：header（没写过才写）→ model.init → compact → message
+   └─ traces 侧：prompt.init / tools.changed → model.init → add / close
    │
    ▼
 (新 writer, 游标) → dispatch TracePersisted(游标)
@@ -87,6 +97,9 @@ moon run cmd/pi-moon -- -p "读 README.md 的前 3 行"
 # 指定文件；存在则恢复，不存在则新建
 moon run cmd/pi-moon -- -s logs/today.jsonl -p "继续"
 
+# 按 id 恢复（退出提示给的那条命令；先在 cwd 目录扫，找不到再扫其它目录）
+pi-moon --session 01a17290-d39e-7e4f-a66a-1f3668ba612c
+
 # 恢复 sessions 目录里最新的那份
 moon run cmd/pi-moon -- -c -p "刚才说到哪了？"
 
@@ -97,15 +110,16 @@ moon run cmd/pi-moon -- -i
 moon run cmd/pi-moon -- --no-session -p "..."
 ```
 
-TUI 里 `/resume` 直接列 `<agent dir>/sessions` 下的会话（修改时间倒序），
+TUI 里 `/resume` 列 cwd 对应目录下的会话（修改时间倒序），其余目录的也会列出
+（文件头里带 cwd，恢复后接着那份写）。条目显示 id（退出提示用的就是它）。
 Enter 后用 `SessionRestored` 把 messages / 轨迹 / 装载段 / 模型整体装回，
-落盘器换成 `SessionWriter::restored` 的游标 —— 接着那个文件写，不往旧文件
+落盘器换成 `SessionWriter::restored` 的游标 —— 接着那两份文件写，不往旧文件
 追加当前会话的历史。
 
 stderr 会打出这一次用的是哪个文件、恢复了多少：
 
 ```text
-[session] 恢复 ~/.pi/agent/sessions/1712345678901.jsonl（4 条消息 / 15 个节点）
+[session] 恢复 ~/.pi/agent/sessions/--C--...--/2026-10-25T...jsonl（4 条消息 / 15 个节点）
 [workbuddy/cn:deepseek-v4.1-flash (thinking=high)]  tools=read,bash,...  session=...  按 Ctrl-C 中断
 ```
 
@@ -116,6 +130,7 @@ stderr 会打出这一次用的是哪个文件、恢复了多少：
   模型能基于历史回答 `42`；
 - REPL 里继续问「42 + 1」→ 回答 `43`，文件继续追加；
 - 重复 flush 不产生重复行；恢复后继续写不会重写历史；
+- 退出时打 `To resume this session: pi-moon --session <id>`（真落过盘、说过话才打 —— 那条命令要能真的跑起来）；
 - 坏行（截断的半行）被跳过；
 - pending 节点先写 `add`、闭合后写 `close`，回放出来是闭合的。
 

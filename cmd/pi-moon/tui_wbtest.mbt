@@ -111,7 +111,7 @@ test "chat_lines：工具块折叠与展开（read 折叠时只留标题，pi �
       ),
     ],
   }
-  let collapsed = chat_lines(state, false, 60, [])
+  let collapsed = chat_lines(state, false, 60, [], [])
   let mut collapsed_text = ""
   for line in collapsed {
     collapsed_text = collapsed_text + line.text + "\n"
@@ -119,7 +119,7 @@ test "chat_lines：工具块折叠与展开（read 折叠时只留标题，pi �
   assert_true(collapsed_text.contains("read"))
   assert_false(collapsed_text.contains("l1\n"))
   assert_true(collapsed_text.contains("还有 9 行"))
-  let expanded = chat_lines(state, true, 60, [])
+  let expanded = chat_lines(state, true, 60, [], [])
   let mut expanded_text = ""
   for line in expanded {
     expanded_text = expanded_text + line.text + "\n"
@@ -136,7 +136,7 @@ test "chat_lines：流式文本与思考各占一段" {
     streaming_text: "正在说",
     thinking_text: "想一下",
   }
-  let lines = chat_lines(state, false, 60, [])
+  let lines = chat_lines(state, false, 60, [], [])
   let mut text = ""
   for line in lines {
     text = text + line.text + "\n"
@@ -480,7 +480,7 @@ test "斜杠命令：/resume 开会话面板" {
 ///|
 async test "会话面板：列出 sessions 目录，新的在前，当前会话打点" {
   let root = @fs.tmpdir(prefix="pi-moon-tui-sessions-")
-  let dir = root + "/sessions"
+  let dir = root + "/sessions/--C--test--"
   @fs.mkdir(dir, recursive=true) catch {
     _ => abort("mkdir sessions failed")
   }
@@ -490,7 +490,13 @@ async test "会话面板：列出 sessions 目录，新的在前，当前会话�
     ..test_state(),
     messages: [@message.user_message("旧会话", 1L)],
   }
-  let (_, _) = @session.SessionWriter::new(path_old).flush(message_state) catch {
+  let (_, _) = @session.SessionWriter::new(
+      path_old,
+      path_old + ".trace",
+      "s-old",
+    )
+    .flush(message_state)
+    catch {
     _ => abort("write old session failed")
   }
   // mtime 的分辨率到秒；等一秒才能保证「新的在前」稳定。
@@ -499,19 +505,29 @@ async test "会话面板：列出 sessions 目录，新的在前，当前会话�
     ..test_state(),
     messages: [@message.user_message("新会话", 2L)],
   }
-  let (_, _) = @session.SessionWriter::new(path_new).flush(newer_state) catch {
+  let (_, _) = @session.SessionWriter::new(
+      path_new,
+      path_new + ".trace",
+      "s-new",
+    )
+    .flush(newer_state)
+    catch {
     _ => abort("write new session failed")
   }
   let config = { ..test_pi_config(), agent_dir: root, }
   let tui = TuiState::new()
   tui.session_path = path_old
-  open_session_picker(tui, test_state(), config)
-  let picker = tui.picker.unwrap()
-  assert_eq(picker.kind, SessionPicker)
-  assert_eq(picker.items.length(), 2)
-  assert_true(picker.items[0].path.has_suffix("2000.jsonl"))
-  assert_eq(picker.items[0].label, "刚刚")
-  assert_eq(picker.items[picker.selected].path, path_old)
+  open_session_picker(tui, test_state(), config, "C:/test")
+  match tui.picker {
+    Some(picker) => {
+      assert_eq(picker.kind, SessionPicker)
+      assert_eq(picker.items.length(), 2)
+      assert_true(picker.items[0].path.has_suffix("2000.jsonl"))
+      assert_eq(picker.items[0].label, "刚刚")
+      assert_eq(picker.items[picker.selected].path, path_old)
+    }
+    None => abort("picker not opened")
+  }
   @fs.rmdir(root, recursive=true) catch {
     _ => ()
   }
@@ -538,7 +554,7 @@ test "反馈卡钉在创建时的消息位置，同位置就地替换" {
       @message.user_message("丙", 3L),
     ],
   }
-  let lines = chat_lines(state, false, 60, tui.cards)
+  let lines = chat_lines(state, false, 60, tui.cards, [])
   let mut text = ""
   for line in lines {
     text = text + line.text + "\n"
@@ -576,7 +592,7 @@ test "反馈卡不会因为「锚点等于消息数」被画两遍" {
   let tui = TuiState::new()
   tui.message_count = 0
   set_notice(tui, "空的会话也有一张卡")
-  let empty = chat_lines(test_state(), false, 60, tui.cards)
+  let empty = chat_lines(test_state(), false, 60, tui.cards, [])
   let mut empty_text = ""
   for line in empty {
     empty_text = empty_text + line.text + "\n"
@@ -586,7 +602,7 @@ test "反馈卡不会因为「锚点等于消息数」被画两遍" {
   let state = { ..test_state(), messages: [@message.user_message("甲", 1L)], }
   tui.message_count = 1
   set_notice(tui, "最后一条之后")
-  let lines = chat_lines(state, false, 60, tui.cards)
+  let lines = chat_lines(state, false, 60, tui.cards, [])
   let mut text = ""
   for line in lines {
     text = text + line.text + "\n"
@@ -694,7 +710,7 @@ test "markdown：用户块整段铺底色，首尾各一条空白底色行" {
     ..test_state(),
     messages: [@message.user_message("# 标题\n正文", 1L)],
   }
-  let lines = chat_lines(state, false, 40, [])
+  let lines = chat_lines(state, false, 40, [], [])
   let mut bg_count = 0
   let mut found_heading = false
   let mut found_body = false
@@ -878,12 +894,13 @@ test "颜色：对话页的底色跟着调色板走" {
       @message.tool_result_message(call, "ok", false, 2L),
     ],
   }
-  let fallback = chat_lines(state, false, 60, [])
+  let fallback = chat_lines(state, false, 60, [], [])
   assert_true(fallback.any(fn(line) { line.bg == Some("blue") }))
   let true_color = chat_lines(
     state,
     false,
     60,
+    [],
     [],
     palette=Palette::true_color(),
   )
@@ -917,4 +934,20 @@ test "颜色：TrueColor 下整帧真的发出 48;2 序列，256 色下不发" {
   // 256 色退路：底色走调色板（48;5;n），不是 24-bit 的 48;2。
   assert_true(fallback.contains("48;5;"))
   assert_false(fallback.contains("48;2;"))
+}
+
+///|
+test "chat_lines：启动横幅画在对话页顶部，标题黄、内容灰" {
+  let palette = Palette::ansi256()
+  let banner : Array[String] = ["[Context] AGENTS.md", "[Skills] demo, other"]
+  let lines = chat_lines(test_state(), false, 60, [], banner, palette~)
+  // 横幅在最前面：第 0 行是 [Context] 标题，第 1 行是内容。
+  let mut joined = ""
+  for line in lines {
+    joined = joined + line.text + "|"
+  }
+  assert_true(joined.contains(" [Context]|   AGENTS.md|"))
+  // 空横幅时不占任何行：无消息无卡片时什么都不画。
+  let bare = chat_lines(test_state(), false, 60, [], [], palette~)
+  assert_true(bare.is_empty())
 }

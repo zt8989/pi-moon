@@ -2,6 +2,7 @@
 package "pi-moon/core/session"
 
 import {
+  "moonbitlang/core/debug",
   "moonbitlang/core/immut/hashmap",
   "pi-moon/core/action",
   "pi-moon/core/message",
@@ -24,6 +25,8 @@ pub fn decode_tools_changed(Json) -> Array[@action.PromptToolDefinition]?
 
 pub fn encode_compaction(Array[@message.Message]) -> Json
 
+pub fn encode_cwd(String) -> String
+
 pub fn encode_message(@message.Message) -> Json
 
 pub fn encode_model_init(@state.ModelState) -> Json
@@ -34,17 +37,30 @@ pub fn encode_prompt_init(@state.PromptState) -> Json
 
 pub fn encode_tools_changed(Array[@action.PromptToolDefinition]) -> Json
 
+pub fn file_timestamp(Int64) -> String
+
+pub async fn find_file_by_id(String, String) -> String?
+
 pub async fn latest_session(String) -> String?
 
 pub async fn load_session(String, String) -> LoadedSession?
 
+pub fn new_session_id(Int64) -> String
+
 pub fn new_session_path(String, Int64) -> String
+
+pub fn new_session_paths(String, String, Int64) -> SessionPaths
+
+pub async fn resolve_session_paths(String, String, String) -> SessionPaths raise SessionError
+
+pub fn session_file_name(String, Int64) -> String
 
 pub fn session_id_from_path(String) -> String
 
 // Errors
 pub suberror SessionError {
   Write(path~ : String, message~ : String)
+  NotFound(id~ : String)
 }
 pub fn SessionError::to_string(Self) -> String
 
@@ -56,21 +72,33 @@ pub(all) struct LoadedSession {
   tools : Array[@action.PromptToolDefinition]?
   model : @action.ModelSpec?
   persisted_seq : Int32
+  session_id : String
+  cwd : String
 }
+
+pub(all) struct SessionPaths {
+  session : String
+  trace : String
+  id : String
+} derive(@debug.Debug)
 
 pub(all) struct SessionWriter {
   path : String
-  node_cursor : Int32
+  trace_path : String
+  session_id : String
+  header_written : Bool
   message_cursor : Int32
-  prompt_written : Bool
   model_key : String
-  tools_key : String
-  open_nodes : @hashmap.HashMap[String, Bool]
   compaction_epoch : Int32
+  node_cursor : Int32
+  open_nodes : @hashmap.HashMap[String, Bool]
+  trace_prompt_written : Bool
+  trace_tools_key : String
+  trace_model_key : String
 }
 pub async fn SessionWriter::flush(Self, @state.AgentState) -> (Self, Int32)
-pub fn SessionWriter::new(String) -> Self
-pub fn SessionWriter::restored(String, LoadedSession) -> Self
+pub fn SessionWriter::new(String, String, String) -> Self
+pub fn SessionWriter::restored(String, String, LoadedSession) -> Self
 
 // Type aliases
 

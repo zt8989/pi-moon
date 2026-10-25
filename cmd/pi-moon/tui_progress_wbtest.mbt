@@ -23,7 +23,7 @@ test "chat_lines：执行中的工具显示 tool_progress 尾部输出" {
     messages: [@message.user_message("跑一下", 1L), assistant],
     tool_progress: progress,
   }
-  let lines = chat_lines(state, false, 60, [])
+  let lines = chat_lines(state, false, 60, [], [])
   let mut text = ""
   for line in lines {
     text = text + line.text + "\n"
@@ -93,7 +93,7 @@ async test "端到端：真实 bash 执行产生进度，chat_lines 能画出来
       content: [@message.Text("step1")],
     }),
   }
-  let lines = chat_lines(progress_state, false, 60, [])
+  let lines = chat_lines(progress_state, false, 60, [], [])
   let mut text = ""
   for line in lines {
     text = text + line.text + "\n"
@@ -114,7 +114,7 @@ test "chat_lines：图片块画占位而不是消失" {
     timestamp: 2L,
   })
   let state = { ..test_state(), messages: [assistant], }
-  let lines = chat_lines(state, false, 60, [])
+  let lines = chat_lines(state, false, 60, [], [])
   let mut text = ""
   for line in lines {
     text = text + line.text + "\n"
@@ -133,7 +133,7 @@ test "chat_lines：外部 URL 的图片占位带 URL" {
     timestamp: 2L,
   })
   let state = { ..test_state(), messages: [assistant], }
-  let lines = chat_lines(state, false, 60, [])
+  let lines = chat_lines(state, false, 60, [], [])
   let mut text = ""
   for line in lines {
     text = text + line.text + "\n"

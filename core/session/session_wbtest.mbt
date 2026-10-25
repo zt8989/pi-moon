@@ -10,6 +10,9 @@ async fn remove_file(path : String) -> Unit {
   @fs.remove(path) catch {
     _ => ()
   }
+  @fs.remove(path + ".trace") catch {
+    _ => ()
+  }
 }
 
 ///|
@@ -186,13 +189,17 @@ test "节点编解码：可选字段与 message 一起往返" {
 
 ///|
 async test "flush → load：messages / trace / 装载段都能重建，且重复 flush 不写重复行" {
+  println("T1-START")
   let path = session_test_path("basic")
+  println("T1-A")
   remove_file(path)
   let state = session_state_after_turn()
-  let writer = SessionWriter::new(path)
+  println("T1-B writer")
+  let writer = SessionWriter::new(path, path + ".trace", "s-session")
   let (writer, cursor) = writer.flush(state) catch {
     err => abort(err.to_string())
   }
+  println("T1-C flushed cursor=" + cursor.to_string())
   assert_eq(
     cursor,
     @trace.node_seq(state.trace.order[state.trace.order.length() - 1]),
@@ -253,10 +260,12 @@ async test "pending 节点：先 add 后 close，回放出来是闭合的" {
     meta=[("tool", "read")],
   )
   let state = { ..state, trace: tree, }
-  let writer = SessionWriter::new(path)
+  println("T1-B writer")
+  let writer = SessionWriter::new(path, path + ".trace", "s-session")
   let (writer, cursor) = writer.flush(state) catch {
     err => abort(err.to_string())
   }
+  println("T1-C flushed cursor=" + cursor.to_string())
   let closed = @trace.patch_node(
     state.trace,
     pending.id,
@@ -267,6 +276,7 @@ async test "pending 节点：先 add 后 close，回放出来是闭合的" {
   let (_writer, cursor2) = writer.flush(state) catch {
     err => abort(err.to_string())
   }
+  println("PENDING cursor=" + cursor.to_string() + " cursor2=" + cursor2.to_string() + " pid=" + pending.id)
   assert_eq(cursor2, cursor)
   let loaded = match load_session(path, "s-session") {
     Some(loaded) => loaded
@@ -287,7 +297,7 @@ async test "恢复继续写：游标接上，不重写历史" {
   let path = session_test_path("restore")
   remove_file(path)
   let state = session_state_after_turn()
-  let writer = SessionWriter::new(path)
+  let writer = SessionWriter::new(path, path + ".trace", "s-session")
   let (_writer, _cursor) = writer.flush(state) catch {
     err => abort(err.to_string())
   }
@@ -297,7 +307,7 @@ async test "恢复继续写：游标接上，不重写历史" {
     Some(loaded) => loaded
     None => abort("load failed")
   }
-  let restored = SessionWriter::restored(path, loaded)
+  let restored = SessionWriter::restored(path, path + ".trace", loaded)
   let (_restored, _cursor) = restored.flush(state) catch {
     err => abort(err.to_string())
   }
@@ -312,7 +322,7 @@ async test "坏行（崩溃截断）跳过，不影响前面的记录" {
   let path = session_test_path("badline")
   remove_file(path)
   let state = session_state_after_turn()
-  let writer = SessionWriter::new(path)
+  let writer = SessionWriter::new(path, path + ".trace", "s-session")
   let (_writer, _cursor) = writer.flush(state) catch {
     err => abort(err.to_string())
   }
@@ -342,6 +352,16 @@ async test "会话路径：时间戳命名、--continue 取最新、id 从文件
   assert_eq(latest_session(dir), Some(dir + "/200.jsonl"))
   assert_eq(session_id_from_path(dir + "/200.jsonl"), "200")
   assert_eq(new_session_path(dir, 1234L), dir + "/1234.jsonl")
+  // pi 形状的文件名：`<ISO 时间戳>_<id>.jsonl`，id 取最后一个下划线之后。
+  assert_eq(session_id_from_path(dir + "/2026-10-25T05-42-16-901Z_abc.jsonl"), "abc")
+  // cwd 编码与 pi 同一规则。
+  let sep = Char::from_int(92).to_string()
+  let sep = Char::from_int(92).to_string()
+  assert_eq(encode_cwd("C:" + sep + "Users" + sep + "me" + sep + "proj"), "--C--Users-me-proj--")
+  // UUIDv7 的形状与版本位。
+  let id = new_session_id(1792919052172L)
+  assert_eq(id.length(), 36)
+  assert_true(id.get_char(14) == Some('7'))
   @fs.rmdir(dir, recursive=true) catch {
     _ => ()
   }
@@ -359,7 +379,7 @@ async test "tools.changed 落盘：恢复出当前工具集，head 仍是装载�
   }
   let current = [session_tool(), grep_tool]
   // 先落一次盘：prompt.init 记的是**装载时**那批（read）。
-  let writer = SessionWriter::new(path)
+  let writer = SessionWriter::new(path, path + ".trace", "s-session")
   let (writer, _cursor) = writer.flush(state) catch {
     err => abort(err.to_string())
   }
@@ -381,7 +401,7 @@ async test "tools.changed 落盘：恢复出当前工具集，head 仍是装载�
   // 恢复出来的 writer 已经知道当前工具集，不会把 tools.changed 再写一遍。
   let before = (@fs.read_file(path) catch { _ => abort("file missing") }).binary()
   let before_lines = @utf8.decode_lossy(before).split("\n").count()
-  let restored = SessionWriter::restored(path, loaded)
+  let restored = SessionWriter::restored(path, path + ".trace", loaded)
   let (_restored, _cursor) = restored.flush(state) catch {
     err => abort(err.to_string())
   }
@@ -396,7 +416,7 @@ async test "压缩落盘：写一条 compact 记录，回放出来就是压缩�
   let path = session_test_path("compact")
   remove_file(path)
   let state = session_state_after_turn()
-  let writer = SessionWriter::new(path)
+  let writer = SessionWriter::new(path, path + ".trace", "s-session")
   let (writer, _cursor) = writer.flush(state) catch {
     err => abort(err.to_string())
   }
@@ -426,7 +446,7 @@ async test "压缩落盘：写一条 compact 记录，回放出来就是压缩�
     ..compacted,
     messages: compacted.messages.add([@message.user_message("接着说", 10L)]),
   }
-  let (next_writer, _cursor) = SessionWriter::restored(path, loaded).flush(
+  let (next_writer, _cursor) = SessionWriter::restored(path, path + ".trace", loaded).flush(
     next_state,
   ) catch {
     err => abort(err.to_string())

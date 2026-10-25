@@ -286,7 +286,7 @@ test "块排版：标题加粗、正文可带色、提示用 dim，底色铺满�
       @message.tool_result_message(call, "ok", false, 3L),
     ],
   }
-  let lines = chat_lines(state, false, 40, [])
+  let lines = chat_lines(state, false, 40, [], [])
   let mut found_title = false
   let mut found_blank = false
   for line in lines {

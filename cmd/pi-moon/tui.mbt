@@ -88,6 +88,9 @@ pub(all) struct TuiState {
   mut dirty : Bool
   /// 钉在对话流里的命令反馈卡（ela 的 `statusCards`）。
   mut cards : Array[StatusCard]
+  /// 启动横幅：`[Context]` / `[Skills]` / `[Skill conflicts]`，画在对话页
+  /// 顶部、随对话滚走（elA 的 startup banner，只是不在底部常驻）。
+  mut banner : Array[String]
   /// 当前 messages 条数 —— 反馈卡的锚点用它（`at` = 创建时的条数）。
   mut message_count : Int32
   mut commands : Array[TuiCommand]
@@ -103,6 +106,8 @@ pub(all) struct TuiState {
   /// 当前会话文件（空 = 不落盘）。`/resume` 换会话时跟着变。
   mut session_path : String
   mut session_label : String
+  /// 会话 id（退出提示 `--session <id>` 用）。
+  mut session_id : String
   mut last_ctrl_c : Int64
   mut writer : @session.SessionWriter?
   /// 底色：24-bit 终端用 pi 的原值，否则退回 16 色名字（见 `tui_color.mbt`）。
@@ -125,11 +130,30 @@ pub(all) struct StatusCard {
 /// 一次性模式永远不会填它。
 pub(all) struct TuiBridge {
   mut agent : @runtime.Agent?
+  /// 本次装载的技能清单：`/skill:<name>` 展开用。agent 建好后由 main 填。
+  mut skills : Array[@context.Skill]
 }
 
 ///|
 pub fn TuiBridge::new() -> TuiBridge {
-  { agent: None, }
+  { agent: None, skills: [] }
+}
+
+///|
+/// 输入里的 `/skill:<name>` 展开成 XML 块（只在开头匹配时才读文件）。
+async fn expand_skill_input(
+  text : String,
+  skills : Array[@context.Skill],
+) -> String raise {
+  if !text.has_prefix("/skill:") {
+    return text
+  }
+  @context.expand_skill_command(text, skills, async fn(path : String) -> String {
+    let data = @fs.read_file(path) catch {
+      err => abort("read: " + err.to_string())
+    }
+    @utf8.decode_lossy(data.binary())
+  })
 }
 
 ///|
@@ -150,6 +174,7 @@ pub fn TuiState::new() -> TuiState {
     quit: false,
     dirty: true,
     cards: [],
+    banner: [],
     message_count: 0,
     commands: [],
     pending_actions: [],
@@ -158,6 +183,7 @@ pub fn TuiState::new() -> TuiState {
     picker_confirm: false,
     session_path: "",
     session_label: "",
+    session_id: "",
     last_ctrl_c: 0L,
     writer: None,
     palette: Palette::ansi256(),
@@ -244,6 +270,8 @@ pub async fn run_tui(
   config : @provider.PiConfig,
   compact_enabled : Bool,
   session_path : String,
+  session_id : String,
+  skills : Array[@context.Skill],
 ) -> Unit {
   let (width, height) = @io.get_terminal_size()
   tui.width = width
@@ -252,8 +280,9 @@ pub async fn run_tui(
   tui.session_label = if session_path.is_empty() {
     "(不落盘)"
   } else {
-    session_path
+    session_id
   }
+  tui.session_id = session_id
   pi_enable_vt_output()
   let color_mode = tui_color_mode()
   let theme = load_theme(config.agent_dir)
@@ -269,7 +298,7 @@ pub async fn run_tui(
     @async.with_task_group(async fn(group) {
       group.spawn_bg(async fn() { tui_render_loop(app, tui, agent) })
       group.spawn_bg(async fn() { tui_key_loop(tui) })
-      tui_driver(agent, tui, config, compact_enabled)
+      tui_driver(agent, tui, config, compact_enabled, skills)
     })
     None
   } catch {
@@ -294,6 +323,16 @@ pub async fn run_tui(
     "\n",
   ) catch {
     _ => ()
+  }
+  // 恢复提示（elA 的 printResumeOnExit 同形）：只有真的落过盘、接过话才提
+  // —— 那条命令要能真的跑起来；没说过话的空会话恢复出来也是空的。
+  if !tui.session_id.is_empty() && !tui.session_path.is_empty() &&
+    state.messages.length() > 0 {
+    @stdio.stderr.write(
+      "To resume this session: pi-moon --session " + tui.session_id + "\n",
+    ) catch {
+      _ => ()
+    }
   }
   match failure {
     Some(error) =>
@@ -576,6 +615,7 @@ async fn tui_driver(
   tui : TuiState,
   config : @provider.PiConfig,
   compact_enabled : Bool,
+  skills : Array[@context.Skill],
 ) -> Unit {
   while !tui.quit {
     if tui.take_back {
@@ -595,6 +635,13 @@ async fn tui_driver(
         tui.abort = false
         tui.chat_scroll = 0
         tui.dirty = true
+        let text = expand_skill_input(text, skills) catch {
+          err => {
+            set_notice(tui, "[skill] " + err.to_string())
+            tui.busy = false
+            continue
+          }
+        }
         agent.send(@action.UserMessage({ text, content: [], })) catch {
           err => set_notice(tui, "error: " + err.to_string())
         }
@@ -650,7 +697,7 @@ async fn tui_driver(
       }
       OpenModels => open_model_picker(tui, agent.state, config)
       OpenThinking => open_thinking_picker(tui, agent.state, config)
-      OpenSessions => open_session_picker(tui, agent.state, config)
+      OpenSessions => open_session_picker(tui, agent.state, config, agent.state.cwd)
       ThinkingLevel(level) => apply_thinking(agent, tui, config, level)
       Exit => tui.quit = true
     }
@@ -1178,21 +1225,36 @@ async fn open_session_picker(
   tui : TuiState,
   _state : @state.AgentState,
   config : @provider.PiConfig,
+  cwd : String,
 ) -> Unit {
-  let dir = session_directory(config)
-  let names = @fs.readdir(dir) catch {
+  // 与 pi 同布局：扫 cwd 对应目录，再扫其余 --<cwd>-- 目录（别的目录里的会话
+  // 也能恢复 —— 文件头里带 cwd，恢复后接着那份写）。
+  let root = session_directory(config)
+  let encoded = @session.encode_cwd(cwd)
+  let names = @fs.readdir(root) catch {
     _ => {
-      set_notice(tui, "没有会话目录：" + dir)
+      set_notice(tui, "没有会话目录：" + root)
       return
     }
   }
   let files : Array[SessionFile] = []
+  let add_dir = async fn(directory : String) -> Unit {
+    let entries = @fs.readdir(directory) catch {
+      _ => return
+    }
+    for name in entries {
+      if name.has_suffix(".jsonl") {
+        let path = directory + "/" + name
+        let (mtime, _) = @fs.mtime(path) catch { _ => (0L, 0) }
+        let size = @fs.file_size(path) catch { _ => 0L }
+        files.push({ name, path, mtime, size, })
+      }
+    }
+  }
+  add_dir(root + "/" + encoded)
   for name in names {
-    if name.has_suffix(".jsonl") {
-      let path = dir + "/" + name
-      let (mtime, _) = @fs.mtime(path) catch { _ => (0L, 0) }
-      let size = @fs.file_size(path) catch { _ => 0L }
-      files.push({ name, path, mtime, size, })
+    if name.has_prefix("--") && name.has_suffix("--") && name != encoded {
+      add_dir(root + "/" + name)
     }
   }
   if files.is_empty() {
@@ -1224,9 +1286,11 @@ async fn open_session_picker(
     if file.path == tui.session_path {
       selected = at
     }
+    // 展示 id（退出提示里 `--session <id>` 用的就是它），时间戳部分不占地方。
+    let shown = @session.session_id_from_path(stem)
     items.push({
       label: relative_time(file.mtime, now),
-      detail: stem + " · " + size_text(file.size),
+      detail: shown + " · " + size_text(file.size),
       provider: "",
       model_id: "",
       level: "",
@@ -1332,9 +1396,13 @@ async fn restore_session(
       return
     }
   }
-  tui.writer = Some(@session.SessionWriter::restored(path, loaded))
+  let session_id = loaded.session_id
+  tui.writer = Some(
+    @session.SessionWriter::restored(path, path + ".trace", loaded),
+  )
   tui.session_path = path
-  tui.session_label = path
+  tui.session_label = session_id
+  tui.session_id = session_id
   tui.picker = None
   tui.busy = false
   tui.abort = false

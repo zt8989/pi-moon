@@ -36,9 +36,24 @@ pub fn chat_lines(
   expanded : Bool,
   width : Int32,
   cards : Array[StatusCard],
+  banner : Array[String],
   palette~ : Palette = Palette::ansi256(),
 ) -> Array[StyledLine] {
   let out : Array[StyledLine] = []
+  // 启动横幅在最前：黄色段落标题 + 灰色内容，随对话一起滚。
+  for block in banner {
+    let (head, rest) = match block.find(" ") {
+      Some(index) => (block[:index].to_owned(), block[index + 1:].to_owned())
+      None => (block, "")
+    }
+    out.push(styled_line(" " + head, palette.warning, bold=true))
+    for line in wrap_text(rest, width - 4) {
+      out.push(styled_line("   " + line, palette.dim))
+    }
+  }
+  if !banner.is_empty() {
+    out.push(blank_line())
+  }
   push_cards(out, cards, 0, width, palette)
   let mut index = 0
   for message in state.messages {
@@ -812,7 +827,14 @@ pub fn tui_view(tui : TuiState, state : @state.AgentState) -> @vnode.TuiNode {
     queue = []
   }
   let page = if tui.page == Chat {
-    chat_lines(state, tui.expanded, width, tui.cards, palette=tui.palette)
+    chat_lines(
+      state,
+      tui.expanded,
+      width,
+      tui.cards,
+      tui.banner,
+      palette=tui.palette,
+    )
   } else {
     trace_lines(state, width, palette=tui.palette)
   }
