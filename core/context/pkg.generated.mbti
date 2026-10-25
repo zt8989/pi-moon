@@ -1,0 +1,47 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "pi-moon/core/context"
+
+import {
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn context_display_path(String, String, String) -> String
+
+pub fn escape_xml(String) -> String
+
+pub async fn expand_skill_command(String, Array[Skill], async (String) -> String) -> String
+
+pub async fn load_context_files(String, String) -> Array[ContextFile]
+
+pub async fn load_skill_registry(String, String, home_dir? : String, extra_paths? : Array[String]) -> SkillRegistry
+
+pub fn render_project_context(Array[ContextFile]) -> String
+
+pub fn render_skills_prompt(Array[Skill], String) -> String
+
+// Errors
+
+// Types and methods
+pub(all) struct ContextFile {
+  path : String
+  content : String
+} derive(Eq, @debug.Debug)
+
+pub(all) struct Skill {
+  name : String
+  description : String
+  file_path : String
+  base_dir : String
+  disable_model_invocation : Bool
+  scope : String
+} derive(Eq, @debug.Debug)
+
+pub(all) struct SkillRegistry {
+  skills : Array[Skill]
+  diagnostics : Array[String]
+} derive(@debug.Debug)
+
+// Type aliases
+
+// Traits

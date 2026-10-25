@@ -1,0 +1,31 @@
+// 上下文与技能装载 —— 照 pi / elA 的同一套发现规则，但自己实现。
+//
+// 两件事：
+//
+//   1. 上下文文件（AGENTS.md 一族）：agent 目录一份 + cwd 沿祖先链每层一份，
+//      渲染成 `<project_instructions path="…">` 段进 system prompt；
+//   2. 技能（SKILL.md）：`<agent dir>/skills`（user）与 `<cwd>/.pi/skills`
+//      （project）两处扫描，prompt 里只放「名字 + 描述 + 路径」的清单
+//      （`<available_skills>`），正文由模型按需用 read 工具自己读。
+//
+// 与 pi 的刻意差异（都是有意的取舍，不是遗漏）：
+//   - frontmatter 只认 `name` / `description` / `disable-model-invocation`
+//     三个键的扁平 `key: value` 形式（不带完整 YAML 解析器）；
+//   - 技能扫描不读 .gitignore / .ignore（本项目其它文件扫描也只挡
+//     node_modules / .git，口径一致）；
+//   - 重名判定不做 realpath 去重（符号链接指向同一文件会算成重名）。
+//
+// 本包只依赖 fs：发现与渲染都可以脱离环单独测。
+
+import {
+  "moonbitlang/async/fs",
+  "moonbitlang/core/encoding/utf8",
+}
+
+supported_targets = "+native"
+
+warnings = "-79-67"
+
+import {
+  "moonbitlang/async",
+} for "wbtest"
