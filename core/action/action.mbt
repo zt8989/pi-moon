@@ -222,7 +222,89 @@ pub(all) enum AgentAction {
   CompactFailed(CompactFailedData)
   /// 改压缩参数（`settings.json` 的 `compaction` 段）。
   CompactSettingsChanged(@compact.Settings)
+  /// 界面显示事件（翻页 / 滚动 / 面板）。只改 `state.ui`，
+  /// 不进轨迹、不落盘、不发 Cmd；经 `Agent::dispatch_ui` 同步归约。
+  Ui(UiAction)
 } derive(Eq, Debug)
+
+///|
+/// 面板种类（模型 / 思考级别 / 会话恢复）。
+pub(all) enum UiPickerKind {
+  ModelPicker
+  ThinkingPicker
+  SessionPicker
+} derive(Eq, Debug)
+
+///|
+/// 面板里的一项。内容来自 models.json / 会话目录，由界面层算好，
+/// 打开时整体放进 action —— reducer 不读文件。
+pub(all) struct UiPickerItem {
+  label : String
+  detail : String
+  provider : String
+  model_id : String
+  level : String
+  /// 会话面板的路径（其余面板为空）。
+  path : String
+} derive(Eq, Debug)
+
+///|
+/// 打开一个面板的载荷。
+pub(all) struct UiPickerData {
+  kind : UiPickerKind
+  title : String
+  items : Array[UiPickerItem]
+  /// 初始选中项（比如当前模型所在的行）。
+  selected : Int32
+} derive(Eq, Debug)
+
+///|
+/// 界面页：对话 / 轨迹。
+pub(all) enum UiPane {
+  UiChat
+  UiTrace
+} derive(Eq, Debug)
+
+///|
+/// UI 事件：只改界面的**显示**状态（哪一页、滚到哪、面板开着没有）。
+///
+/// 三条边界：
+/// 1. 迁移只碰 `state.ui`，相位 / messages / trace 一个字不动 —— 轨迹与会话
+///    文件因此一个字都不会多（「滚到第 40 行」不是发生过的事）。
+/// 2. 接线不发 Cmd：UI 事件永远不引起 effect。
+/// 3. 不走 `Agent::send` 的外部队列：经 `Agent::dispatch_ui` 同步归约，
+///    生成中按键也能立即生效。
+pub(all) enum UiAction {
+  /// Ctrl+R：对话页 / 轨迹页互换。
+  PageToggled
+  /// Ctrl+O：工具输出与压缩摘要展开 / 折叠。
+  ExpandToggled
+  /// 相对滚动（正 = 往回看，负 = 往回跟，单位行）。
+  Scrolled(UiPane, Int32)
+  /// 跳到页顶。
+  ScrollHome(UiPane)
+  /// 回到底部跟随。
+  ScrollEnd(UiPane)
+  /// 打开面板（items 已由界面层算好）。
+  PickerOpened(UiPickerData)
+  /// 关闭面板（Esc / Ctrl+C / 确认之后）。
+  PickerClosed
+  /// 移动面板选中（±delta；越界夹回，Home / End 传极大 / 极小值即可）。
+  PickerMoved(Int32)
+} derive(Eq, Debug)
+
+///|
+pub fn UiAction::name(self : UiAction) -> String {
+  match self {
+    PageToggled => "ui.page"
+    ExpandToggled => "ui.expand"
+    Scrolled(_, _) => "ui.scroll"
+    ScrollHome(_) | ScrollEnd(_) => "ui.scroll.jump"
+    PickerOpened(_) => "ui.picker.open"
+    PickerClosed => "ui.picker.close"
+    PickerMoved(_) => "ui.picker.move"
+  }
+}
 
 ///|
 /// action 的类型名（与 `TraceNodeKind` 的名字同一套风格）。
@@ -261,5 +343,6 @@ pub fn AgentAction::name(self : AgentAction) -> String {
     CompactDone(_) => "compact.done"
     CompactFailed(_) => "compact.failed"
     CompactSettingsChanged(_) => "compact.settings"
+    Ui(event) => event.name()
   }
 }

@@ -90,6 +90,25 @@ run_agent: async fn(state, dispatch) {
 通过 `ProviderHooks` 在 await 期间把增量直接写给终端 —— 前者拿 state，后者拿
 字节流，两者都不改 state。
 
+### UI 事件：界面显示也走环，但不落轨迹
+
+翻页 / 滚动 / 展开折叠 / 面板这些「界面怎么显示」也是 action（`Ui` 事件，
+如 `Ui(PageToggled)` / `Ui(Scrolled(...))`），但有三条专属边界：
+
+1. **迁移只碰 `state.ui`**：相位、messages、trace、计数器原样共用 —— 树上
+   不开节点，落盘器按树写，所以会话文件与轨迹文件一个字都不会多
+   （「滚到第 40 行」不是发生过的事）。
+2. **接线不发 Cmd**：UI 事件永远不引起 effect。
+3. **不走 `Agent::send` 的外部队列**：`Agent::dispatch_ui` 同步归约，
+   不排队、不碰 deferred、不耗防死循环预算。整个调用没有 await，
+   协作式调度下不会与 driver 正在跑的 effect 交错 —— 所以生成中按键
+   也能立即生效；observer 照常触发，下一帧就带上新的界面状态。
+
+面板的**内容**（models.json 里的模型、会话目录里的文件）由界面层算好，
+打开时整体放进 `PickerOpened` 的载荷 —— reducer 不读文件。渲染是 state 的
+纯函数（`render(state)`）：哪一页、滚到哪、面板开着没有、选中是哪行，
+全部能从 `state.ui` 重算。
+
 ## 两层容器
 
 ```text
@@ -272,4 +291,5 @@ LLM 被调两遍，第二遍的结果覆盖第一遍，树上就是两个 `llm.r
 
 1. **扩展 / 分支 / Web 界面**：action 与迁移都未搬（刻意留在环稳定之后）。
    终端界面已经接了（见 [tui](tui.md)）：它只读 `Agent.state`，不往环里加新迁移；
-   唯一的内核改动是 `ProviderHooks::should_abort`（Esc 中断）。
+   唯一的内核改动是 `ProviderHooks::should_abort`（Esc 中断）与 `Ui` 事件
+   （只碰 `state.ui`，见上文）。

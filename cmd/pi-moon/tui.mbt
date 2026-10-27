@@ -1,8 +1,10 @@
 // 全屏 TUI：终端生命周期、键位、渲染循环与 agent 驱动器。
 //
-// 三个任务，一个规则：**只有驱动器碰 agent**。
+// 三个任务，两条碰 agent 的路：
 //
-//   key loop    读键 → 改输入缓冲 / 往命令队列里放一条 → 标脏
+//   key loop    读键 → 改输入缓冲 / 往命令队列里放一条 → 标脏；
+//               界面显示类按键（翻页 / 滚动 / 面板）经 `ui_dispatch` 发 `Ui`
+//               事件，`Agent::dispatch_ui` 同步归约 —— 无 await，生成中也能用
 //   render loop 标脏时把 state 画成一帧（渲染是 diff 的，没变时几乎不写终端）
 //   driver      await agent.send(...)（模型流、工具、压缩都在这一条 await 里）
 //
@@ -10,12 +12,6 @@
 // 键循环被它卡住，用户连 Esc 都按不进来。命令队列把「用户想干什么」与
 // 「环跑到哪一步」解耦，Esc 则走一条更短的路 —— 只把 `tui.abort` 立起来，
 // provider effect 在下一个分片边界查它（见 `core/provider/effect.mbt`）。
-
-///|
-pub(all) enum TuiPage {
-  Chat
-  Trace
-} derive(Eq, Debug)
 
 ///|
 pub(all) enum TuiCommand {
@@ -36,41 +32,16 @@ pub(all) enum TuiCommand {
 } derive(Debug)
 
 ///|
-pub(all) enum PickerKind {
-  ModelPicker
-  ThinkingPicker
-  SessionPicker
-} derive(Eq, Debug)
-
-///|
-/// 面板里的一项。模型项用 provider / model_id，思考项用 level —— 两者共一个
-/// 形状，面板的绘制与选中逻辑就能共用一份。
-pub(all) struct PickerItem {
-  label : String
-  detail : String
-  provider : String
-  model_id : String
-  level : String
-  /// 会话面板的路径（其余面板为空）。
-  path : String
-} derive(Eq, Debug)
-
-///|
-/// 覆盖 composer 的面板（ela 的 selector：整行宽、无左右边框、底边落在
-/// composer 的位置）。
-pub(all) struct Picker {
-  kind : PickerKind
-  title : String
-  items : Array[PickerItem]
-  mut selected : Int32
-}
+/// 面板里的一项、面板本体都在 core（`state.ui.picker`）：渲染是 state 的
+/// 纯函数，「面板开着没有、选中是哪行」也得能从 state 重算。
 
 ///|
 /// 界面自己的可变状态。
 ///
-/// 它不进 `AgentState`：滚动位置、输入缓冲、按过几次 Ctrl+C 都是「界面怎么
-/// 显示」，不是「对话是什么」。混进状态树会让 reducer 里多出一堆与模型无关
-/// 的迁移。
+/// 「界面怎么显示」里能从环上状态重算的部分（哪一页、滚到哪、面板开着没有）
+/// 已经搬进了 `state.ui`，由 `Ui` 事件驱动；这里只剩环表达不了的本地细节：
+/// 输入缓冲与历史、终端尺寸、命令队列、反馈卡。键循环改这里的字段不走环，
+/// 改界面显示则发 `Ui` 事件（见 `ui_dispatch`）。
 pub(all) struct TuiState {
   mut width : Int32
   mut height : Int32
@@ -78,10 +49,6 @@ pub(all) struct TuiState {
   mut cursor : Int32
   mut history : Array[String]
   mut history_pos : Int32
-  mut chat_scroll : Int32
-  mut trace_scroll : Int32
-  mut page : TuiPage
-  mut expanded : Bool
   mut busy : Bool
   mut abort : Bool
   mut quit : Bool
@@ -99,9 +66,8 @@ pub(all) struct TuiState {
   /// 请求把队列取回输入框（`Ctrl+U` / 闲时 `Esc`）。
   /// 拿到 agent 状态的时机在 driver / on_tick 那一侧。
   mut take_back : Bool
-  /// 打开中的选择面板（模型 / 思考级别）。
-  mut picker : Picker?
   /// 面板里按了 Enter：driver 去应用选中的那一项。
+  /// 面板本体在 `state.ui.picker`，这里只是「确认过」的标志。
   mut picker_confirm : Bool
   /// 当前会话文件（空 = 不落盘）。`/resume` 换会话时跟着变。
   mut session_path : String
@@ -136,7 +102,7 @@ pub(all) struct TuiBridge {
 
 ///|
 pub fn TuiBridge::new() -> TuiBridge {
-  { agent: None, skills: [] }
+  { agent: None, skills: [], }
 }
 
 ///|
@@ -144,15 +110,14 @@ pub fn TuiBridge::new() -> TuiBridge {
 async fn expand_skill_input(
   text : String,
   skills : Array[@context.Skill],
-) -> String raise {
+) -> String {
   if !text.has_prefix("/skill:") {
     return text
   }
   @context.expand_skill_command(text, skills, async fn(path : String) -> String {
-    let text = @sys.read_text_lossy(path) catch {
+    @sys.read_text_lossy(path) catch {
       err => abort("read: " + err.to_string())
     }
-    text
   })
 }
 
@@ -165,10 +130,6 @@ pub fn TuiState::new() -> TuiState {
     cursor: 0,
     history: [],
     history_pos: -1,
-    chat_scroll: 0,
-    trace_scroll: 0,
-    page: Chat,
-    expanded: false,
     busy: false,
     abort: false,
     quit: false,
@@ -179,7 +140,6 @@ pub fn TuiState::new() -> TuiState {
     commands: [],
     pending_actions: [],
     take_back: false,
-    picker: None,
     picker_confirm: false,
     session_path: "",
     session_label: "",
@@ -232,22 +192,22 @@ fn set_notice(tui : TuiState, text : String) -> Unit {
 }
 
 ///|
-/// 当前页的滚动位置（两页各归各的，切页不会把另一页的视口带过去）。
-fn scroll_get(tui : TuiState) -> Int32 {
-  if tui.page == Chat {
-    tui.chat_scroll
-  } else {
-    tui.trace_scroll
+/// UI 事件 → 环。键循环唯一碰 agent 的地方，且只碰 UI 事件：
+/// `dispatch_ui` 同步归约、无 await，生成中按键也能立即生效。
+fn ui_dispatch(
+  agent : @runtime.Agent,
+  tui : TuiState,
+  event : @action.UiAction,
+) -> Unit {
+  agent.dispatch_ui(@action.Ui(event)) catch {
+    err => set_notice(tui, "error: " + err.to_string())
   }
 }
 
 ///|
-fn scroll_set(tui : TuiState, value : Int32) -> Unit {
-  if tui.page == Chat {
-    tui.chat_scroll = value
-  } else {
-    tui.trace_scroll = value
-  }
+/// 当前页的相对滚动（两页各归各的，切页不会把另一页的视口带过去）。
+fn ui_scroll(agent : @runtime.Agent, tui : TuiState, delta : Int32) -> Unit {
+  ui_dispatch(agent, tui, @action.Scrolled(agent.state.ui.page, delta))
 }
 
 ///|
@@ -285,7 +245,7 @@ pub async fn run_tui(
   let failure = try {
     @async.with_task_group(async fn(group) {
       group.spawn_bg(async fn() { tui_render_loop(app, tui, agent) })
-      group.spawn_bg(async fn() { tui_key_loop(tui) })
+      group.spawn_bg(async fn() { tui_key_loop(agent, tui) })
       tui_driver(agent, tui, config, compact_enabled, skills)
     })
     None
@@ -314,7 +274,8 @@ pub async fn run_tui(
   }
   // 恢复提示（elA 的 printResumeOnExit 同形）：只有真的落过盘、接过话才提
   // —— 那条命令要能真的跑起来；没说过话的空会话恢复出来也是空的。
-  if !tui.session_id.is_empty() && !tui.session_path.is_empty() &&
+  if !tui.session_id.is_empty() &&
+    !tui.session_path.is_empty() &&
     state.messages.length() > 0 {
     @sys.write_err(
       "To resume this session: pi-moon --session " + tui.session_id + "\n",
@@ -333,26 +294,27 @@ pub async fn run_tui(
 }
 
 ///|
-async fn tui_key_loop(tui : TuiState) -> Unit {
+async fn tui_key_loop(agent : @runtime.Agent, tui : TuiState) -> Unit {
   while !tui.quit {
     let key = @io.read_key()
     if key.length() == 0 {
       @async.sleep(10)
       continue
     }
-    handle_key(tui, key)
+    handle_key(agent, tui, key)
   }
 }
 
 ///|
-fn handle_key(tui : TuiState, key : String) -> Unit {
+fn handle_key(agent : @runtime.Agent, tui : TuiState, key : String) -> Unit {
   tui.dirty = true
   // 面板开着时键盘归面板：Enter 确认、Esc 取消、↑↓ 选项。
-  match tui.picker {
+  match agent.state.ui.picker {
     Some(_) => {
       let event = @events.parse_input(key)
       match event {
-        @events.InputEvent::Key(key_event) => handle_picker_key(tui, key_event)
+        @events.InputEvent::Key(key_event) =>
+          handle_picker_key(agent, tui, key_event)
         _ => ()
       }
       return
@@ -367,8 +329,9 @@ fn handle_key(tui : TuiState, key : String) -> Unit {
   }
   let event = @events.parse_input(key)
   match event {
-    @events.InputEvent::Key(key_event) => handle_key_event(tui, key_event)
-    @events.InputEvent::Mouse(mouse) => handle_mouse(tui, mouse)
+    @events.InputEvent::Key(key_event) =>
+      handle_key_event(agent, tui, key_event)
+    @events.InputEvent::Mouse(mouse) => handle_mouse(agent, tui, mouse)
     _ => ()
   }
 }
@@ -376,23 +339,30 @@ fn handle_key(tui : TuiState, key : String) -> Unit {
 ///|
 /// 滚轮翻页（±3 行）：与 PgUp / PgDn 同一条路。点击不处理 —— 界面上没有
 /// 可点的东西，面板选中靠键盘。
-fn handle_mouse(tui : TuiState, mouse : @events.MouseEvent) -> Unit {
+fn handle_mouse(
+  agent : @runtime.Agent,
+  tui : TuiState,
+  mouse : @events.MouseEvent,
+) -> Unit {
   match mouse.button {
-    @events.MouseButton::ScrollUp => scroll_set(tui, scroll_get(tui) + 3)
-    @events.MouseButton::ScrollDown =>
-      scroll_set(tui, max_int(scroll_get(tui) - 3, 0))
+    @events.MouseButton::ScrollUp => ui_scroll(agent, tui, 3)
+    @events.MouseButton::ScrollDown => ui_scroll(agent, tui, -3)
     _ => ()
   }
 }
 
 ///|
-fn handle_key_event(tui : TuiState, key : @events.KeyEvent) -> Unit {
+fn handle_key_event(
+  agent : @runtime.Agent,
+  tui : TuiState,
+  key : @events.KeyEvent,
+) -> Unit {
   match key {
     @events.KeyEvent::Char(c, modifier) =>
       match modifier {
         @events.KeyModifier::None | @events.KeyModifier::Shift =>
           insert_char(tui, c)
-        @events.KeyModifier::Ctrl => handle_ctrl(tui, c)
+        @events.KeyModifier::Ctrl => handle_ctrl(agent, tui, c)
         _ => ()
       }
     @events.KeyEvent::Special(special, modifier) =>
@@ -400,17 +370,23 @@ fn handle_key_event(tui : TuiState, key : @events.KeyEvent) -> Unit {
         @events.KeyModifier::Ctrl =>
           // Ctrl+Home / Ctrl+End：跳到当前页的最顶 / 最底。
           match special {
-            @events.SpecialKey::Home => scroll_set(tui, 1000000)
-            @events.SpecialKey::End => scroll_set(tui, 0)
-            _ => handle_special(tui, special)
+            @events.SpecialKey::Home =>
+              ui_dispatch(agent, tui, @action.ScrollHome(agent.state.ui.page))
+            @events.SpecialKey::End =>
+              ui_dispatch(agent, tui, @action.ScrollEnd(agent.state.ui.page))
+            _ => handle_special(agent, tui, special)
           }
-        _ => handle_special(tui, special)
+        _ => handle_special(agent, tui, special)
       }
   }
 }
 
 ///|
-fn handle_special(tui : TuiState, special : @events.SpecialKey) -> Unit {
+fn handle_special(
+  agent : @runtime.Agent,
+  tui : TuiState,
+  special : @events.SpecialKey,
+) -> Unit {
   match special {
     @events.SpecialKey::Enter => submit_input(tui, @common.Steer)
     @events.SpecialKey::Escape =>
@@ -440,15 +416,15 @@ fn handle_special(tui : TuiState, special : @events.SpecialKey) -> Unit {
     @events.SpecialKey::Up => history_prev(tui)
     @events.SpecialKey::Down => history_next(tui)
     @events.SpecialKey::PageUp =>
-      scroll_set(tui, scroll_get(tui) + max_int(tui.height / 2, 1))
+      ui_scroll(agent, tui, max_int(tui.height / 2, 1))
     @events.SpecialKey::PageDown =>
-      scroll_set(tui, max_int(scroll_get(tui) - max_int(tui.height / 2, 1), 0))
+      ui_scroll(agent, tui, -max_int(tui.height / 2, 1))
     _ => ()
   }
 }
 
 ///|
-fn handle_ctrl(tui : TuiState, c : Char) -> Unit {
+fn handle_ctrl(agent : @runtime.Agent, tui : TuiState, c : Char) -> Unit {
   match c {
     'c' => {
       let now = now_ms()
@@ -469,10 +445,10 @@ fn handle_ctrl(tui : TuiState, c : Char) -> Unit {
       tui.quit = true
     }
     'o' => {
-      tui.expanded = !tui.expanded
+      ui_dispatch(agent, tui, @action.ExpandToggled)
       set_notice(
         tui,
-        if tui.expanded {
+        if agent.state.ui.expanded {
           "工具输出：展开"
         } else {
           "工具输出：折叠"
@@ -480,8 +456,15 @@ fn handle_ctrl(tui : TuiState, c : Char) -> Unit {
       )
     }
     'r' => {
-      tui.page = if tui.page == Chat { Trace } else { Chat }
-      set_notice(tui, if tui.page == Chat { "对话" } else { "轨迹" })
+      ui_dispatch(agent, tui, @action.PageToggled)
+      set_notice(
+        tui,
+        if agent.state.ui.page == @action.UiChat {
+          "对话"
+        } else {
+          "轨迹"
+        },
+      )
     }
     // pi 的 `app.model.select`（Ctrl+L）：覆盖 composer 的面板。
     'l' =>
@@ -621,7 +604,7 @@ async fn tui_driver(
       Submit(text) => {
         tui.busy = true
         tui.abort = false
-        tui.chat_scroll = 0
+        ui_dispatch(agent, tui, @action.ScrollEnd(@action.UiChat))
         tui.dirty = true
         let text = expand_skill_input(text, skills) catch {
           err => {
@@ -683,9 +666,9 @@ async fn tui_driver(
           (if names.is_empty() { "(none)" } else { names.join(",") }),
         )
       }
-      OpenModels => open_model_picker(tui, agent.state, config)
-      OpenThinking => open_thinking_picker(tui, agent.state, config)
-      OpenSessions => open_session_picker(tui, agent.state, config, agent.state.cwd)
+      OpenModels => open_model_picker(agent, tui, config)
+      OpenThinking => open_thinking_picker(agent, tui, config)
+      OpenSessions => open_session_picker(agent, tui, config, agent.state.cwd)
       ThinkingLevel(level) => apply_thinking(agent, tui, config, level)
       Exit => tui.quit = true
     }
@@ -907,25 +890,35 @@ fn max_int(a : Int32, b : Int32) -> Int32 {
 // 不是居中浮窗。这里只做列表与选中：Enter 确认、Esc 取消、↑↓ 移动。
 
 ///|
-fn handle_picker_key(tui : TuiState, key : @events.KeyEvent) -> Unit {
-  match tui.picker {
+fn handle_picker_key(
+  agent : @runtime.Agent,
+  tui : TuiState,
+  key : @events.KeyEvent,
+) -> Unit {
+  match agent.state.ui.picker {
     None => ()
-    Some(picker) =>
+    Some(_) =>
       match key {
         @events.KeyEvent::Char('c', @events.KeyModifier::Ctrl) =>
-          tui.picker = None
+          ui_dispatch(agent, tui, @action.PickerClosed)
         @events.KeyEvent::Char(_, _) => ()
         @events.KeyEvent::Special(special, _) =>
           match special {
-            @events.SpecialKey::Escape => tui.picker = None
+            @events.SpecialKey::Escape =>
+              ui_dispatch(agent, tui, @action.PickerClosed)
             @events.SpecialKey::Enter => tui.picker_confirm = true
-            @events.SpecialKey::Up => picker_move(tui, picker, -1)
-            @events.SpecialKey::Down => picker_move(tui, picker, 1)
-            @events.SpecialKey::PageUp => picker_move(tui, picker, -5)
-            @events.SpecialKey::PageDown => picker_move(tui, picker, 5)
-            @events.SpecialKey::Home => picker.selected = 0
+            @events.SpecialKey::Up =>
+              ui_dispatch(agent, tui, @action.PickerMoved(-1))
+            @events.SpecialKey::Down =>
+              ui_dispatch(agent, tui, @action.PickerMoved(1))
+            @events.SpecialKey::PageUp =>
+              ui_dispatch(agent, tui, @action.PickerMoved(-5))
+            @events.SpecialKey::PageDown =>
+              ui_dispatch(agent, tui, @action.PickerMoved(5))
+            @events.SpecialKey::Home =>
+              ui_dispatch(agent, tui, @action.PickerMoved(-2147483647))
             @events.SpecialKey::End =>
-              picker.selected = max_int(picker.items.length() - 1, 0)
+              ui_dispatch(agent, tui, @action.PickerMoved(2147483647))
             _ => ()
           }
       }
@@ -933,22 +926,12 @@ fn handle_picker_key(tui : TuiState, key : @events.KeyEvent) -> Unit {
 }
 
 ///|
-fn picker_move(tui : TuiState, picker : Picker, delta : Int32) -> Unit {
-  picker.selected = clamp_int(
-    picker.selected + delta,
-    0,
-    max_int(picker.items.length() - 1, 0),
-  )
-  tui.dirty = true
-}
-
-///|
 fn open_model_picker(
+  agent : @runtime.Agent,
   tui : TuiState,
-  state : @state.AgentState,
   config : @provider.PiConfig,
 ) -> Unit {
-  let items : Array[PickerItem] = []
+  let items : Array[@action.UiPickerItem] = []
   for provider in config.providers {
     for model in provider.models {
       let mut detail = ""
@@ -975,26 +958,30 @@ fn open_model_picker(
   }
   let mut selected = 0
   for index in 0..<items.length() {
-    if items[index].provider == state.provider_name &&
-      items[index].model_id == state.model_id {
+    if items[index].provider == agent.state.provider_name &&
+      items[index].model_id == agent.state.model_id {
       selected = index
     }
   }
-  tui.picker = Some({
-    kind: ModelPicker,
-    title: "选择模型",
-    items,
-    selected,
-  })
-  tui.dirty = true
+  ui_dispatch(
+    agent,
+    tui,
+    @action.PickerOpened({
+      kind: @action.ModelPicker,
+      title: "选择模型",
+      items,
+      selected,
+    }),
+  )
 }
 
 ///|
 fn open_thinking_picker(
+  agent : @runtime.Agent,
   tui : TuiState,
-  state : @state.AgentState,
   config : @provider.PiConfig,
 ) -> Unit {
+  let state = agent.state
   let model = match find_model(config, state.provider_name, state.model_id) {
     Some(model) => model
     None => {
@@ -1011,7 +998,7 @@ fn open_thinking_picker(
     set_notice(tui, "当前模型不支持思考级别")
     return
   }
-  let items : Array[PickerItem] = []
+  let items : Array[@action.UiPickerItem] = []
   let mut selected = 0
   for index in 0..<levels.length() {
     let level = levels[index]
@@ -1031,13 +1018,16 @@ fn open_thinking_picker(
       path: "",
     })
   }
-  tui.picker = Some({
-    kind: ThinkingPicker,
-    title: "思考级别",
-    items,
-    selected,
-  })
-  tui.dirty = true
+  ui_dispatch(
+    agent,
+    tui,
+    @action.PickerOpened({
+      kind: @action.ThinkingPicker,
+      title: "思考级别",
+      items,
+      selected,
+    }),
+  )
 }
 
 ///|
@@ -1101,18 +1091,18 @@ async fn apply_picker(
   config : @provider.PiConfig,
 ) -> Unit {
   tui.picker_confirm = false
-  let picker = match tui.picker {
+  let picker = match agent.state.ui.picker {
     Some(picker) => picker
     None => return
   }
   if agent.state.phase != @common.Idle || agent.state.compacting {
     set_notice(tui, "上一回合还没结束，先按 Esc 中断再改")
-    tui.picker = None
+    ui_dispatch(agent, tui, @action.PickerClosed)
     return
   }
   let item = picker.items[picker.selected]
   match picker.kind {
-    ModelPicker => {
+    @action.ModelPicker => {
       let level = clamp_thinking(
         config,
         item.provider,
@@ -1126,7 +1116,7 @@ async fn apply_picker(
       ) catch {
         err => {
           set_notice(tui, "换模型失败：" + err.to_string())
-          tui.picker = None
+          ui_dispatch(agent, tui, @action.PickerClosed)
           return
         }
       }
@@ -1134,18 +1124,18 @@ async fn apply_picker(
         err => set_notice(tui, "error: " + err.to_string())
       }
       set_notice(tui, "模型：" + item.label)
-      tui.picker = None
+      ui_dispatch(agent, tui, @action.PickerClosed)
       persist_tui(agent, tui)
     }
-    ThinkingPicker => {
+    @action.ThinkingPicker => {
       agent.send(@action.ThinkingChanged(item.level)) catch {
         err => set_notice(tui, "error: " + err.to_string())
       }
       set_notice(tui, "思考级别：" + item.level)
-      tui.picker = None
+      ui_dispatch(agent, tui, @action.PickerClosed)
       persist_tui(agent, tui)
     }
-    SessionPicker => restore_session(agent, tui, item.path)
+    @action.SessionPicker => restore_session(agent, tui, item.path)
   }
   tui.dirty = true
 }
@@ -1210,8 +1200,8 @@ struct SessionFile {
 
 ///|
 async fn open_session_picker(
+  agent : @runtime.Agent,
   tui : TuiState,
-  _state : @state.AgentState,
   config : @provider.PiConfig,
   cwd : String,
 ) -> Unit {
@@ -1262,7 +1252,7 @@ async fn open_session_picker(
     index = index + 1
   }
   let now = @sys.now() / 1000L
-  let items : Array[PickerItem] = []
+  let items : Array[@action.UiPickerItem] = []
   let mut selected = 0
   for at in 0..<files.length() {
     let file = files[at]
@@ -1285,13 +1275,16 @@ async fn open_session_picker(
       path: file.path,
     })
   }
-  tui.picker = Some({
-    kind: SessionPicker,
-    title: "恢复会话",
-    items,
-    selected,
-  })
-  tui.dirty = true
+  ui_dispatch(
+    agent,
+    tui,
+    @action.PickerOpened({
+      kind: @action.SessionPicker,
+      title: "恢复会话",
+      items,
+      selected,
+    }),
+  )
 }
 
 ///|
@@ -1331,7 +1324,7 @@ async fn restore_session(
   let loaded_opt = @session.load_session(path, session_id) catch {
     err => {
       set_notice(tui, "[session] " + err.to_string())
-      tui.picker = None
+      ui_dispatch(agent, tui, @action.PickerClosed)
       tui.dirty = true
       return
     }
@@ -1340,7 +1333,7 @@ async fn restore_session(
     Some(loaded) => loaded
     None => {
       set_notice(tui, "[session] 没有可恢复的内容：" + path)
-      tui.picker = None
+      ui_dispatch(agent, tui, @action.PickerClosed)
       tui.dirty = true
       return
     }
@@ -1379,7 +1372,7 @@ async fn restore_session(
   ) catch {
     err => {
       set_notice(tui, "[session] " + err.to_string())
-      tui.picker = None
+      ui_dispatch(agent, tui, @action.PickerClosed)
       tui.dirty = true
       return
     }
@@ -1391,10 +1384,11 @@ async fn restore_session(
   tui.session_path = path
   tui.session_label = session_id
   tui.session_id = session_id
-  tui.picker = None
+  // 面板由 SessionRestored 的迁移关掉（顺带把滚动归零）；这里再发一次是幂等的。
+  ui_dispatch(agent, tui, @action.PickerClosed)
+  ui_dispatch(agent, tui, @action.ScrollEnd(@action.UiChat))
   tui.busy = false
   tui.abort = false
-  tui.chat_scroll = 0
   // 旧会话的反馈卡属于旧对话，不能跟着漂到刚恢复的会话里（ela 换会话时也清）。
   tui.cards = []
   set_notice(

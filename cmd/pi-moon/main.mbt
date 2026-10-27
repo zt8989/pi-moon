@@ -428,21 +428,17 @@ async fn resolve_session_paths(
       // 先当路径：给的是文件路径就直接用（老习惯不变）。
       if (@sys.exists(target) catch { _ => false }) {
         let id = @session.session_id_from_path(target)
-        return Some(
-          {
-            session: target,
-            trace: target + ".trace",
-            id,
-          },
-        )
+        return Some({ session: target, trace: target + ".trace", id, })
       }
       // 再当 id：找不到给明确错误（pi 同样拒绝静默换会话）。
       Some(@session.resolve_session_paths(config.agent_dir, cwd, target))
     }
-    None => {
+    None =>
       if args.continue_session {
         // cwd 目录里最新的；没有就新建。
-        let directory = session_directory(config) + "/" + @session.encode_cwd(cwd)
+        let directory = session_directory(config) +
+          "/" +
+          @session.encode_cwd(cwd)
         match @session.latest_session(directory) {
           Some(path) => {
             let id = @session.session_id_from_path(path)
@@ -453,7 +449,6 @@ async fn resolve_session_paths(
       } else {
         Some(@session.new_session_paths(config.agent_dir, cwd, @sys.now()))
       }
-    }
   }
 }
 
@@ -647,7 +642,8 @@ fn build_banner(
       in_prompt.push(file)
     }
   }
-  let shown_files = if in_prompt.is_empty() && system_prompt.contains("<project_context>") {
+  let shown_files = if in_prompt.is_empty() &&
+    system_prompt.contains("<project_context>") {
     context_files
   } else {
     in_prompt
@@ -680,7 +676,7 @@ fn build_banner(
 }
 
 ///|
-async fn run(args : CliArgs) -> Unit raise {
+async fn run(args : CliArgs) -> Unit {
   let config = @provider.load_pi_config(agent_dir?=args.agent_dir)
   for diagnostic in config.diagnostics {
     eprintln("[config] " + diagnostic)
@@ -868,8 +864,10 @@ async fn run(args : CliArgs) -> Unit raise {
     Some(paths) =>
       Some(
         match loaded {
-          Some(loaded) => @session.SessionWriter::restored(paths.session, paths.trace, loaded)
-          None => @session.SessionWriter::new(paths.session, paths.trace, session_id)
+          Some(loaded) =>
+            @session.SessionWriter::restored(paths.session, paths.trace, loaded)
+          None =>
+            @session.SessionWriter::new(paths.session, paths.trace, session_id)
         },
       )
     None => None
@@ -894,9 +892,7 @@ async fn run(args : CliArgs) -> Unit raise {
       }
       eprintln(
         "[session] 恢复 " +
-        paths.unwrap_or(
-          { session: "(内存)", trace: "", id: session_id, },
-        ).session +
+        paths.unwrap_or({ session: "(内存)", trace: "", id: session_id, }).session +
         "（" +
         loaded.messages.length().to_string() +
         " 条消息 / " +
@@ -961,14 +957,14 @@ async fn run(args : CliArgs) -> Unit raise {
           tui,
           config,
           config.compaction.enabled,
-          (match paths {
+          match paths {
             Some(paths) => paths.session
             None => ""
-          }),
-          (match paths {
+          },
+          match paths {
             Some(paths) => paths.id
             None => ""
-          }),
+          },
           skill_registry.skills,
         )
         return

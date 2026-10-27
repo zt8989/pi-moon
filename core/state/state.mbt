@@ -35,6 +35,46 @@ pub(all) struct ToolProgress {
 } derive(Eq, Debug)
 
 ///|
+/// 打开中的选择面板（模型 / 思考级别 / 会话）。
+pub(all) struct UiPicker {
+  kind : @action.UiPickerKind
+  title : String
+  items : Array[@action.UiPickerItem]
+  selected : Int32
+} derive(Eq, Debug)
+
+///|
+/// 界面的**显示**状态。
+///
+/// 它进 state 是因为渲染是 state 的纯函数（`render(state)` —— TUI 的每一帧
+/// 都从 `agent.state` 画出来），「在哪一页、滚到哪、面板开着没有」也得能从
+/// state 重算。它不落盘的原因在 `UiAction`：UI 事件的迁移只碰这一块，
+/// 树上没有节点，落盘器就没有东西可写。
+pub(all) struct UiState {
+  /// 当前页：对话 / 轨迹。
+  page : @action.UiPane
+  /// 工具输出与压缩摘要展开还是折叠（Ctrl+O）。
+  expanded : Bool
+  /// 对话页离底部的行数（0 = 跟随底部）。
+  chat_scroll : Int32
+  /// 轨迹页离底部的行数。
+  trace_scroll : Int32
+  /// 打开中的面板；None = 没有。
+  picker : UiPicker?
+} derive(Eq, Debug)
+
+///|
+pub fn default_ui_state() -> UiState {
+  {
+    page: @action.UiChat,
+    expanded: false,
+    chat_scroll: 0,
+    trace_scroll: 0,
+    picker: None,
+  }
+}
+
+///|
 /// 最近一次压缩的结果（给界面显示「N 条 → M 条，压掉了多少」）。
 ///
 /// 之所以进 state 而不是让界面自己 diff messages.length：界面 diff 出来的
@@ -184,6 +224,8 @@ pub(all) struct AgentState {
   tool_progress : @ihm.HashMap[String, ToolProgress]
   /// 已完成工具的耗时（毫秒），key 是 tool_call_id。
   tool_timings : @ihm.HashMap[String, Int64]
+  // ── 界面（只由 UI 事件改；不进轨迹、不落盘） ──
+  ui : UiState
   // ── 预算 / 超时 / 落盘 ──
   /// 本轮（从 UserMessage 起）已发起的 LLM 尝试次数。
   llm_attempts : Int32
@@ -317,6 +359,7 @@ pub fn create_initial_state(options : InitialStateOptions) -> AgentState {
     open_tool_node_ids: @ihm.HashMap::new(),
     tool_progress: @ihm.HashMap::new(),
     tool_timings: @ihm.HashMap::new(),
+    ui: default_ui_state(),
     llm_attempts: 0,
     max_llm_attempts: options.max_llm_attempts,
     llm_timeout_ms: options.llm_timeout_ms,

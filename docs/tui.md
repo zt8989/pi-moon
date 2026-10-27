@@ -115,28 +115,41 @@ assistant 正文与用户块都过 markdown，但**解析和渲染分两层**：
 表格单元格里的行内样式（单元格要先算列宽再补空格，保留 span 会和宽度
 算法打架，所以只留纯文字）、图片（按 `![alt](url)` 原文显示）。
 
-## 三个任务，一条规则
+## 三个任务，两条碰 agent 的路
 
 ```text
-key loop     read_key → 改输入缓冲 / 命令队列 → 标脏
+key loop     read_key → 改输入缓冲 / 命令队列 → 标脏；
+             界面显示类按键（翻页 / 滚动 / 面板）经 ui_dispatch 发 Ui 事件，
+             Agent::dispatch_ui 同步归约 —— 无 await，生成中也能用
 render loop  标脏时把 agent.state 画成一帧（vnode diff，只写变化的格子）
 driver       await agent.send(...)：模型流、工具、压缩都在这条 await 里
 ```
 
-规则：**只有 driver 碰 agent**。
+碰 agent 的路有两条，各走各的事件：
 
-原因不抽象：`Agent::send()` 会一直 await 到整个回合结束（流式调用、工具
-批次、重试都在这条链上）。按键如果直接调它，生成期间连 Esc 都按不进来 ——
-而 Esc 恰恰是生成期间最需要按的键。
-
-所以键循环只做两件事：改自己的状态、往队列里放一条命令。命令是
-`Submit` / `Continue` / `Compact` / `Tools` / `ListTools` / `Dequeue` /
-`Exit`，driver 按顺序消费。
+- **对话类动作**（发消息、换模型、压缩）只有 driver 碰：`Agent::send()` 会
+  await 到整个回合结束，按键如果直接调它，生成期间连 Esc 都按不进来 ——
+  而 Esc 恰恰是生成期间最需要按的键。所以键循环只改自己的状态、往队列里
+  放一条命令，driver 按顺序消费。命令是 `Submit` / `Continue` / `Compact` /
+  `Tools` / `ListTools` / `Dequeue` / `Exit`。
+- **UI 事件**（`Ui(PageToggled)` / `Ui(Scrolled(...))` / `Ui(PickerMoved(...))`）
+  走 `Agent::dispatch_ui`：同步归约、不排队、不碰 deferred，整个调用没有
+  await，协作式调度下不会与 driver 正在 await 的 effect 交错。所以翻页、
+  滚动、开关面板在生成中也能立即生效。这些事件只改 `state.ui`，不进轨迹、
+  不落盘（见 [loop](loop.md) 的 UI 事件一节）。
 
 生成中敲的话走另一条更短的路：`TuiState.pending_actions` 里放一条
 `QueueInput`，由 provider effect 的 `ProviderHooks::on_tick` 在**流分片边界 /
 每条工具之前** dispatch 进环里。那条路与 driver 同上下文，不会在别人 await
 时把 deferred 队列里的 effect 拉起来并发跑。
+
+### render(state)
+
+渲染是 state 的纯函数：`tui_view(tui, agent.state)`。哪一页、滚到哪、
+工具块展开没展开、面板开着没有、选中是哪行 —— 全部从 `state.ui` 重算；
+TUI 自己只贡献环表达不了的本地细节：终端尺寸、输入缓冲与历史、反馈卡、
+落盘游标。于是键循环不再直接改界面显示，它只发 UI 事件，改的是同一个
+reducer 里的 state。
 
 ## 队列与取回（键位照 ela）
 

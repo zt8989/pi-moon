@@ -563,14 +563,14 @@ fn queue_row(prefix : String, text : String, width : Int32) -> String {
 /// `对话 │ 轨迹 3轮2步  工具5  重试1  错误1 (Ctrl+R)`
 pub fn tab_nodes(
   state : @state.AgentState,
-  page : TuiPage,
+  page : @action.UiPane,
   width : Int32,
   palette~ : Palette = Palette::ansi256(),
 ) -> Array[@vnode.TuiNode] {
   let stats = @trace.trace_stats(state.trace)
   let nodes : Array[@vnode.TuiNode] = []
   let mut used : Int32 = 0
-  if page == Chat {
+  if page == @action.UiChat {
     nodes.push(@vnode.text("对话", fg=palette.accent, bold=true))
     used = used + 4
     nodes.push(@vnode.text(" "))
@@ -813,6 +813,8 @@ fn spinner_frame(now : Int64) -> String {
 pub fn tui_view(tui : TuiState, state : @state.AgentState) -> @vnode.TuiNode {
   let width = tui.width
   let height = tui.height
+  // 界面显示状态（哪一页、滚到哪、面板开着没有）全在 state.ui：
+  // 这一帧是 state 的纯函数，TUI 只贡献终端尺寸与输入缓冲这类本地细节。
   let panel = picker_rows(tui, state, width, height, palette=tui.palette)
   let has_panel = !panel.is_empty()
   let mut queue = if has_panel {
@@ -826,10 +828,10 @@ pub fn tui_view(tui : TuiState, state : @state.AgentState) -> @vnode.TuiNode {
   if page_budget - queue.length() < 3 {
     queue = []
   }
-  let page = if tui.page == Chat {
+  let page = if state.ui.page == @action.UiChat {
     chat_lines(
       state,
-      tui.expanded,
+      state.ui.expanded,
       width,
       tui.cards,
       tui.banner,
@@ -838,7 +840,11 @@ pub fn tui_view(tui : TuiState, state : @state.AgentState) -> @vnode.TuiNode {
   } else {
     trace_lines(state, width, palette=tui.palette)
   }
-  let scroll = if tui.page == Chat { tui.chat_scroll } else { tui.trace_scroll }
+  let scroll = if state.ui.page == @action.UiChat {
+    state.ui.chat_scroll
+  } else {
+    state.ui.trace_scroll
+  }
   let page_rows = if has_panel {
     max_int(height - 1 - 2 - panel.length(), 3)
   } else {
@@ -847,7 +853,7 @@ pub fn tui_view(tui : TuiState, state : @state.AgentState) -> @vnode.TuiNode {
   let shown = visible_lines(page, page_rows, scroll)
   let children : Array[@vnode.TuiNode] = []
   children.push(
-    @vnode.row(tab_nodes(state, tui.page, width, palette=tui.palette)),
+    @vnode.row(tab_nodes(state, state.ui.page, width, palette=tui.palette)),
   )
   for line in shown {
     children.push(line_node(line, width))
@@ -890,7 +896,7 @@ fn picker_rows(
   height : Int32,
   palette~ : Palette = Palette::ansi256(),
 ) -> Array[StyledLine] {
-  let picker = match tui.picker {
+  let picker = match state.ui.picker {
     Some(picker) => picker
     None => return []
   }
@@ -920,10 +926,10 @@ fn picker_rows(
   while index < start + visible {
     let item = items[index]
     let current = match picker.kind {
-      ModelPicker =>
+      @action.ModelPicker =>
         item.provider == state.provider_name && item.model_id == state.model_id
-      ThinkingPicker => item.level == state.thinking_level
-      SessionPicker => item.path == tui.session_path
+      @action.ThinkingPicker => item.level == state.thinking_level
+      @action.SessionPicker => item.path == tui.session_path
     }
     let marker = if index == picker.selected { "› " } else { "  " }
     let suffix = if current { "  ●" } else { "" }

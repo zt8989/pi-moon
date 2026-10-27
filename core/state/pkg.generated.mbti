@@ -16,6 +16,8 @@ pub fn create_initial_state(InitialStateOptions) -> AgentState
 
 pub let default_llm_timeout_ms : Int64
 
+pub fn default_ui_state() -> UiState
+
 // Errors
 
 // Types and methods
@@ -75,6 +77,7 @@ pub(all) struct AgentState {
   open_tool_node_ids : @hashmap.HashMap[String, String]
   tool_progress : @hashmap.HashMap[String, ToolProgress]
   tool_timings : @hashmap.HashMap[String, Int64]
+  ui : UiState
   llm_attempts : Int32
   max_llm_attempts : Int32
   llm_timeout_ms : Int64
@@ -135,6 +138,21 @@ pub(all) struct QueuedInput {
 pub(all) struct ToolProgress {
   tool_call_id : String
   content : Array[@message.Content]
+} derive(Eq, @debug.Debug)
+
+pub(all) struct UiPicker {
+  kind : @action.UiPickerKind
+  title : String
+  items : Array[@action.UiPickerItem]
+  selected : Int32
+} derive(Eq, @debug.Debug)
+
+pub(all) struct UiState {
+  page : @action.UiPane
+  expanded : Bool
+  chat_scroll : Int32
+  trace_scroll : Int32
+  picker : UiPicker?
 } derive(Eq, @debug.Debug)
 
 // Type aliases

@@ -64,7 +64,11 @@ pub(all) struct SessionWriter {
 }
 
 ///|
-pub fn SessionWriter::new(path : String, trace_path : String, session_id : String) -> SessionWriter {
+pub fn SessionWriter::new(
+  path : String,
+  trace_path : String,
+  session_id : String,
+) -> SessionWriter {
   {
     path,
     trace_path,
@@ -326,7 +330,10 @@ fn now_unix_ms() -> Int64 {
 
 ///|
 /// 追加写一个文件（按需建父目录）。
-async fn append_file(path : String, lines : Array[String]) -> Unit raise SessionError {
+async fn append_file(
+  path : String,
+  lines : Array[String],
+) -> Unit raise SessionError {
   let directory = parent_dir(path)
   if !(@sys.exists(directory) catch { _ => false }) {
     @sys.mkdir_p(directory) catch {
@@ -358,7 +365,9 @@ pub fn SessionError::to_string(self : SessionError) -> String {
   match self {
     Write(path~, message~) => "无法写会话文件 " + path + "：" + message
     NotFound(id~) =>
-      "没有找到会话 " + id + "（可用 /resume 打开会话面板看有哪些会话）"
+      "没有找到会话 " +
+      id +
+      "（可用 /resume 打开会话面板看有哪些会话）"
   }
 }
 
@@ -449,6 +458,7 @@ fn replay_line(
   }
 }
 
+///|
 pub async fn load_session(path : String, session_id : String) -> LoadedSession? {
   let exists = @sys.exists(path) catch { _ => false }
   if !exists {
@@ -481,11 +491,33 @@ pub async fn load_session(path : String, session_id : String) -> LoadedSession? 
   if trace_exists {
     let trace_text = @sys.read_text_lossy(trace_path) catch { _ => return None }
     for line in trace_text.split("\n") {
-      replay_line(line.to_owned(), messages, trace_ref, prompt_ref, tools_ref, model_ref, seq_ref, saw_ref, hid_ref, hcw_ref)
+      replay_line(
+        line.to_owned(),
+        messages,
+        trace_ref,
+        prompt_ref,
+        tools_ref,
+        model_ref,
+        seq_ref,
+        saw_ref,
+        hid_ref,
+        hcw_ref,
+      )
     }
   }
   for line in text.split("\n") {
-    replay_line(line.to_owned(), messages, trace_ref, prompt_ref, tools_ref, model_ref, seq_ref, saw_ref, hid_ref, hcw_ref)
+    replay_line(
+      line.to_owned(),
+      messages,
+      trace_ref,
+      prompt_ref,
+      tools_ref,
+      model_ref,
+      seq_ref,
+      saw_ref,
+      hid_ref,
+      hcw_ref,
+    )
   }
   if !saw_ref.val {
     return None
@@ -543,7 +575,8 @@ pub fn encode_cwd(cwd : String) -> String {
     text = text[1:].to_owned()
   }
   "--" +
-  text.replace_all(old="/", new="-")
+  text
+  .replace_all(old="/", new="-")
   .replace_all(old=":", new="-")
   .replace_all(old=" ", new="-") +
   "--"
@@ -571,7 +604,11 @@ pub fn file_timestamp(ms : Int64) -> String {
   let second = z / 1000L % 60L
   let millis = z % 1000L
   let pad2 = fn(value : Int64) -> String {
-    if value < 10L { "0" + value.to_string() } else { value.to_string() }
+    if value < 10L {
+      "0" + value.to_string()
+    } else {
+      value.to_string()
+    }
   }
   let pad3 = fn(value : Int64) -> String {
     if value < 10L {
@@ -671,7 +708,7 @@ pub fn new_session_id(now_ms : Int64) -> String {
   let mut shift = 40
   let mut position = 0
   while shift >= 0 {
-    bytes[position] = (((now_ms >> shift) & 0xFFL).to_int()).to_byte()
+    bytes[position] = ((now_ms >> shift) & 0xFFL).to_int().to_byte()
     position = position + 1
     shift = shift - 8
   }
@@ -679,7 +716,7 @@ pub fn new_session_id(now_ms : Int64) -> String {
   bytes[6] = ((bytes[6].to_int() & 0x0F) | 0x70).to_byte()
   // 变体 10xx。
   bytes[8] = ((bytes[8].to_int() & 0x3F) | 0x80).to_byte()
-  let hex = fn(value : Int) -> String {
+  let hex = fn(value : Int32) -> String {
     let digits = "0123456789abcdef"
     match digits.get_char(value) {
       Some(character) => character.to_string()
@@ -742,7 +779,8 @@ pub async fn resolve_session_paths(
   let encoded = encode_cwd(cwd)
   let sessions_root = agent_dir + "/sessions"
   let traces_root = agent_dir + "/traces"
-  let session_file = match (find_file_by_id(sessions_root + "/" + encoded, id) catch { _ => None }) {
+  let session_file = match
+    (find_file_by_id(sessions_root + "/" + encoded, id) catch { _ => None }) {
     Some(path) => Some(path)
     None => {
       // cwd 目录里没有：扫其它 --<cwd>-- 目录（找不到要出声，见 load 侧）。
@@ -752,7 +790,10 @@ pub async fn resolve_session_paths(
       let mut hit : String? = None
       for directory in entries {
         if directory.has_prefix("--") && directory.has_suffix("--") {
-          match (find_file_by_id(sessions_root + "/" + directory, id) catch { _ => None }) {
+          match
+            (find_file_by_id(sessions_root + "/" + directory, id) catch {
+              _ => None
+            }) {
             Some(path) => {
               hit = Some(path)
               break
@@ -770,11 +811,7 @@ pub async fn resolve_session_paths(
         Some(index) => path[index + 1:].to_owned()
         None => path
       }
-      {
-        session: path,
-        trace: traces_root + "/" + encoded + "/" + name,
-        id,
-      }
+      { session: path, trace: traces_root + "/" + encoded + "/" + name, id, }
     }
     None =>
       // 两处都没有：给个明确的错（调用方决定是报错还是当新会话）。

@@ -49,6 +49,7 @@ pub(all) enum AgentAction {
   CompactDone(CompactDoneData)
   CompactFailed(CompactFailedData)
   CompactSettingsChanged(@compact.Settings)
+  Ui(UiAction)
 } derive(Eq, @debug.Debug)
 pub fn AgentAction::name(Self) -> String
 
@@ -131,6 +132,45 @@ pub(all) struct StepEndData {
 pub(all) struct ToolProgressData {
   tool_call_id : String
   content : Array[@message.Content]
+} derive(Eq, @debug.Debug)
+
+pub(all) enum UiAction {
+  PageToggled
+  ExpandToggled
+  Scrolled(UiPane, Int32)
+  ScrollHome(UiPane)
+  ScrollEnd(UiPane)
+  PickerOpened(UiPickerData)
+  PickerClosed
+  PickerMoved(Int32)
+} derive(Eq, @debug.Debug)
+pub fn UiAction::name(Self) -> String
+
+pub(all) enum UiPane {
+  UiChat
+  UiTrace
+} derive(Eq, @debug.Debug)
+
+pub(all) struct UiPickerData {
+  kind : UiPickerKind
+  title : String
+  items : Array[UiPickerItem]
+  selected : Int32
+} derive(Eq, @debug.Debug)
+
+pub(all) struct UiPickerItem {
+  label : String
+  detail : String
+  provider : String
+  model_id : String
+  level : String
+  path : String
+} derive(Eq, @debug.Debug)
+
+pub(all) enum UiPickerKind {
+  ModelPicker
+  ThinkingPicker
+  SessionPicker
 } derive(Eq, @debug.Debug)
 
 pub(all) struct UserInput {

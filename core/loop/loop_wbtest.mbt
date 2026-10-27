@@ -633,3 +633,177 @@ test "steer 在回合结束时也要投递（模型没调工具、直接说完�
     _ => abort("expected the steer message at the tail")
   }
 }
+
+///|
+test "UI 事件只改 state.ui，trace / 相位 / messages 一个字不动" {
+  let state = loop_test_loaded()
+  let (state, cmds) = reduce(state, user("查一下"), 100L)
+  let nodes_before = state.trace.order.length()
+  let messages_before = state.messages.length()
+  assert_eq(cmd_names(cmds), ["action:turn.start"])
+  // 翻页、滚动、展开、面板：接线一律不发 Cmd。
+  let events : Array[@action.UiAction] = [
+    @action.PageToggled,
+    @action.Scrolled(@action.UiTrace, 40),
+    @action.ExpandToggled,
+    @action.PickerMoved(3),
+    @action.ScrollEnd(@action.UiChat),
+  ]
+  let mut current = state
+  for event in events {
+    let (next, event_cmds) = reduce(current, @action.Ui(event), 101L)
+    assert_eq(event_cmds, [])
+    // 树上不开节点：落盘器按树写，树上没有的东西写不出来。
+    assert_eq(next.trace.order.length(), nodes_before)
+    assert_eq(next.messages.length(), messages_before)
+    current = next
+  }
+  assert_eq(current.ui.page, @action.UiTrace)
+  assert_true(current.ui.trace_scroll > 0)
+  assert_true(current.ui.expanded)
+  assert_eq(current.phase, @common.Thinking)
+}
+
+///|
+test "UI 事件：翻页 / 滚动语义与旧实现一致（0 = 跟随底部，Home 到顶）" {
+  let state = loop_test_loaded()
+  let (state, _) = reduce(
+    state,
+    @action.Ui(@action.Scrolled(@action.UiChat, 30)),
+    100L,
+  )
+  assert_eq(state.ui.chat_scroll, 30)
+  // 往下翻不许越过底部。
+  let (state, _) = reduce(
+    state,
+    @action.Ui(@action.Scrolled(@action.UiChat, -100)),
+    101L,
+  )
+  assert_eq(state.ui.chat_scroll, 0)
+  let (state, _) = reduce(
+    state,
+    @action.Ui(@action.ScrollHome(@action.UiChat)),
+    102L,
+  )
+  assert_true(state.ui.chat_scroll > 1000)
+  // 两页的滚动各自独立。
+  let (_, _) = reduce(
+    state,
+    @action.Ui(@action.Scrolled(@action.UiTrace, 5)),
+    103L,
+  )
+  let (state, _) = reduce(
+    state,
+    @action.Ui(@action.ScrollEnd(@action.UiChat)),
+    104L,
+  )
+  assert_eq(state.ui.chat_scroll, 0)
+  assert_eq(state.ui.page, @action.UiChat)
+  let (state, _) = reduce(state, @action.Ui(@action.PageToggled), 105L)
+  assert_eq(state.ui.page, @action.UiTrace)
+}
+
+///|
+test "UI 面板：打开、移动越界夹回、关闭；没开面板时移动是空操作" {
+  let state = loop_test_loaded()
+  let items : Array[@action.UiPickerItem] = [
+    {
+      label: "a",
+      detail: "",
+      provider: "p",
+      model_id: "m1",
+      level: "",
+      path: "",
+    },
+    {
+      label: "b",
+      detail: "",
+      provider: "p",
+      model_id: "m2",
+      level: "",
+      path: "",
+    },
+  ]
+  let (state, _) = reduce(
+    state,
+    @action.Ui(
+      @action.PickerOpened({
+        kind: @action.ModelPicker,
+        title: "选择模型",
+        items,
+        selected: 0,
+      }),
+    ),
+    100L,
+  )
+  assert_eq(state.ui.picker.unwrap().selected, 0)
+  let (_, _) = reduce(state, @action.Ui(@action.PickerMoved(1)), 101L)
+  let (state, _) = reduce(state, @action.Ui(@action.PickerMoved(1)), 102L)
+  // 只有两条：再往下也夹在最后一条上。
+  assert_eq(state.ui.picker.unwrap().selected, 1)
+  let (state, _) = reduce(state, @action.Ui(@action.PickerMoved(-99)), 103L)
+  assert_eq(state.ui.picker.unwrap().selected, 0)
+  // Home / End 传极大值：先比较后相加，不在 Int32 上溢出。
+  let (state, _) = reduce(
+    state,
+    @action.Ui(@action.PickerMoved(2147483647)),
+    104L,
+  )
+  assert_eq(state.ui.picker.unwrap().selected, 1)
+  let (state, _) = reduce(
+    state,
+    @action.Ui(@action.PickerMoved(-2147483647)),
+    105L,
+  )
+  assert_eq(state.ui.picker.unwrap().selected, 0)
+  let (state, _) = reduce(state, @action.Ui(@action.PickerClosed), 106L)
+  assert_true(state.ui.picker is None)
+  let (state, _) = reduce(state, @action.Ui(@action.PickerMoved(1)), 107L)
+  assert_true(state.ui.picker is None)
+}
+
+///|
+test "SessionRestored 保留页与折叠，滚动与面板归零" {
+  let state = loop_test_loaded()
+  let (state, _) = reduce(
+    state,
+    @action.Ui(
+      @action.PickerOpened({
+        kind: @action.ThinkingPicker,
+        title: "思考级别",
+        items: [],
+        selected: 0,
+      }),
+    ),
+    100L,
+  )
+  let (state, _) = reduce(state, @action.Ui(@action.PageToggled), 101L)
+  let (state, _) = reduce(
+    state,
+    @action.Ui(@action.Scrolled(@action.UiTrace, 9)),
+    102L,
+  )
+  let (restored, _) = reduce(
+    state,
+    @action.SessionRestored({
+      prompt: { system_prompt: "你是助手", tools: [], },
+      tools: [],
+      model: {
+        provider: "demo",
+        model_id: "demo-1",
+        thinking_level: "off",
+        reasoning: false,
+        capabilities: @action.no_capabilities,
+        context_window: 1000,
+      },
+      messages: [@message.user_message("旧会话", 1L)],
+      trace: state.trace,
+      persisted_seq: 0,
+    }),
+    103L,
+  )
+  assert_eq(restored.ui.page, @action.UiTrace)
+  assert_eq(restored.ui.chat_scroll, 0)
+  assert_eq(restored.ui.trace_scroll, 0)
+  assert_true(restored.ui.picker is None)
+}

@@ -4,6 +4,11 @@
 // 归因」的那几处：CJK 折行、光标不走字节、翻页越界、Esc 的两种语义。
 
 ///|
+fn test_agent(state : @state.AgentState) -> @runtime.Agent {
+  @runtime.Agent::new(state, @runtime.noop_effect_table(), fn() { 0L })
+}
+
+///|
 fn test_state() -> @state.AgentState {
   @state.create_initial_state({
     system_prompt: "test",
@@ -157,17 +162,18 @@ fn last_card_text(tui : TuiState) -> String {
 
 ///|
 /// 模拟用户敲字：`read_key` 一次只给一个键，测试里也别整段塞。
-fn type_text(tui : TuiState, text : String) -> Unit {
+fn type_text(agent : @runtime.Agent, tui : TuiState, text : String) -> Unit {
   for c in text {
-    handle_key(tui, c.to_string())
+    handle_key(agent, tui, c.to_string())
   }
 }
 
 ///|
 test "键位：Enter 提交、斜杠命令、Esc 两种语义" {
+  let agent = test_agent(test_state())
   let tui = TuiState::new()
-  type_text(tui, "hello")
-  handle_key(tui, "\r")
+  type_text(agent, tui, "hello")
+  handle_key(agent, tui, "\r")
   assert_eq(tui.commands.length(), 1)
   match tui.commands[0] {
     Submit(text) => assert_eq(text, "hello")
@@ -176,42 +182,44 @@ test "键位：Enter 提交、斜杠命令、Esc 两种语义" {
   assert_eq(tui.history.length(), 1)
   assert_eq(tui.input, "")
 
-  type_text(tui, "/compact")
-  handle_key(tui, "\r")
+  type_text(agent, tui, "/compact")
+  handle_key(agent, tui, "\r")
   match tui.commands[1] {
     Compact => ()
     _ => abort("expected compact")
   }
 
   // 空闲时 Esc 不是直接清输入，而是请求取回排队消息（driver / on_tick 去读队列）。
-  type_text(tui, "abc")
-  handle_key(tui, "\u{001b}")
+  type_text(agent, tui, "abc")
+  handle_key(agent, tui, "\u{001b}")
   assert_true(tui.take_back)
   assert_eq(tui.input, "abc")
   assert_false(tui.abort)
 
   // 生成中 Esc = 中断。
   tui.busy = true
-  handle_key(tui, "\u{001b}")
+  handle_key(agent, tui, "\u{001b}")
   assert_true(tui.abort)
 }
 
 ///|
 test "键位：Ctrl+C 第一次提示、第二次退出" {
+  let agent = test_agent(test_state())
   let tui = TuiState::new()
-  handle_key(tui, "\u{0003}")
+  handle_key(agent, tui, "\u{0003}")
   assert_false(tui.quit)
   assert_true(last_card_text(tui).contains("Ctrl+C"))
-  handle_key(tui, "\u{0003}")
+  handle_key(agent, tui, "\u{0003}")
   assert_true(tui.quit)
 }
 
 ///|
 test "键位：生成中 Enter = steer，Alt+Enter = followUp" {
+  let agent = test_agent(test_state())
   let tui = TuiState::new()
   tui.busy = true
-  type_text(tui, "排队一句")
-  handle_key(tui, "\r")
+  type_text(agent, tui, "排队一句")
+  handle_key(agent, tui, "\r")
   assert_eq(tui.commands.length(), 0)
   assert_eq(tui.pending_actions.length(), 1)
   assert_eq(tui.cards.length(), 0)
@@ -223,8 +231,8 @@ test "键位：生成中 Enter = steer，Alt+Enter = followUp" {
     _ => abort("expected queue.input")
   }
   // Alt+Enter（ESC + CR）走 followUp 队列。
-  type_text(tui, "待会儿再说")
-  handle_key(tui, "\u{001b}\r")
+  type_text(agent, tui, "待会儿再说")
+  handle_key(agent, tui, "\u{001b}\r")
   assert_eq(tui.pending_actions.length(), 2)
   match tui.pending_actions[1] {
     @action.QueueInput(input) => assert_eq(input.kind, @common.FollowUp)
@@ -234,8 +242,9 @@ test "键位：生成中 Enter = steer，Alt+Enter = followUp" {
 
 ///|
 test "键位：Ctrl+U 请求取回排队消息" {
+  let agent = test_agent(test_state())
   let tui = TuiState::new()
-  handle_key(tui, "\u{0015}")
+  handle_key(agent, tui, "\u{0015}")
   assert_true(tui.take_back)
 }
 
@@ -260,16 +269,17 @@ test "队列面板：只在有排队时占行，形状与 ela 一致" {
 
 ///|
 test "键位：上下翻历史" {
+  let agent = test_agent(test_state())
   let tui = TuiState::new()
-  type_text(tui, "first")
-  handle_key(tui, "\r")
-  type_text(tui, "second")
-  handle_key(tui, "\r")
-  handle_key(tui, "\u{001b}[A")
+  type_text(agent, tui, "first")
+  handle_key(agent, tui, "\r")
+  type_text(agent, tui, "second")
+  handle_key(agent, tui, "\r")
+  handle_key(agent, tui, "\u{001b}[A")
   assert_eq(tui.input, "second")
-  handle_key(tui, "\u{001b}[A")
+  handle_key(agent, tui, "\u{001b}[A")
   assert_eq(tui.input, "first")
-  handle_key(tui, "\u{001b}[B")
+  handle_key(agent, tui, "\u{001b}[B")
   assert_eq(tui.input, "second")
 }
 
@@ -279,7 +289,7 @@ test "顶行是页签 + 统计，底栏是 cwd + 用量/模型" {
     ..test_state(),
     messages: [@message.assistant_message("hi", "stop", 1L)],
   }
-  let tab = tab_nodes(state, Chat, 100)
+  let tab = tab_nodes(state, @action.UiChat, 100)
   assert_true(tab.length() > 3)
   let footer = footer_lines(state, 100)
   assert_eq(footer.length(), 2)
@@ -358,31 +368,32 @@ fn test_pi_config() -> @provider.PiConfig {
 
 ///|
 test "面板：Ctrl+L 打开模型列表，上下移动、Enter 确认、Esc 取消" {
+  let agent = test_agent(test_state())
   let tui = TuiState::new()
   let state = test_state()
   let config = test_pi_config()
   // Ctrl+L 在按键层只排队；driver 打开面板。
-  handle_key(tui, "\u{000c}")
+  handle_key(agent, tui, "\u{000c}")
   match tui.commands[0] {
     OpenModels => ()
     _ => abort("expected open-models command")
   }
-  open_model_picker(tui, state, config)
-  let picker = tui.picker.unwrap()
-  assert_eq(picker.kind, ModelPicker)
+  open_model_picker(agent, tui, config)
+  let picker = agent.state.ui.picker.unwrap()
+  assert_eq(picker.kind, @action.ModelPicker)
   assert_eq(picker.items.length(), 2)
   assert_eq(picker.selected, 0)
-  handle_key(tui, "\u{001b}[B")
-  assert_eq(tui.picker.unwrap().selected, 1)
-  handle_key(tui, "\r")
+  handle_key(agent, tui, "\u{001b}[B")
+  assert_eq(agent.state.ui.picker.unwrap().selected, 1)
+  handle_key(agent, tui, "\r")
   assert_true(tui.picker_confirm)
   // Esc 关面板；确认标志留着也没关系（driver 会清）。
-  handle_key(tui, "\u{001b}")
-  assert_true(tui.picker is None)
+  handle_key(agent, tui, "\u{001b}")
+  assert_true(agent.state.ui.picker is None)
   // 重开一次，检查列表渲染。
   tui.picker_confirm = false
-  open_model_picker(tui, state, config)
-  let rows = picker_rows(tui, state, 80, 30)
+  open_model_picker(agent, tui, config)
+  let rows = picker_rows(tui, agent.state, 80, 30)
   let mut text = ""
   for row in rows {
     text = text + row.text + "\n"
@@ -407,10 +418,11 @@ test "面板：思考级别只列模型支持的档位" {
       context_window: 1000,
     },
   }
+  let agent = test_agent(state)
   let tui = TuiState::new()
-  open_thinking_picker(tui, state, test_pi_config())
-  let picker = tui.picker.unwrap()
-  assert_eq(picker.kind, ThinkingPicker)
+  open_thinking_picker(agent, tui, test_pi_config())
+  let picker = agent.state.ui.picker.unwrap()
+  assert_eq(picker.kind, @action.ThinkingPicker)
   assert_eq(picker.items.length(), 6)
   let mut levels = ""
   for item in picker.items {
@@ -424,9 +436,10 @@ test "面板：思考级别只列模型支持的档位" {
     model_id: "plain",
     model: { ..state.model, model_id: "plain", reasoning: false, },
   }
+  let agent2 = test_agent(plain)
   let tui2 = TuiState::new()
-  open_thinking_picker(tui2, plain, test_pi_config())
-  assert_true(tui2.picker is None)
+  open_thinking_picker(agent2, tui2, test_pi_config())
+  assert_true(agent2.state.ui.picker is None)
   assert_true(last_card_text(tui2).contains("不支持"))
 }
 
@@ -440,15 +453,16 @@ test "面板：换模型时思考级别按新模型夹紧" {
 
 ///|
 test "斜杠命令：/model 与 /thinking [级别]" {
+  let agent = test_agent(test_state())
   let tui = TuiState::new()
-  type_text(tui, "/model")
-  handle_key(tui, "\r")
+  type_text(agent, tui, "/model")
+  handle_key(agent, tui, "\r")
   match tui.commands[0] {
     OpenModels => ()
     _ => abort("expected open-models")
   }
-  type_text(tui, "/thinking high")
-  handle_key(tui, "\r")
+  type_text(agent, tui, "/thinking high")
+  handle_key(agent, tui, "\r")
   match tui.commands[1] {
     ThinkingLevel(level) => assert_eq(level, "high")
     _ => abort("expected thinking-level")
@@ -468,9 +482,10 @@ test "时间与会话大小的人话格式" {
 
 ///|
 test "斜杠命令：/resume 开会话面板" {
+  let agent = test_agent(test_state())
   let tui = TuiState::new()
-  type_text(tui, "/resume")
-  handle_key(tui, "\r")
+  type_text(agent, tui, "/resume")
+  handle_key(agent, tui, "\r")
   match tui.commands[0] {
     OpenSessions => ()
     _ => abort("expected open-sessions")
@@ -491,12 +506,10 @@ async test "会话面板：列出 sessions 目录，新的在前，当前会话�
     messages: [@message.user_message("旧会话", 1L)],
   }
   let (_, _) = @session.SessionWriter::new(
-      path_old,
-      path_old + ".trace",
-      "s-old",
-    )
-    .flush(message_state)
-    catch {
+    path_old,
+    path_old + ".trace",
+    "s-old",
+  ).flush(message_state) catch {
     _ => abort("write old session failed")
   }
   // mtime 的分辨率到秒；等一秒才能保证「新的在前」稳定。
@@ -506,21 +519,20 @@ async test "会话面板：列出 sessions 目录，新的在前，当前会话�
     messages: [@message.user_message("新会话", 2L)],
   }
   let (_, _) = @session.SessionWriter::new(
-      path_new,
-      path_new + ".trace",
-      "s-new",
-    )
-    .flush(newer_state)
-    catch {
+    path_new,
+    path_new + ".trace",
+    "s-new",
+  ).flush(newer_state) catch {
     _ => abort("write new session failed")
   }
   let config = { ..test_pi_config(), agent_dir: root, }
+  let agent = test_agent(test_state())
   let tui = TuiState::new()
   tui.session_path = path_old
-  open_session_picker(tui, test_state(), config, "C:/test")
-  match tui.picker {
+  open_session_picker(agent, tui, config, "C:/test")
+  match agent.state.ui.picker {
     Some(picker) => {
-      assert_eq(picker.kind, SessionPicker)
+      assert_eq(picker.kind, @action.SessionPicker)
       assert_eq(picker.items.length(), 2)
       assert_true(picker.items[0].path.has_suffix("2000.jsonl"))
       assert_eq(picker.items[0].label, "刚刚")

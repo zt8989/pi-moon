@@ -276,7 +276,14 @@ async test "pending 节点：先 add 后 close，回放出来是闭合的" {
   let (_writer, cursor2) = writer.flush(state) catch {
     err => abort(err.to_string())
   }
-  println("PENDING cursor=" + cursor.to_string() + " cursor2=" + cursor2.to_string() + " pid=" + pending.id)
+  println(
+    "PENDING cursor=" +
+    cursor.to_string() +
+    " cursor2=" +
+    cursor2.to_string() +
+    " pid=" +
+    pending.id,
+  )
   assert_eq(cursor2, cursor)
   let loaded = match load_session(path, "s-session") {
     Some(loaded) => loaded
@@ -353,11 +360,17 @@ async test "会话路径：时间戳命名、--continue 取最新、id 从文件
   assert_eq(session_id_from_path(dir + "/200.jsonl"), "200")
   assert_eq(new_session_path(dir, 1234L), dir + "/1234.jsonl")
   // pi 形状的文件名：`<ISO 时间戳>_<id>.jsonl`，id 取最后一个下划线之后。
-  assert_eq(session_id_from_path(dir + "/2026-10-25T05-42-16-901Z_abc.jsonl"), "abc")
+  assert_eq(
+    session_id_from_path(dir + "/2026-10-25T05-42-16-901Z_abc.jsonl"),
+    "abc",
+  )
   // cwd 编码与 pi 同一规则。
   let sep = Char::from_int(92).to_string()
   let sep = Char::from_int(92).to_string()
-  assert_eq(encode_cwd("C:" + sep + "Users" + sep + "me" + sep + "proj"), "--C--Users-me-proj--")
+  assert_eq(
+    encode_cwd("C:" + sep + "Users" + sep + "me" + sep + "proj"),
+    "--C--Users-me-proj--",
+  )
   // UUIDv7 的形状与版本位。
   let id = new_session_id(1792919052172L)
   assert_eq(id.length(), 36)
@@ -446,9 +459,11 @@ async test "压缩落盘：写一条 compact 记录，回放出来就是压缩�
     ..compacted,
     messages: compacted.messages.add([@message.user_message("接着说", 10L)]),
   }
-  let (next_writer, _cursor) = SessionWriter::restored(path, path + ".trace", loaded).flush(
-    next_state,
-  ) catch {
+  let (next_writer, _cursor) = SessionWriter::restored(
+    path,
+    path + ".trace",
+    loaded,
+  ).flush(next_state) catch {
     err => abort(err.to_string())
   }
   let reloaded = match load_session(path, "s-session") {
@@ -458,5 +473,52 @@ async test "压缩落盘：写一条 compact 记录，回放出来就是压缩�
   assert_eq(reloaded.messages.length(), 2)
   assert_eq(reloaded.messages[1], @message.user_message("接着说", 10L))
   let _ = next_writer
+  remove_file(path)
+}
+
+///|
+async test "UI 事件不落盘：随便翻页滚动，flush 前后两个文件一个字都不多" {
+  let path = session_test_path("ui-events")
+  remove_file(path)
+  let state = session_state_after_turn()
+  let writer = SessionWriter::new(path, path + ".trace", "s-session")
+  let (writer, cursor) = writer.flush(state) catch {
+    err => abort(err.to_string())
+  }
+  let line_count = async fn(p : String) -> Int32 {
+    let text = (@fs.read_file(p) catch { _ => abort("file missing") }).binary()
+    @utf8.decode_lossy(text).split("\n").count()
+  }
+  let session_lines = line_count(path)
+  let trace_lines = line_count(path + ".trace")
+  // 一串界面操作：翻页、滚动、开面板、移选中、关面板。
+  let events : Array[@action.AgentAction] = [
+    @action.Ui(@action.PageToggled),
+    @action.Ui(@action.Scrolled(@action.UiTrace, 12)),
+    @action.Ui(
+      @action.PickerOpened({
+        kind: @action.ThinkingPicker,
+        title: "思考级别",
+        items: [],
+        selected: 0,
+      }),
+    ),
+    @action.Ui(@action.PickerMoved(2)),
+    @action.Ui(@action.PickerClosed),
+    @action.Ui(@action.ScrollEnd(@action.UiTrace)),
+    @action.Ui(@action.PageToggled),
+    @action.Ui(@action.ExpandToggled),
+  ]
+  let mut current = state
+  for event in events {
+    let (next, _) = @loop.reduce(current, event, 999L)
+    current = next
+  }
+  let (_writer, cursor_after) = writer.flush(current) catch {
+    err => abort(err.to_string())
+  }
+  assert_eq(cursor_after, cursor)
+  assert_eq(line_count(path), session_lines)
+  assert_eq(line_count(path + ".trace"), trace_lines)
   remove_file(path)
 }

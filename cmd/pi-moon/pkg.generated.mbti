@@ -87,7 +87,7 @@ pub fn spaces(Int32) -> String
 
 pub fn styled_line(String, String, bold? : Bool, bg? : String) -> StyledLine
 
-pub fn tab_nodes(@state.AgentState, TuiPage, Int32, palette? : Palette) -> Array[@ui.Node[@vnode.TuiEvent, @vnode.TuiAttrValue]]
+pub fn tab_nodes(@state.AgentState, @action.UiPane, Int32, palette? : Palette) -> Array[@ui.Node[@vnode.TuiEvent, @vnode.TuiAttrValue]]
 
 pub fn trace_lines(@state.AgentState, Int32, palette? : Palette) -> Array[StyledLine]
 
@@ -168,28 +168,6 @@ pub fn Palette::from_theme(Theme, @render.ColorMode) -> Self
 pub fn Palette::thinking_color(Self, String) -> String
 pub fn Palette::true_color() -> Self
 
-pub(all) struct Picker {
-  kind : PickerKind
-  title : String
-  items : Array[PickerItem]
-  mut selected : Int32
-}
-
-pub(all) struct PickerItem {
-  label : String
-  detail : String
-  provider : String
-  model_id : String
-  level : String
-  path : String
-} derive(Eq, @debug.Debug)
-
-pub(all) enum PickerKind {
-  ModelPicker
-  ThinkingPicker
-  SessionPicker
-} derive(Eq, @debug.Debug)
-
 type SessionFile
 
 pub(all) struct StatusCard {
@@ -236,11 +214,6 @@ pub(all) enum TuiCommand {
   Exit
 } derive(@debug.Debug)
 
-pub(all) enum TuiPage {
-  Chat
-  Trace
-} derive(Eq, @debug.Debug)
-
 pub(all) struct TuiState {
   mut width : Int32
   mut height : Int32
@@ -248,10 +221,6 @@ pub(all) struct TuiState {
   mut cursor : Int32
   mut history : Array[String]
   mut history_pos : Int32
-  mut chat_scroll : Int32
-  mut trace_scroll : Int32
-  mut page : TuiPage
-  mut expanded : Bool
   mut busy : Bool
   mut abort : Bool
   mut quit : Bool
@@ -262,7 +231,6 @@ pub(all) struct TuiState {
   mut commands : Array[TuiCommand]
   mut pending_actions : Array[@action.AgentAction]
   mut take_back : Bool
-  mut picker : Picker?
   mut picker_confirm : Bool
   mut session_path : String
   mut session_label : String

@@ -32,6 +32,15 @@ fn max_turns_reached(state : @state.AgentState) -> Bool {
 }
 
 ///|
+fn int_max(a : Int32, b : Int32) -> Int32 {
+  if a > b {
+    a
+  } else {
+    b
+  }
+}
+
+///|
 /// 用户真正说出了一句话：补装载节点、补模型变更、开 user 节点、归零计数器。
 ///
 /// 被 `UserMessage` 与 `QueueInput`（空闲时）共用 —— 写两遍必然漂移，
@@ -104,6 +113,82 @@ fn transition_user_message(
     // 于是树上永远没有 turn 节点。
     open_turn_node_id: None,
   }
+}
+
+///|
+/// UI 事件的迁移：换掉 `state.ui`，其余字段原样共用。
+///
+/// 滚动语义是「离底部的行数」：0 = 跟随底部，上界由渲染层按内容高度夹
+/// （与旧实现一致），所以「到顶」直接写一个大数。选中项的越界夹回在
+/// `picker_moved`：先比较后相加，极大 / 极小的 delta 不会在 Int32 上溢出。
+fn transition_ui(
+  state : @state.AgentState,
+  event : @action.UiAction,
+) -> @state.AgentState {
+  let ui = state.ui
+  let next : @state.UiState = match event {
+    @action.PageToggled =>
+      {
+        ..ui,
+        page: if ui.page == @action.UiChat {
+          @action.UiTrace
+        } else {
+          @action.UiChat
+        },
+      }
+    @action.ExpandToggled => { ..ui, expanded: !ui.expanded, }
+    @action.Scrolled(pane, delta) =>
+      match pane {
+        @action.UiChat =>
+          { ..ui, chat_scroll: int_max(ui.chat_scroll + delta, 0), }
+        @action.UiTrace =>
+          { ..ui, trace_scroll: int_max(ui.trace_scroll + delta, 0), }
+      }
+    @action.ScrollHome(pane) =>
+      match pane {
+        @action.UiChat => { ..ui, chat_scroll: 1000000, }
+        @action.UiTrace => { ..ui, trace_scroll: 1000000, }
+      }
+    @action.ScrollEnd(pane) =>
+      match pane {
+        @action.UiChat => { ..ui, chat_scroll: 0, }
+        @action.UiTrace => { ..ui, trace_scroll: 0, }
+      }
+    @action.PickerOpened(data) =>
+      {
+        ..ui,
+        picker: Some({
+          kind: data.kind,
+          title: data.title,
+          items: data.items.copy(),
+          selected: data.selected,
+        }),
+      }
+    @action.PickerClosed => { ..ui, picker: None, }
+    @action.PickerMoved(delta) =>
+      match ui.picker {
+        Some(picker) => { ..ui, picker: Some(picker_moved(picker, delta)), }
+        None => ui
+      }
+  }
+  { ..state, ui: next, }
+}
+
+///|
+fn picker_moved(picker : @state.UiPicker, delta : Int32) -> @state.UiPicker {
+  let last = int_max(picker.items.length() - 1, 0)
+  let selected = if delta >= 0 {
+    if delta >= last - picker.selected {
+      last
+    } else {
+      picker.selected + delta
+    }
+  } else if delta < -picker.selected {
+    0
+  } else {
+    picker.selected + delta
+  }
+  { ..picker, selected, }
 }
 
 ///|
@@ -1019,6 +1104,15 @@ pub fn transition(
         compact_settings: state.compact_settings,
         persisted_seq: data.persisted_seq,
         total_steps: @trace.trace_stats(data.trace).steps,
+        // 界面保留「在哪一页 / 折叠没折叠」，但滚动与面板归零：
+        // 刚换了一份对话，旧的视口位置没有意义。
+        ui: {
+          page: state.ui.page,
+          expanded: state.ui.expanded,
+          chat_scroll: 0,
+          trace_scroll: 0,
+          picker: None,
+        },
       }
       apply_model_spec(restored, data.model)
     }
@@ -1220,5 +1314,10 @@ pub fn transition(
     }
     @action.CompactSettingsChanged(settings) =>
       { ..state, compact_settings: settings, }
+    // ── UI 事件 ──
+    //
+    // 只换 state.ui：树上不开节点、计数器不动、相位不动 —— 这就是
+    // 「不落轨迹文件」的实现方式，落盘器按树写，树上没有的东西写不出来。
+    @action.Ui(event) => transition_ui(state, event)
   }
 }

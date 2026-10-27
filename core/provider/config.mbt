@@ -564,6 +564,9 @@ fn builtin_base_url(name : String) -> String? {
     "together" => Some("https://api.together.xyz/v1")
     "moonshot" => Some("https://api.moonshot.cn/v1")
     "zhipu" => Some("https://open.bigmodel.cn/api/paas/v4")
+    // 智谱的两条 coding 专线：国际站 z.ai 与国内 bigmodel
+    "zai" => Some("https://api.z.ai/api/coding/paas/v4")
+    "zai-coding-cn" => Some("https://open.bigmodel.cn/api/coding/paas/v4")
     "dashscope" | "qwen" =>
       Some("https://dashscope.aliyuncs.com/compatible-mode/v1")
     "ollama" => Some("http://127.0.0.1:11434/v1")

@@ -114,6 +114,28 @@ pub fn Agent::observe(self : Agent, f : (@action.AgentAction) -> Unit) -> Unit {
 }
 
 ///|
+/// UI 事件的专用入口：**同步**归约一条 action，不排队、不碰 deferred 队列、
+/// 不消耗防死循环预算。
+///
+/// 只该喂 `Ui(...)` 事件：它的接线不发 Cmd，归约拉不起任何 effect。键循环
+/// 在生成中也能安全调用 —— 整个函数没有 await，协作式调度下不会与 driver
+/// 正在 await 的 effect 交错；observer 照常触发，下一帧就带上新的界面状态。
+pub fn Agent::dispatch_ui(
+  self : Agent,
+  action : @action.AgentAction,
+) -> Unit raise {
+  let now = (self.clock)()
+  let (next, cmds) = @loop.reduce(self.state, action, now)
+  self.state = next
+  self.processed = self.processed + 1
+  match self.observer {
+    Some(observe) => observe(action)
+    None => ()
+  }
+  self.absorb(cmds)
+}
+
+///|
 /// 把一条 action 放进队列（不立即执行）。
 pub fn Agent::enqueue(self : Agent, action : @action.AgentAction) -> Unit {
   self.queue.push(action)

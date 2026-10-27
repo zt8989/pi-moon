@@ -165,6 +165,9 @@ pub fn wiring(
             ]
         }
       }
+    // UI 事件不接 Cmd：界面显示状态的变化永远不引起 effect。
+    // 同步归约走 `Agent::dispatch_ui`，不经外部队列。
+    @action.Ui(_) => []
     _ => []
   }
 }

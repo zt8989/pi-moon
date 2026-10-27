@@ -28,6 +28,7 @@ pub(all) struct Agent {
   mut processed : Int32
   mut observer : ((@action.AgentAction) -> Unit)?
 }
+pub fn Agent::dispatch_ui(Self, @action.AgentAction) -> Unit raise
 pub fn Agent::enqueue(Self, @action.AgentAction) -> Unit
 pub fn Agent::new(@state.AgentState, EffectTable, () -> Int64) -> Self
 pub fn Agent::observe(Self, (@action.AgentAction) -> Unit) -> Unit

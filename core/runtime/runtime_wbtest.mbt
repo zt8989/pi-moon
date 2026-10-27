@@ -496,3 +496,24 @@ async test "compact：RunCompact 真的被 await，done 回来了整份换历史
   assert_eq(next.compaction_epoch, 1)
   assert_eq(next.last_compaction.unwrap().reason, @compact.Manual)
 }
+
+///|
+async test "dispatch_ui 同步归约 UI 事件：不排队、不耗预算、observer 照常触发" {
+  let agent = seed_agent(noop_effect_table())
+  let seen : Array[String] = []
+  agent.observe(fn(action : @action.AgentAction) { seen.push(action.name()) })
+  let budget_before = agent.budget
+  agent.dispatch_ui(@action.Ui(@action.PageToggled))
+  agent.dispatch_ui(@action.Ui(@action.Scrolled(@action.UiTrace, 7)))
+  assert_eq(agent.state.ui.page, @action.UiTrace)
+  assert_eq(agent.state.ui.trace_scroll, 7)
+  // 外部队列没有被 UI 事件占过：后续 send 的 action 还在队头等着。
+  assert_false(agent.pending())
+  assert_eq(seen, ["ui.page", "ui.scroll"])
+  // 防死循环预算是环自己的保险丝，用户按键不该消耗它。
+  assert_eq(agent.budget, budget_before)
+  // 生成中（deferred 里有 effect 等着）也能改界面：dispatch_ui 不碰 deferred。
+  agent.enqueue(@action.UserMessage({ text: "跑一轮", content: [], }))
+  agent.dispatch_ui(@action.Ui(@action.ExpandToggled))
+  assert_true(agent.state.ui.expanded)
+}
