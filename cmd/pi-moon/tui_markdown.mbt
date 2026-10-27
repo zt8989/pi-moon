@@ -12,6 +12,9 @@ pub(all) struct MarkdownSpan {
   text : String
   fg : String?
   bold : Bool
+  /// 反色（SGR 7）：光标块用 —— fg/bg 互换后块色跟随终端默认前景，
+  /// 浅底上是黑块，深底上是亮块，和 pi 的假光标同一套行为。
+  inverse : Bool
 } derive(Eq, Debug)
 
 ///|
@@ -80,6 +83,133 @@ pub fn markdown_lines(
   trim_blank_edges(
     render_blocks(document.children, width, document.definitions, colors),
   )
+}
+
+///|
+/// 流式文本可能以「半截闭合围栏」结尾：闭合的 ```` ``` ```` 逐字符到达时，
+/// 末尾先出现 `` 这样的前缀，会被吞进代码块、下一帧又缩回去，代码块看起来
+/// 抖一下。pi 在 token 层剪（trimPartialClosingFences），mdparse 不给闭合
+/// 标志，这里按行扫一遍围栏状态：还开着、且末行全是同一种围栏字符但比开
+/// 围栏短，就把这行先剪掉。对已闭合的完整文本是恒等变换。
+pub fn trim_partial_closing_fence(text : String) -> String {
+  let lines : Array[String] = []
+  for line in text.split("\n") {
+    lines.push(line.to_owned())
+  }
+  // 打开的围栏：marker 字符与长度；None 表示当前不在围栏里。
+  let mut open_char : Char? = None
+  let mut open_length = 0
+  for line in lines {
+    match open_char {
+      Some(marker) =>
+        if is_fence_close(line, marker, open_length) {
+          open_char = None
+        }
+      None =>
+        match fence_open(line) {
+          Some((marker, length)) => {
+            open_char = Some(marker)
+            open_length = length
+          }
+          None => ()
+        }
+    }
+  }
+  let last_index = lines.length() - 1
+  if last_index >= 0 {
+    match open_char {
+      Some(marker) => {
+        let last = lines[last_index]
+        let mut runs = true
+        let mut count = 0
+        for c in last {
+          if c == marker {
+            count = count + 1
+          } else {
+            runs = false
+            break
+          }
+        }
+        // 等长或更长已经构成闭合，状态机处理过了；这里只剪「还差几个字符」的。
+        if runs && count > 0 && count < open_length {
+          let _ = lines.pop()
+        }
+      }
+      None => ()
+    }
+  }
+  lines.join("\n")
+}
+
+///|
+/// String 下标返回的是码元（UInt16），统一转回 Char 再比较。
+fn char_at(line : String, index : Int) -> Char {
+  Char::from_int(line[index].to_int())
+}
+
+///|
+/// 围栏开头：最多 3 格缩进 + 3 个以上 ` 或 ~；info 串里不能出现同字符。
+fn fence_open(line : String) -> (Char, Int)? {
+  let chars = line.length()
+  let mut index = 0
+  while index < chars && char_at(line, index) == ' ' {
+    index = index + 1
+  }
+  if index > 3 || index >= chars {
+    return None
+  }
+  let marker = char_at(line, index)
+  if marker != '`' && marker != '~' {
+    return None
+  }
+  let start = index
+  while index < chars && char_at(line, index) == marker {
+    index = index + 1
+  }
+  let length = index - start
+  if length < 3 {
+    return None
+  }
+  while index < chars {
+    if char_at(line, index) == marker {
+      return None
+    }
+    index = index + 1
+  }
+  Some((marker, length))
+}
+
+///|
+/// 围栏闭合行：最多 3 格缩进 + 不短于开围栏的同字符序列 + 只剩空白。
+fn is_fence_close(
+  line : String,
+  marker : Char,
+  open_length : Int,
+) -> Bool {
+  let chars = line.length()
+  let mut index = 0
+  while index < chars && char_at(line, index) == ' ' {
+    index = index + 1
+  }
+  if index > 3 || index >= chars {
+    return false
+  }
+  let mut count = 0
+  while index < chars && char_at(line, index) == marker {
+    index = index + 1
+    count = count + 1
+  }
+  if count < open_length {
+    return false
+  }
+  while index < chars {
+    let c = char_at(line, index)
+    if c != ' ' && c != '\t' {
+      return false
+    }
+    index = index + 1
+  }
+  true
 }
 
 ///|
@@ -217,7 +347,7 @@ fn heading_lines(
   let spans = inline_spans(children, base_fg, true, defs, colors)
   let bold_spans : Array[MarkdownSpan] = []
   for span in spans {
-    bold_spans.push({ text: span.text, fg: span.fg, bold: true, })
+    bold_spans.push({ text: span.text, fg: span.fg, bold: true, inverse: false })
   }
   wrap_spans(bold_spans, width)
 }
@@ -485,7 +615,7 @@ fn with_bold(line : StyledLine, bold : Bool) -> StyledLine {
   if !bold {
     return line
   }
-  let spans : Array[MarkdownSpan] = [{ text: line.text, fg: None, bold: true, }]
+  let spans : Array[MarkdownSpan] = [{ text: line.text, fg: None, bold: true, inverse: false }]
   { ..line, bold: true, spans: Some(spans), }
 }
 
@@ -557,13 +687,13 @@ fn prefixed_line(
   prefix : String,
   fg : String?,
 ) -> StyledLine {
-  let spans : Array[MarkdownSpan] = [{ text: prefix, fg, bold: false, }]
+  let spans : Array[MarkdownSpan] = [{ text: prefix, fg, bold: false, inverse: false }]
   match line.spans {
     Some(inner) =>
       for span in inner {
         spans.push(span)
       }
-    None => spans.push({ text: line.text, fg: line.fg, bold: line.bold, })
+    None => spans.push({ text: line.text, fg: line.fg, bold: line.bold, inverse: false })
   }
   {
     ..line,
@@ -747,11 +877,11 @@ fn push_span(
     let index = spans.length() - 1
     let last = spans[index]
     if last.fg == fg && last.bold == bold && !last.text.contains("\n") {
-      spans[index] = { text: last.text + text, fg, bold, }
+      spans[index] = { text: last.text + text, fg, bold, inverse: false }
       return
     }
   }
-  spans.push({ text, fg, bold, })
+  spans.push({ text, fg, bold, inverse: false })
 }
 
 ///|
@@ -864,6 +994,7 @@ fn cells_to_line(
       text: slice_cells(cells, run_start, index),
       fg: cell.fg,
       bold: cell.bold,
+      inverse: false,
     })
   }
   {

@@ -129,7 +129,7 @@ pub fn render_editor(input : String, cursor : Int32, width : Int32) -> String {
   for index in start..<at {
     out.push(chars[index])
   }
-  out.push('▌')
+  out.push('█')
   let mut used = before_width + 1
   let mut index = at
   while index < chars.length() {

@@ -53,6 +53,9 @@ pub(all) struct TuiState {
   mut abort : Bool
   mut quit : Bool
   mut dirty : Bool
+  /// 上次画过的 spinner 帧号（now / 120）。渲染循环用它做时间心跳：working
+  /// 期间帧号变了才标脏 —— 动画匀速推进，不绑 token 事件的到达节奏。
+  mut last_spinner_frame : Int64
   /// 钉在对话流里的命令反馈卡（ela 的 `statusCards`）。
   mut cards : Array[StatusCard]
   /// 启动横幅：`[Context]` / `[Skills]` / `[Skill conflicts]`，画在对话页
@@ -134,6 +137,7 @@ pub fn TuiState::new() -> TuiState {
     abort: false,
     quit: false,
     dirty: true,
+    last_spinner_frame: -1L,
     cards: [],
     banner: [],
     message_count: 0,
@@ -257,21 +261,6 @@ pub async fn run_tui(
   // 顺序很重要：摘要还写 UTF-8，代码页要在它之后才还原。
   persist_tui(agent, tui)
   let state = agent.state
-  let usage = match state.usage {
-    Some(usage) => usage.total_tokens.to_string() + " tok"
-    None => "0 tok"
-  }
-  @sys.write_err(
-    "[session] " +
-    tui.session_label +
-    " · " +
-    state.messages.length().to_string() +
-    " 条消息 · " +
-    usage +
-    "\n",
-  ) catch {
-    _ => ()
-  }
   // 恢复提示（elA 的 printResumeOnExit 同形）：只有真的落过盘、接过话才提
   // —— 那条命令要能真的跑起来；没说过话的空会话恢复出来也是空的。
   if !tui.session_id.is_empty() &&
@@ -455,17 +444,7 @@ fn handle_ctrl(agent : @runtime.Agent, tui : TuiState, c : Char) -> Unit {
         },
       )
     }
-    'r' => {
-      ui_dispatch(agent, tui, @action.PageToggled)
-      set_notice(
-        tui,
-        if agent.state.ui.page == @action.UiChat {
-          "对话"
-        } else {
-          "轨迹"
-        },
-      )
-    }
+    'r' => { ui_dispatch(agent, tui, @action.PageToggled) }
     // pi 的 `app.model.select`（Ctrl+L）：覆盖 composer 的面板。
     'l' =>
       if tui.busy {
@@ -770,6 +749,19 @@ async fn tui_render_loop(
       tui.height = height
       app.resize(width, height)
       tui.dirty = true
+    }
+    // spinner 心跳：working 期间 spinner 帧号变了才标脏。动画由时间驱动
+    // （120ms 一帧），不绑 token 事件的到达节奏 —— 否则思考期没有事件、
+    // spinner 冻结，token 突发时又跳帧，看起来就是「loading 卡顿」。
+    // 帧内容只依赖当前 state，这一帧丢掉下一帧补上，丢帧是安全的。
+    if agent.state.phase != @common.Idle || agent.state.compacting {
+      let frame = @sys.now() / 120L
+      if frame != tui.last_spinner_frame {
+        tui.last_spinner_frame = frame
+        tui.dirty = true
+      }
+    } else {
+      tui.last_spinner_frame = -1L
     }
     if tui.dirty {
       tui.dirty = false

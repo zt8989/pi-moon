@@ -80,7 +80,7 @@ test "退格与 Delete 在两端不越界" {
 ///|
 test "render_editor 在窄窗口里保证光标可见" {
   let rendered = render_editor("abcdefghij", 10, 5)
-  assert_true(rendered.contains("▌"))
+  assert_true(rendered.contains("█"))
   assert_true(display_width(rendered) <= 5)
   assert_true(rendered.contains("j"))
   // 光标在中间时不把左边的字全裁掉（起点只让位给光标本身）。
@@ -147,7 +147,7 @@ test "chat_lines：流式文本与思考各占一段" {
     text = text + line.text + "\n"
   }
   assert_true(text.contains("想一下"))
-  assert_true(text.contains("正在说▌"))
+  assert_true(text.contains("正在说█"))
 }
 
 ///|
@@ -962,4 +962,81 @@ test "chat_lines：启动横幅画在对话页顶部，标题黄、内容灰" {
   // 空横幅时不占任何行：无消息无卡片时什么都不画。
   let bare = chat_lines(test_state(), false, 60, [], [], palette~)
   assert_true(bare.is_empty())
+}
+
+///|
+test "帧成本量化：多条消息的对话区全量重算耗时" {
+  let body = "# 标题\n\n一段**加粗**与`行内代码`、[链接](https://example.com)。\n\n- 列表项一\n- 列表项二\n- 列表项三\n\n```moonbit\nfn main() { println(\"hi\") }\n```\n\n再一段正文,足够长到需要折行的程度,看看折行与样式的开销大概在一个什么量级上。"
+  let messages : Array[@message.Message] = []
+  for index in 0..<20 {
+    if index % 2 == 0 {
+      messages.push(@message.user_message(body, index.to_int64()))
+    } else {
+      messages.push(@message.assistant_message("assistant \{index} 的回答正文,也带一点**markdown**与 `code`。", "stop", index.to_int64()))
+    }
+  }
+  let state = {
+    ..test_state(),
+    messages,
+    phase: @common.Thinking,
+    streaming_text: "正在流式输出的文本,长度中等,模拟生成中的状态。",
+  }
+  let tui = TuiState::new()
+  tui.width = 100
+  tui.height = 30
+  let start = @sys.now()
+  let runs = 20L
+  for _ in 0..<20 {
+    let _node = tui_view(tui, state)
+  }
+  let cost = @sys.now() - start
+  println("tui_view x\{runs} (20 msgs) = \{cost}ms, per-frame \{cost / runs}ms")
+  assert_true(cost >= 0L)
+}
+
+///|
+test "markdown：流式半截闭合围栏被剪掉" {
+  // 闭合 ``` 逐字符到达时，末尾先出现 `` —— 应该剪掉，代码块先按
+  // 「未闭合」渲染，等下一帧闭合行到齐再恢复。
+  assert_eq(
+    trim_partial_closing_fence("```rust\nlet x = 1\n``"),
+    "```rust\nlet x = 1",
+  )
+  // 三个字符凑齐就是真闭合，不剪。
+  assert_eq(
+    trim_partial_closing_fence("```rust\nlet x = 1\n```"),
+    "```rust\nlet x = 1\n```",
+  )
+  // 半截行不带换行的情况（delta 正好停在围栏字符中间）。
+  assert_eq(trim_partial_closing_fence("```\ncode\n`"), "```\ncode")
+  // ~~~ 围栏同样处理。
+  assert_eq(trim_partial_closing_fence("~~~\ncode\n~~"), "~~~\ncode")
+  // 闭合之后的内容不属于围栏，末行是普通文字时不动。
+  assert_eq(
+    trim_partial_closing_fence("```\ncode\n```\n正文"),
+    "```\ncode\n```\n正文",
+  )
+  // 完整文本（无未闭合围栏）是恒等变换。
+  assert_eq(
+    trim_partial_closing_fence("# 标题\n\n正文 **粗体**。"),
+    "# 标题\n\n正文 **粗体**。",
+  )
+}
+
+///|
+test "markdown：流式正文走 markdown 渲染且末行带光标" {
+  let tui = TuiState::new()
+  tui.width = 80
+  tui.height = 24
+  let state = {
+    ..test_state(),
+    phase: @common.Thinking,
+    streaming_text: "正文段落，带 **粗体**。",
+  }
+  let frame = @vnode.render_vnode_once(80, 24, tui_view(tui, state))
+  // 纯文本渲染会保留 "**"；走 markdown 渲染后只剩粗体样式，字面星号消失。
+  assert_false(frame.contains("**"))
+  assert_true(frame.contains("正文段落"))
+  // 假光标接在最后一行行尾。
+  assert_true(frame.contains("█"))
 }

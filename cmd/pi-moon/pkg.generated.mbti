@@ -91,6 +91,8 @@ pub fn tab_nodes(@state.AgentState, @action.UiPane, Int32, palette? : Palette) -
 
 pub fn trace_lines(@state.AgentState, Int32, palette? : Palette) -> Array[StyledLine]
 
+pub fn trim_partial_closing_fence(String) -> String
+
 pub fn truncate_to(String, Int32) -> String
 
 pub fn tui_color_mode() -> @render.ColorMode
@@ -144,6 +146,7 @@ pub(all) struct MarkdownSpan {
   text : String
   fg : String?
   bold : Bool
+  inverse : Bool
 } derive(Eq, @debug.Debug)
 
 pub(all) struct Palette {
@@ -225,6 +228,7 @@ pub(all) struct TuiState {
   mut abort : Bool
   mut quit : Bool
   mut dirty : Bool
+  mut last_spinner_frame : Int64
   mut cards : Array[StatusCard]
   mut banner : Array[String]
   mut message_count : Int32

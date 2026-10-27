@@ -65,13 +65,19 @@ pub fn chat_lines(
   if state.phase != @common.Idle {
     if !state.thinking_text.is_empty() {
       push_inset_block(out, state.thinking_text, width, palette.muted)
+      out.push(blank_line())
     }
     if !state.streaming_text.is_empty() {
-      push_inset_block(out, state.streaming_text + "▌", width, "")
+      // 流式期间与完成后同一套 markdown 排版：每个 delta 全量重 parse +
+      // 渲染（pi 的做法），半截闭合围栏由 trim_partial_closing_fence 压住。
+      push_markdown_block(out, state.streaming_text, width, "", palette.md)
+      append_streaming_cursor(out)
+      out.push(blank_line())
     }
   }
   if state.compacting {
     push_inset_block(out, "压缩中…", width, palette.muted)
+    out.push(blank_line())
   }
   // 锚点超过当前消息数的卡（理论上不该有）兜底画在最后，总比消失强。
   push_cards_beyond(out, cards, state.messages.length(), width, palette)
@@ -90,10 +96,10 @@ fn push_cards_beyond(
 ) -> Unit {
   for card in cards {
     if card.at > at {
-      out.push(blank_line())
       for line in wrap_text(card.text, width - 2) {
         out.push(styled_line(" " + line, palette.dim))
       }
+      out.push(blank_line())
     }
   }
 }
@@ -108,10 +114,10 @@ fn push_cards(
 ) -> Unit {
   for card in cards {
     if card.at == at {
-      out.push(blank_line())
       for line in wrap_text(card.text, width - 2) {
         out.push(styled_line(" " + line, palette.dim))
       }
+      out.push(blank_line())
     }
   }
 }
@@ -129,24 +135,26 @@ fn message_lines(
     @message.UserMsg(part) =>
       if part.compaction_summary {
         compaction_block(part, expanded, width, out, palette)
+        out.push(blank_line())
       } else {
         let body = @message.contents_text(part.content)
         push_bg_markdown(out, body, width, "", palette.user_bg, palette.md)
+        out.push(blank_line())
       }
     @message.AssistantMsg(part) => {
       for block in part.content {
         match block {
           @message.Text(text) =>
             if !text.trim(chars=" \t\r\n").is_empty() {
-              out.push(blank_line())
               push_markdown_block(out, text, width, "", palette.md)
+              out.push(blank_line())
             }
           @message.Thinking(text) =>
             if !text.trim(chars=" \t\r\n").is_empty() {
-              out.push(blank_line())
               push_inset_block(out, text, width, palette.muted)
+              out.push(blank_line())
             }
-          @message.ToolCallBlock(call) =>
+          @message.ToolCallBlock(call) => {
             tool_block(
               call,
               find_result(state, call.id),
@@ -156,10 +164,11 @@ fn message_lines(
               out,
               palette,
             )
+            out.push(blank_line())
+          }
           @message.Image(url) => {
             // 终端里画不了图，但不能整块消失：给一行占位（回放带附件的
             // 会话时尤其重要，否则历史里那部分结果看起来像被裁掉）。
-            out.push(blank_line())
             let label = if url.has_prefix("data:") {
               let mime = match url.find(";") {
                 Some(at) => url[5:at]
@@ -170,6 +179,7 @@ fn message_lines(
               "[image " + url + "]"
             }
             push_inset_block(out, label, width, palette.muted)
+            out.push(blank_line())
           }
         }
       }
@@ -178,11 +188,12 @@ fn message_lines(
       if part.stop_reason == "aborted" {
         out.push(blank_line())
         push_inset_block(out, "[已中断]", width, palette.error)
+        out.push(blank_line())
       }
       match part.error_message {
         Some(error) => {
-          out.push(blank_line())
           push_inset_block(out, error, width, palette.error)
+          out.push(blank_line())
         }
         None => ()
       }
@@ -192,7 +203,6 @@ fn message_lines(
       // 结果（旧会话回放、或调用消息被裁掉）才单独画一块。参数拿不到，
       // 按空参数走通用形状。
       if !call_was_rendered(state, part.tool_call_id) {
-        out.push(blank_line())
         let bg = if part.is_error {
           palette.tool_error_bg
         } else {
@@ -214,8 +224,9 @@ fn message_lines(
           palette,
         )
         push_bg_block_lines(out, render, bg, width, palette)
+        out.push(blank_line())
       }
-    @message.SystemMsg(part) =>
+    @message.SystemMsg(part) => {
       // 中途的工具声明是给模型看的，不是给用户看的：只留一行标记。
       if part.source == Some("tools") {
         out.push(styled_line(" 〔工具集已更新〕", palette.dim))
@@ -227,6 +238,8 @@ fn message_lines(
           ),
         )
       }
+      out.push(blank_line())
+    }
   }
 }
 
@@ -238,7 +251,6 @@ fn compaction_block(
   out : Array[StyledLine],
   palette : Palette,
 ) -> Unit {
-  out.push(blank_line())
   let body = @message.contents_text(part.content)
   let head : Array[String] = ["[compaction]"]
   if expanded {
@@ -268,7 +280,6 @@ fn tool_block(
   out : Array[StyledLine],
   palette : Palette,
 ) -> Unit {
-  out.push(blank_line())
   let bg = match result {
     Some(part) =>
       if part.is_error {
@@ -352,9 +363,35 @@ fn push_markdown_block(
   fg : String,
   colors : MarkdownColors,
 ) -> Unit {
-  for line in markdown_lines(text, width - 2, colors~) {
+  for line in markdown_lines(trim_partial_closing_fence(text), width - 2, colors~) {
     out.push(prefixed_markdown_line(line, " ", fg, None, width))
   }
+}
+
+///|
+/// 流式光标：接到最后一条内容行行尾。█ 不能再拼进文本里（会干扰解析），
+/// 渲染完之后补在行尾。
+fn append_streaming_cursor(out : Array[StyledLine]) -> Unit {
+  let mut index = out.length() - 1
+  while index >= 0 && out[index].text.is_empty() {
+    index = index - 1
+  }
+  if index < 0 {
+    return
+  }
+  let line = out[index]
+  let spans : Array[MarkdownSpan] = match line.spans {
+    Some(inner) => {
+      let copy : Array[MarkdownSpan] = []
+      for span in inner {
+        copy.push(span)
+      }
+      copy
+    }
+    None => [{ text: line.text, fg: line.fg, bold: line.bold, inverse: false }]
+  }
+  spans.push({ text: "█", fg: None, bold: false, inverse: false })
+  out[index] = { ..line, text: line.text + "█", spans: Some(spans) }
 }
 
 ///|
@@ -395,6 +432,7 @@ fn prefixed_markdown_line(
         Some(fg)
       },
       bold: false,
+      inverse: false,
     },
   ]
   match line.spans {
@@ -402,9 +440,55 @@ fn prefixed_markdown_line(
       for span in inner {
         spans.push(span)
       }
-    None => spans.push({ text: line.text, fg: line.fg, bold: line.bold, })
+    None => spans.push({ text: line.text, fg: line.fg, bold: line.bold, inverse: false })
   }
   { text: prefix + line.text, fg: None, bg, bold: false, spans: Some(spans), }
+}
+
+///|
+/// composer 输入行：输入文字用主题正文色，光标块单独用 accent 色。
+///
+/// fg 留空会落到渲染器的默认前景（vendor/tui 的默认是纯白），浅色终端里
+/// 白字打在白底上，光标就看不见了 —— 颜色必须显式给。
+fn composer_line(
+  input : String,
+  cursor : Int32,
+  width : Int32,
+  palette : Palette,
+) -> StyledLine {
+  let chars = render_editor(input, cursor, width).to_array()
+  let before : Array[Char] = []
+  let after : Array[Char] = []
+  let mut seen_caret = false
+  for ch in chars {
+    if ch == '█' {
+      seen_caret = true
+    } else if seen_caret {
+      after.push(ch)
+    } else {
+      before.push(ch)
+    }
+  }
+  let before_text = String::from_array(before)
+  let after_text = String::from_array(after)
+  let spans : Array[MarkdownSpan] = []
+  if before_text.length() > 0 {
+    spans.push({ text: before_text, fg: Some(palette.text), bold: false, inverse: false })
+  }
+  // 光标 = 反色空格（SGR 7）。不用 █：反色会把字形颜色换成原背景色，
+  // 满格字形在浅色终端上会和底色融为一体；空格让 cell 只露反色背景 ——
+  // 浅底上是黑块，深底上是亮块，与 pi 的假光标同款。
+  spans.push({ text: " ", fg: None, bold: false, inverse: true })
+  if after_text.length() > 0 {
+    spans.push({ text: after_text, fg: Some(palette.text), bold: false, inverse: false })
+  }
+  {
+    text: before_text + " " + after_text,
+    fg: None,
+    bg: None,
+    bold: false,
+    spans: Some(spans),
+  }
 }
 
 ///|
@@ -869,10 +953,7 @@ pub fn tui_view(tui : TuiState, state : @state.AgentState) -> @vnode.TuiNode {
     children.push(@vnode.text(" "))
     children.push(line_node(editor_top_border(state, width, now_ms()), width))
     children.push(
-      line_node(
-        pad_line(render_editor(tui.input, tui.cursor, width), "", None, width),
-        width,
-      ),
+      line_node(composer_line(tui.input, tui.cursor, width, tui.palette), width),
     )
     children.push(
       line_node(pad_line(rule(width), tui.palette.dim, None, width), width),
@@ -1016,9 +1097,10 @@ fn span_line_node(
 
 ///|
 fn span_node(span : MarkdownSpan) -> @vnode.TuiNode {
+  let bold = span.bold
   match span.fg {
-    Some(fg) => @vnode.text(span.text, fg~, bold=span.bold)
-    None => @vnode.text(span.text, bold=span.bold)
+    Some(fg) => @vnode.text(span.text, fg~, bold~, inverse=span.inverse)
+    None => @vnode.text(span.text, bold~, inverse=span.inverse)
   }
 }
 
