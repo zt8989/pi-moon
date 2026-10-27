@@ -321,20 +321,20 @@ pub async fn SessionWriter::flush(
 ///|
 /// 现在的 Unix 毫秒（header 时间戳用）。落盘器不在环上，直接问系统时间。
 fn now_unix_ms() -> Int64 {
-  @env.now().reinterpret_as_int64()
+  @sys.now()
 }
 
 ///|
 /// 追加写一个文件（按需建父目录）。
 async fn append_file(path : String, lines : Array[String]) -> Unit raise SessionError {
   let directory = parent_dir(path)
-  if !(@fs.exists(directory) catch { _ => false }) {
-    @fs.mkdir(directory, recursive=true) catch {
+  if !(@sys.exists(directory) catch { _ => false }) {
+    @sys.mkdir_p(directory) catch {
       err => raise SessionError::Write(path~, message=err.to_string())
     }
   }
   let text = lines.join("\n") + "\n"
-  @fs.write_file(path, text, append=true, create_mode=OpenOrCreate) catch {
+  @sys.write_text(path, text, append=true) catch {
     err => raise SessionError::Write(path~, message=err.to_string())
   }
 }
@@ -450,7 +450,7 @@ fn replay_line(
 }
 
 pub async fn load_session(path : String, session_id : String) -> LoadedSession? {
-  let exists = @fs.exists(path) catch { _ => false }
+  let exists = @sys.exists(path) catch { _ => false }
   if !exists {
     return None
   }
@@ -458,8 +458,7 @@ pub async fn load_session(path : String, session_id : String) -> LoadedSession? 
   // 旧格式（轨迹混在会话文件里）没有这个文件，读不到就当没有 —— 回放逻辑对
   // 两种布局都成立：先读轨迹（add/close/装载段），再读会话（header/消息）。
   let trace_path = path + ".trace"
-  let data = @fs.read_file(path) catch { _ => return None }
-  let text = @utf8.decode_lossy(data.binary())
+  let text = @sys.read_text_lossy(path) catch { _ => return None }
   let messages : Array[@message.Message] = []
   let trace = @trace.create_trace_tree(session_id)
   let prompt : @action.PromptInitData? = None
@@ -478,10 +477,9 @@ pub async fn load_session(path : String, session_id : String) -> LoadedSession? 
   let saw_ref : Ref[Bool] = Ref(saw_record)
   let hid_ref : Ref[String?] = Ref(header_id)
   let hcw_ref : Ref[String?] = Ref(header_cwd)
-  let trace_exists = @fs.exists(trace_path) catch { _ => false }
+  let trace_exists = @sys.exists(trace_path) catch { _ => false }
   if trace_exists {
-    let trace_data = @fs.read_file(trace_path) catch { _ => return None }
-    let trace_text = @utf8.decode_lossy(trace_data.binary())
+    let trace_text = @sys.read_text_lossy(trace_path) catch { _ => return None }
     for line in trace_text.split("\n") {
       replay_line(line.to_owned(), messages, trace_ref, prompt_ref, tools_ref, model_ref, seq_ref, saw_ref, hid_ref, hcw_ref)
     }
@@ -514,7 +512,7 @@ pub async fn load_session(path : String, session_id : String) -> LoadedSession? 
 ///
 /// 文件名以毫秒时间戳开头，所以字典序 = 时间序。
 pub async fn latest_session(directory : String) -> String? {
-  let entries = @fs.readdir(directory) catch { _ => return None }
+  let entries = @sys.readdir(directory) catch { _ => return None }
   let mut best : String? = None
   for entry in entries {
     if !entry.has_suffix(".jsonl") {
@@ -633,7 +631,7 @@ pub async fn find_file_by_id(directory : String, id : String) -> String? {
     return None
   }
   let suffix = "_" + id + ".jsonl"
-  let entries = @fs.readdir(directory) catch {
+  let entries = @sys.readdir(directory) catch {
     _ => return None
   }
   let mut best : String? = None
@@ -748,7 +746,7 @@ pub async fn resolve_session_paths(
     Some(path) => Some(path)
     None => {
       // cwd 目录里没有：扫其它 --<cwd>-- 目录（找不到要出声，见 load 侧）。
-      let entries = @fs.readdir(sessions_root) catch {
+      let entries = @sys.readdir(sessions_root) catch {
         _ => []
       }
       let mut hit : String? = None

@@ -1,0 +1,38 @@
+// 平台层：把「文件 / 子进程 / 标准流 / 终端」这四件 native 与 js 不一致的事
+// 收成一个 API。
+//
+// 只有这里的文件按目标分流：`*_native.mbt` 走 moonbitlang/async（fs / process /
+// stdio），`*_js.mbt` 走 Node 内建模块。上层（session / tools / provider /
+// context / cmd）只认这些函数名，于是同一份业务代码在两端都能编。
+//
+// 刻意不引 `moonbitlang/async/shell`：它的 `supported_targets` 是 native+wasm，
+// 一旦写进 import 表，js 目标连构建计划都排不出来。
+
+import {
+  "moonbitlang/async",
+  "moonbitlang/async/fs",
+  "moonbitlang/async/process",
+  "moonbitlang/async/stdio",
+  "moonbitlang/async/js_async",
+  "moonbitlang/core/env",
+  "moonbitlang/core/encoding/utf8",
+  "moonbitlang/core/json",
+}
+
+supported_targets = "js+native"
+
+warnings = "-29-implicit_impl_as_method-unused_async"
+
+options(
+  "native-stub": [ "tty.c" ],
+  targets: {
+    "fs_native.mbt": [ "native" ],
+    "fs_js.mbt": [ "js" ],
+    "proc_native.mbt": [ "native" ],
+    "proc_js.mbt": [ "js" ],
+    "stdio_native.mbt": [ "native" ],
+    "stdio_js.mbt": [ "js" ],
+    "term_native.mbt": [ "native" ],
+    "term_js.mbt": [ "js" ],
+  },
+)

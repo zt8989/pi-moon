@@ -74,7 +74,7 @@ Windows 输入法（见 [docs/tui.md](docs/tui.md) 的「与 ela 的差距」）
 ## 跑起来
 
 ```bash
-moon test                        # 105 个测试：纯表 + 整环 + 轨迹树 + provider + 工具 + 会话 + 压缩 + TUI
+moon test                        # 纯表 + 整环 + 轨迹树 + provider + 工具 + 会话 + 压缩 + TUI
 
 # 真实模型：读 ~/.pi/agent/ 下与 pi 同一份配置
 moon run cmd/pi-moon                    # 全屏 TUI（默认落盘，可 -c 恢复）
@@ -101,12 +101,32 @@ moon run cmd/pi-moon -- --no-session -p "..."
 
 # 离线演示：假 provider / 假工具，看两棵轨迹树
 moon run cmd/main
+
+# JS 后端：同一份代码，跑在 Node 上（需要 node ≥ 18，V8 的 fetch）
+moon build --target js cmd/pi-moon
+node _build/js/debug/build/pi-moon/cmd/pi-moon/pi-moon.js --list-models
+node _build/js/debug/build/pi-moon/cmd/pi-moon/pi-moon.js -p "用一句话说明什么是 Elm 架构"
+moon run cmd/main --target js            # 离线演示也能跑 js
+moon test --target js                    # 同一套测试换后端（直接造临目录的夹具仍只跑 native）
 ```
+
+**两个后端，一份代码**：`core/sys` 把 native 与 js 真正不一致的四件事
+（文件 / 子进程 / 标准流 / 终端）收成一套 API，`*_native.mbt` 走
+`moonbitlang/async`，`*_js.mbt` 走 Node 内建模块（`node:fs`、
+`node:child_process`、`process.stdout`）。上层（session / tools / provider / context /
+TUI）只认这些函数名，所以 `--target js` 编出来的 CLI 是完整的那一个：真模型、
+八个工具（bash / powershell 走 `child_process`）、会话落盘与恢复、全屏 TUI。
+细节与坑见 [docs/platform.md](docs/platform.md)。
+
+已知差异：js 端没有 `tty.c` 的 Windows 代码页切换（Node 自己按控制台 API 写
+UTF-16，不需要），VT 输出开关也是空操作（libuv 已经打开）；REPL 的逐行读用同步
+`readSync(0)`。
 
 `pi-moon` 的 **stdout 只有模型回答**（流式逐字），banner / 轨迹 / tokens 全在 stderr，
 所以 `pi-moon -p ... > answer.txt` 拿到的是干净的回答。
 
-工具链：`moon 0.1.20261023`（native 后端；`preferred_target = "native"`）。
+工具链：`moon 0.1.20261023`；native 是默认后端（`preferred_target = "native"`），
+`--target js` 为第二后端，两端都跑同一套测试。
 
 演示输出（节选）：
 
@@ -150,6 +170,7 @@ moon run cmd/main
 | `core/loop` | 两张表：`transition`（迁移）与 `wiring`（接线）；`Cmd` 数据；`reduce` |
 | `core/runtime` | 环的驱动者：即时归约 + 延迟 effect（`async`） |
 | `core/provider` | pi 配置解析 + OpenAI 兼容请求 / SSE + 真实 effect 表 |
+| `core/sys` | 平台层：文件 / 子进程 / 标准流 / 终端，按目标分流（native ↔ js，见 [docs/platform.md](docs/platform.md)） |
 | `core/tools` | 八个内置工具：定义 / 执行 / 与 pi 一致的启用状态 |
 | `core/session` | JSONL 会话：增量落盘、回放成 messages / trace / 装载段 |
 | `cmd/pi-moon` | 命令行 + 全屏 TUI：参数解析、会话落盘、`tui_*.mbt`（输入 / 排版 / 渲染 / 驱动） |
@@ -171,9 +192,9 @@ fs（发现与渲染都不碰环）；`core/tools` 只依赖 `action` / `message
 
 依赖三个外部包：
 
-- [`conglinyizhi/moonbit-llm-faceoff`](https://github.com/conglinyizhi/moonbit-llm-faceoff)
-  —— 连接设置与 SSE 解析（详见 [docs/provider.md](docs/provider.md)）；
-- [`moonbitlang/async`](https://github.com/moonbitlang/async) —— HTTP 客户端与事件循环；
+- [`moonbitlang/async`](https://github.com/moonbitlang/async) —— HTTP 客户端、文件与
+  子进程、事件循环；js 目标下只有 HTTP 客户端与事件循环来自它，其余由
+  `core/sys/*_js.mbt` 直接用 Node 内建模块实现；
 - [`mizchi/tui`](https://github.com/mizchi/tui.mbt) —— 终端渲染与按键。这里用的是
   **本仓库的 fork**（`vendor/tui` submodule，`zt8989/true-color` 分支，加了 24-bit
   颜色），通过 `moon.work` 当 workspace 成员接进来；`moon.mod` 里那 7 个旧清单
@@ -258,7 +279,8 @@ fs（发现与渲染都不碰环）；`core/tools` 只依赖 `action` / `message
 | `max_turns : Int?`（`None` = 不限） | MoonBit 没有 `Infinity`；语义与原项目默认值一致 |
 | Cmd 摊平在运行时入口做 | 原项目踩过「嵌套 LIST 静默吞 action」的坑，这里从结构上消掉 |
 | effect 是 `async`，但 `Dispatch.send()` 同步归约 | 流式 token 到达时 state 立刻更新；只有 effect 边界在 `await` |
-| provider 复用 faceoff 的 `Settings` + `parse_sse_line` | 消息体 / 工具 / usage / tool_call 分片由本项目补（见 provider 文档） |
+| provider 的端点设置 / SSE 解析在 `core/provider/endpoint.mbt`（本地实现） | 消息体 / 工具 / usage / tool_call 分片也在这里补（见 provider 文档） |
+| 文件 / 子进程 / 终端走 `core/sys`，按目标分流 native ↔ js | 上层代码不分端；只有 `*_native.mbt` / `*_js.mbt` 两套平台实现 |
 | 工具输出里 `edit` 只做严格匹配、`find` 用 rg 代替 fd | 不引模糊匹配与 fd 依赖；差异清单见 [docs/tools.md](docs/tools.md) |
 | 会话**一回合 flush 一次**，不是每个 action 都写 | 写盘不参与 reducer，也不打断流式输出；粒度取舍见 [docs/session.md](docs/session.md) |
 | `overflow` 只认几条常见报错文案，不像 pi 维护 40+ 家 | 漏判的代价是「该压没压」，下一轮还会失败，不破坏历史；见 [docs/compact.md](docs/compact.md) |

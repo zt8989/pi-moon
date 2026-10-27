@@ -56,9 +56,6 @@ pub fn CliError::to_string(self : CliError) -> String {
 }
 
 ///|
-extern "c" fn c_exit(code : Int32) -> Unit = "exit"
-
-///|
 struct CliArgs {
   mut prompt : String?
   mut provider : String?
@@ -429,7 +426,7 @@ async fn resolve_session_paths(
   match args.session {
     Some(target) => {
       // 先当路径：给的是文件路径就直接用（老习惯不变）。
-      if (@fs.exists(target) catch { _ => false }) {
+      if (@sys.exists(target) catch { _ => false }) {
         let id = @session.session_id_from_path(target)
         return Some(
           {
@@ -451,10 +448,10 @@ async fn resolve_session_paths(
             let id = @session.session_id_from_path(path)
             Some({ session: path, trace: path + ".trace", id, })
           }
-          None => Some(@session.new_session_paths(config.agent_dir, cwd, @env.now().reinterpret_as_int64()))
+          None => Some(@session.new_session_paths(config.agent_dir, cwd, @sys.now()))
         }
       } else {
-        Some(@session.new_session_paths(config.agent_dir, cwd, @env.now().reinterpret_as_int64()))
+        Some(@session.new_session_paths(config.agent_dir, cwd, @sys.now()))
       }
     }
   }
@@ -488,7 +485,7 @@ async fn persist(
 
 ///|
 async fn eprintln(text : String) -> Unit {
-  @stdio.stderr.write(text + "\n") catch {
+  @sys.write_err(text + "\n") catch {
     _ => ()
   }
 }
@@ -746,7 +743,7 @@ async fn run(args : CliArgs) -> Unit raise {
   let paths = resolve_session_paths(config, args, cwd)
   let session_id = match paths {
     Some(paths) => paths.id
-    None => "s-" + @env.now().to_string()
+    None => "s-" + @sys.now().to_string()
   }
   let loaded = match paths {
     Some(paths) =>
@@ -796,14 +793,14 @@ async fn run(args : CliArgs) -> Unit raise {
     on_content: async fn(text) {
       // TUI 下不往 stdout 写字：整帧由渲染循环统一画，这里再写就成两路输出。
       if !tui_mode {
-        @stdio.stdout.write(text) catch {
+        @sys.write_out(text) catch {
           _ => ()
         }
       }
     },
     on_thinking: async fn(text) {
       if !tui_mode && args.show_thinking {
-        @stdio.stderr.write(text) catch {
+        @sys.write_err(text) catch {
           _ => ()
         }
       }
@@ -816,7 +813,7 @@ async fn run(args : CliArgs) -> Unit raise {
           None => text
         }
         let (line, _) = @tools.truncate_line(line, max_chars=100)
-        @stdio.stderr.write("\r\u{001b}[2K[" + tool_name + "] " + line) catch {
+        @sys.write_err("\r\u{001b}[2K[" + tool_name + "] " + line) catch {
           _ => ()
         }
       }
@@ -844,7 +841,7 @@ async fn run(args : CliArgs) -> Unit raise {
       session_id,
     ),
     table,
-    fn() { @env.now().reinterpret_as_int64() },
+    fn() { @sys.now() },
   )
   bridge.agent = Some(agent)
   bridge.skills = skill_registry.skills
@@ -986,8 +983,7 @@ async fn run(args : CliArgs) -> Unit raise {
       if args.interactive {
         None
       } else {
-        let text = @stdio.stdin.read_all() catch { _ => "" }
-        let text = text.text() catch { _ => "" }
+        let text = @sys.read_stdin_all() catch { _ => "" }
         Some(text.trim(chars=" \t\r\n").to_owned())
       }
   }
@@ -1009,7 +1005,7 @@ async fn run(args : CliArgs) -> Unit raise {
             return
           }
         }
-        @stdio.stdout.write("\n") catch {
+        @sys.write_out("\n") catch {
           _ => ()
         }
         maybe_auto_compact(agent, config.compaction.enabled)
@@ -1020,10 +1016,10 @@ async fn run(args : CliArgs) -> Unit raise {
   // 多轮 REPL。
   if args.interactive {
     while true {
-      @stdio.stderr.write("\n> ") catch {
+      @sys.write_err("\n> ") catch {
         _ => ()
       }
-      let line = @stdio.stdin.read_until("\n") catch { _ => None }
+      let line = @sys.read_stdin_until("\n") catch { _ => None }
       let line = match line {
         Some(line) => line
         None => break
@@ -1107,7 +1103,7 @@ async fn run(args : CliArgs) -> Unit raise {
           }
         }
       }
-      @stdio.stdout.write("\n") catch {
+      @sys.write_out("\n") catch {
         _ => ()
       }
       maybe_auto_compact(agent, config.compaction.enabled)
@@ -1116,7 +1112,7 @@ async fn run(args : CliArgs) -> Unit raise {
   }
   // 工具进度是原地刷新的一行；收尾时擦掉它，别把后面的报告弄脏。
   if args.show_tool_progress {
-    @stdio.stderr.write("\r\u{001b}[2K") catch {
+    @sys.write_err("\r\u{001b}[2K") catch {
       _ => ()
     }
   }
@@ -1144,14 +1140,14 @@ async fn usage_failure(error : String) -> Unit {
   eprintln("error: " + error)
   eprintln("")
   eprintln(usage)
-  c_exit(1)
+  @sys.exit_with(1)
 }
 
 ///|
 /// 运行期错误（配置 / 网络 / 预算）：只打一句，不糊一屏用法。
 async fn runtime_failure(error : String) -> Unit {
   eprintln("error: " + error)
-  c_exit(1)
+  @sys.exit_with(1)
 }
 
 ///|
@@ -1167,11 +1163,7 @@ fn cli_error_text(err : CliError) -> String {
 
 ///|
 async fn main {
-  let raw = @env.args()
-  let argv : Array[String] = []
-  for index in 1..<raw.length() {
-    argv.push(raw[index])
-  }
+  let argv = @sys.cli_args()
   let args = parse_args(argv) catch {
     err => {
       usage_failure(cli_error_text(err))

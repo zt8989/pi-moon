@@ -4,7 +4,7 @@
 // 文本增量、思考增量、工具调用的分片参数、usage、finish_reason、[DONE]。
 //
 // 简单的事件（文本 / 思考 / usage / finish / done）直接交给
-// `@faceoff.parse_sse_line` —— SSE 协议与各家字段的容忍度由库负责；本文件只额外
+// `parse_sse_line` —— SSE 协议与各家字段的容忍度由库负责；本文件只额外
 // 处理它刻意忽略的 `delta.tool_calls`。
 
 ///|
@@ -29,7 +29,7 @@ pub(all) struct StreamAccumulator {
   content : StringBuilder
   reasoning : StringBuilder
   drafts : Array[ToolCallDraft]
-  mut usage : @faceoff.TokenUsage?
+  mut usage : TokenUsage?
   mut finish_reason : String?
   mut done : Bool
 }
@@ -190,7 +190,7 @@ fn StreamAccumulator::apply_usage(
       }
   }
   self.usage = Some(
-    @faceoff.TokenUsage::new(prompt_tokens, completion_tokens, reasoning_tokens),
+    TokenUsage::new(prompt_tokens, completion_tokens, reasoning_tokens),
   )
 }
 
@@ -206,25 +206,25 @@ pub fn StreamAccumulator::apply_line(
   // 先补工具分片与 usage：一个 chunk 里 content 与它们理论上可以同时出现。
   self.apply_tool_deltas(line)
   self.apply_usage(line)
-  let event = @faceoff.parse_sse_line(line)
+  let event = parse_sse_line(line)
   let delta = match event {
-    Some(@faceoff.Content(fragment)) => {
+    Some(Content(fragment)) => {
       self.content.write_string(fragment)
       DeltaContent(fragment)
     }
-    Some(@faceoff.Reasoning(fragment)) => {
+    Some(Reasoning(fragment)) => {
       self.reasoning.write_string(fragment)
       DeltaReasoning(fragment)
     }
-    Some(@faceoff.Usage(usage)) => {
+    Some(Usage(usage)) => {
       self.usage = Some(usage)
       DeltaNone
     }
-    Some(@faceoff.Finish(reason)) => {
+    Some(Finish(reason)) => {
       self.finish_reason = Some(reason)
       DeltaNone
     }
-    Some(@faceoff.Done) => {
+    Some(Done) => {
       self.done = true
       DeltaNone
     }
@@ -269,7 +269,7 @@ pub fn StreamAccumulator::tool_calls(
 }
 
 ///|
-fn usage_of(raw : @faceoff.TokenUsage, model : PiModelInfo) -> @message.Usage {
+fn usage_of(raw : TokenUsage, model : PiModelInfo) -> @message.Usage {
   let input = raw.prompt_tokens
   let output = raw.completion_tokens
   let cost = (

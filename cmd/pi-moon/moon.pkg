@@ -11,7 +11,7 @@ import {
   "pi-moon/core/provider",
   "pi-moon/core/tools",
   "pi-moon/core/session",
-  "moonbitlang/core/immut/hashmap" @ihm,
+  "pi-moon/core/sys",
   "NoahLiu/mdparse" @md,
   "mizchi/tui/core",
   "mizchi/tui/render",
@@ -19,21 +19,20 @@ import {
   "mizchi/tui/io",
   "mizchi/tui/vnode",
   "moonbitlang/async",
-  "moonbitlang/async/fs",
-  "moonbitlang/async/stdio",
   "moonbitlang/core/env",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/json",
   "moonbitlang/core/math",
+  "moonbitlang/core/ref",
   "moonbitlang/core/string",
 }
 
 pkgtype(kind: "executable")
 
-supported_targets = "+native"
+supported_targets = "js+native"
 
 warnings = "-79-67"
 
-options(
-  "native-stub": [ "tty.c" ],
-)
+import {
+  "moonbitlang/core/immut/hashmap" @ihm,
+} for "wbtest"

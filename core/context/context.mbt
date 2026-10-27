@@ -31,14 +31,14 @@ fn strip_bom(text : String) -> String {
 async fn load_context_file_from_dir(directory : String) -> ContextFile? {
   for name in context_candidates {
     let path = directory + "/" + name
-    let exists = @fs.exists(path) catch { _ => false }
+    let exists = @sys.exists(path) catch { _ => false }
     if exists {
-      let kind = @fs.kind(path) catch { _ => continue }
-      if kind != @fs.Regular {
+      let kind = @sys.kind(path) catch { _ => continue }
+      if kind != @sys.Regular {
         continue
       }
-      let data = @fs.read_file(path) catch { _ => continue }
-      return Some({ path, content: strip_bom(@utf8.decode_lossy(data.binary())) })
+      let text = @sys.read_text_lossy(path) catch { _ => continue }
+      return Some({ path, content: strip_bom(text) })
     }
   }
   None

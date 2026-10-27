@@ -149,10 +149,10 @@ async fn expand_skill_input(
     return text
   }
   @context.expand_skill_command(text, skills, async fn(path : String) -> String {
-    let data = @fs.read_file(path) catch {
+    let text = @sys.read_text_lossy(path) catch {
       err => abort("read: " + err.to_string())
     }
-    @utf8.decode_lossy(data.binary())
+    text
   })
 }
 
@@ -200,25 +200,13 @@ pub fn wants_tui(args : CliArgs) -> Bool {
   args.prompt is None &&
   !args.list_models &&
   !args.help &&
-  pi_stdin_is_tty() != 0 &&
-  pi_stdout_is_tty() != 0
+  @sys.stdin_is_tty() &&
+  @sys.stdout_is_tty()
 }
 
 ///|
-extern "c" fn pi_stdin_is_tty() -> Int32 = "pi_stdin_is_tty"
-
-///|
-extern "c" fn pi_stdout_is_tty() -> Int32 = "pi_stdout_is_tty"
-
-///|
-extern "c" fn pi_enable_vt_output() -> Unit = "pi_enable_vt_output"
-
-///|
-extern "c" fn pi_restore_vt_output() -> Unit = "pi_restore_vt_output"
-
-///|
 fn now_ms() -> Int64 {
-  @env.now().reinterpret_as_int64()
+  @sys.now()
 }
 
 ///|
@@ -283,7 +271,7 @@ pub async fn run_tui(
     session_id
   }
   tui.session_id = session_id
-  pi_enable_vt_output()
+  @sys.enable_vt_output()
   let color_mode = tui_color_mode()
   let theme = load_theme(config.agent_dir)
   tui.palette = Palette::from_theme(theme, color_mode)
@@ -313,7 +301,7 @@ pub async fn run_tui(
     Some(usage) => usage.total_tokens.to_string() + " tok"
     None => "0 tok"
   }
-  @stdio.stderr.write(
+  @sys.write_err(
     "[session] " +
     tui.session_label +
     " · " +
@@ -328,7 +316,7 @@ pub async fn run_tui(
   // —— 那条命令要能真的跑起来；没说过话的空会话恢复出来也是空的。
   if !tui.session_id.is_empty() && !tui.session_path.is_empty() &&
     state.messages.length() > 0 {
-    @stdio.stderr.write(
+    @sys.write_err(
       "To resume this session: pi-moon --session " + tui.session_id + "\n",
     ) catch {
       _ => ()
@@ -336,12 +324,12 @@ pub async fn run_tui(
   }
   match failure {
     Some(error) =>
-      @stdio.stderr.write("[tui] " + error + "\n") catch {
+      @sys.write_err("[tui] " + error + "\n") catch {
         _ => ()
       }
     None => ()
   }
-  pi_restore_vt_output()
+  @sys.restore_vt_output()
 }
 
 ///|
@@ -1231,7 +1219,7 @@ async fn open_session_picker(
   // 也能恢复 —— 文件头里带 cwd，恢复后接着那份写）。
   let root = session_directory(config)
   let encoded = @session.encode_cwd(cwd)
-  let names = @fs.readdir(root) catch {
+  let names = @sys.readdir(root) catch {
     _ => {
       set_notice(tui, "没有会话目录：" + root)
       return
@@ -1239,14 +1227,14 @@ async fn open_session_picker(
   }
   let files : Array[SessionFile] = []
   let add_dir = async fn(directory : String) -> Unit {
-    let entries = @fs.readdir(directory) catch {
+    let entries = @sys.readdir(directory) catch {
       _ => return
     }
     for name in entries {
       if name.has_suffix(".jsonl") {
         let path = directory + "/" + name
-        let (mtime, _) = @fs.mtime(path) catch { _ => (0L, 0) }
-        let size = @fs.file_size(path) catch { _ => 0L }
+        let mtime = @sys.mtime(path) catch { _ => 0L }
+        let size = @sys.file_size(path) catch { _ => 0L }
         files.push({ name, path, mtime, size, })
       }
     }
@@ -1273,7 +1261,7 @@ async fn open_session_picker(
     files[at] = current
     index = index + 1
   }
-  let now = @env.now().reinterpret_as_int64() / 1000L
+  let now = @sys.now() / 1000L
   let items : Array[PickerItem] = []
   let mut selected = 0
   for at in 0..<files.length() {

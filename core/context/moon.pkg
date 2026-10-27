@@ -15,17 +15,26 @@
 //     node_modules / .git，口径一致）；
 //   - 重名判定不做 realpath 去重（符号链接指向同一文件会算成重名）。
 //
-// 本包只依赖 fs：发现与渲染都可以脱离环单独测。
+// 本包只依赖平台层的 fs：发现与渲染都可以脱离环单独测。
 
 import {
-  "moonbitlang/async/fs",
-  "moonbitlang/core/encoding/utf8",
+  "pi-moon/core/sys",
 }
 
-supported_targets = "+native"
+supported_targets = "js+native"
 
 warnings = "-79-67"
 
 import {
   "moonbitlang/async",
+  "moonbitlang/async/fs",
+  "moonbitlang/core/encoding/utf8",
 } for "wbtest"
+
+// 夹具直接落盘（@fs + 真实文件系统），只在 native 上跑。
+options(
+  targets: {
+    "context_wbtest.mbt": [ "native" ],
+    "skills_wbtest.mbt": [ "native" ],
+  },
+)

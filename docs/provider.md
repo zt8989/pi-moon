@@ -1,4 +1,4 @@
-# Provider：复用 faceoff，读 pi 的配置
+# Provider：读 pi 的配置，走 OpenAI 兼容线格式
 
 v0.2 把 `RunAgent` 接到了真实模型上。形状仍然是「effect 表注入」：
 
@@ -12,23 +12,21 @@ reducer ──► Cmd::RunAgent ──► Agent 的 deferred 队列
                           └─ 读 SSE → dispatch LlmStarted/Delta/Done/Failed
 ```
 
-## 为什么用 faceoff，以及用到哪一层
+## 端点设置与 SSE 解析（本地的一份）
 
-[`conglinyizhi/moonbit-llm-faceoff`](https://github.com/conglinyizhi/moonbit-llm-faceoff)
-是 MoonBit 的 OpenAI 兼容客户端。本项目的分工：
+`core/provider/endpoint.mbt` 里是 `Settings` / `TokenUsage` / `SseEvent` /
+`parse_sse_line` 的本地实现 —— 逻辑照 [conglinyizhi/moonbit-llm-faceoff](https://github.com/conglinyizhi/moonbit-llm-faceoff)
+@0.2.0（MIT）那一小块搬过来的。不再直接依赖它，因为它 `moon.pkg` 里写的是
+`supported_targets = "+native"`，只要出现在 import 表里，js 目标连构建计划都排不出来。
 
-| 用它 | 不用它 |
-| --- | --- |
-| `Settings`（baseUrl → URL、凭证字段） | `request_body`（只接受一个 prompt，组不出 messages 历史） |
-| `parse_sse_line` / `SseEvent`（SSE 的 content / reasoning / usage / finish / done） | `ask` / `stream_parts`（同样是 prompt-only） |
-| `TokenUsage`（prompt / completion / reasoning 三个数） | 它自带的 CLI / bench / web |
+分工仍和以前一样：**连接与协议在本项目内，消息体与工具调用也在本项目内**。
+搬过来的只有三样纯逻辑：`Settings`（baseUrl → URL）、`TokenUsage`、
+`parse_sse_line`（content / reasoning / usage / finish / done）；`request_body` /
+`ask` / `stream_parts` / 自带 CLI 都不用（agent 的请求天然是「一整段 messages +
+工具定义」，而库的公开 API 是「一句话进、一段话出」）。
 
-也就是说：**连接与协议用库，消息体与工具调用由本项目补上**。原因是 agent 的请求
-天然是「一整段 messages + 工具定义」，而 faceoff 的公开 API 是「一句话进、一段话出」。
-如果上游以后提供 messages 入口，`request.mbt` 可以直接换成它。
-
-传输仍然走 `moonbitlang/async` 的 `@http.post_stream`（与 faceoff 内部同一条路），
-每读一行套一个**空闲**超时。
+传输仍然走 `moonbitlang/async` 的 `@http.post_stream`，每读一行套一个**空闲**超时。
+native 走 socket + TLS，js 走 `fetch`（`@http` 自己按目标选了实现）。
 
 ## 配置：与 pi 同址、同形状
 
@@ -160,9 +158,9 @@ system prompt（state.prompt.system_prompt，放在最前）
   → 非 2xx：读 body → LlmFailed(kind 由状态码分类)
   → 逐行 read_sse_line_or_abort：读行（套 idle_timeout_ms 空闲超时）与
     中断轮询（每 100ms 查 should_abort）并跑，谁先完成谁赢
-      → @faceoff.parse_sse_line：content / reasoning / usage / finish / done
-      → 额外解析 delta.tool_calls（库把它归进 Ignore）
-      → 额外解析搭在 finish chunk 上的 usage（库只认空 choices 的 usage）
+      → parse_sse_line：content / reasoning / usage / finish / done
+      → 额外解析 delta.tool_calls（本地解析把它归进 Ignore）
+      → 额外解析搭在 finish chunk 上的 usage（本地实现只认空 choices 的 usage）
       → DeltaContent / DeltaReasoning：先交给 ProviderHooks（写终端），
         再 dispatch LlmDelta / LlmThinking（当场归约）
   → 流没有任何 content / 工具 / finish 就结束：按截断处理，LlmFailed(Network)
@@ -241,5 +239,5 @@ Elm 架构是一种把界面程序拆成 Model、View、Update 三部分、以�
 - **价格**：`models.json` 的模型没写 `cost` 时，`tokens` 照常显示，`cost` 不显示。
 - **不读系统代理环境变量**：`@http` 客户端不会自动用 `HTTPS_PROXY`。需要走代理时
   目前只能直连；加 `--proxy` 是后续的事。
-- **`moon` 的一条依赖警告**：`faceoff → rabbita → hackwaly/moonback@0.8.1`
-  已弃用。这是上游依赖链，不影响构建；等 faceoff / rabbita 升级后自然消失。
+- **`moon` 的一条依赖警告**：`rabbita → hackwaly/moonback@0.8.1` 已弃用。这是
+  上游依赖链，来自 vendored tui 的传递依赖，不影响构建。

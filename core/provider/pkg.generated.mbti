@@ -2,7 +2,6 @@
 package "pi-moon/core/provider"
 
 import {
-  "conglinyizhi/moonbit-llm-faceoff",
   "moonbitlang/core/debug",
   "pi-moon/core/compact",
   "pi-moon/core/message",
@@ -28,6 +27,8 @@ pub fn effect_table_with_tools(PiConfig, ChatOptions, async (@state.AgentState, 
 pub async fn load_pi_config(agent_dir? : String) -> PiConfig
 
 pub fn noop_hooks() -> ProviderHooks
+
+pub fn parse_sse_line(String) -> SseEvent?
 
 pub fn provider_env_key(String) -> String
 
@@ -121,13 +122,35 @@ pub(all) struct ResolvedProvider {
   agent_dir : String
 }
 pub fn ResolvedProvider::describe(Self) -> String
-pub fn ResolvedProvider::faceoff_settings(Self, String) -> @moonbit-llm-faceoff.Settings
+pub fn ResolvedProvider::endpoint_settings(Self, String) -> Settings
+
+pub(all) struct Settings {
+  mut api_key : String
+  mut base_url : String
+  mut model : String
+  mut system : String
+  mut temperature : Double?
+  mut max_tokens : Int32?
+  mut timeout_ms : Int32
+  mut enable_thinking : Bool
+  mut reasoning_effort : String?
+} derive(Eq)
+pub fn Settings::chat_completions_url(Self) -> String
+
+pub(all) enum SseEvent {
+  Content(String)
+  Reasoning(String)
+  Usage(TokenUsage)
+  Finish(String)
+  Done
+  Ignore
+} derive(Eq, @debug.Debug)
 
 pub(all) struct StreamAccumulator {
   content : StringBuilder
   reasoning : StringBuilder
   drafts : Array[ToolCallDraft]
-  mut usage : @moonbit-llm-faceoff.TokenUsage?
+  mut usage : TokenUsage?
   mut finish_reason : String?
   mut done : Bool
 }
@@ -144,6 +167,14 @@ pub(all) enum StreamDelta {
   DeltaContent(String)
   DeltaReasoning(String)
 } derive(Eq, @debug.Debug)
+
+pub(all) struct TokenUsage {
+  prompt_tokens : Int32
+  completion_tokens : Int32
+  reasoning_tokens : Int32
+} derive(Eq, @debug.Debug)
+pub fn TokenUsage::new(Int32, Int32, Int32) -> Self
+pub fn TokenUsage::reasoning_ratio(Self) -> Double
 
 pub(all) struct ToolCallDraft {
   index : Int32

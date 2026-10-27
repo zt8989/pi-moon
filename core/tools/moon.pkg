@@ -8,16 +8,25 @@
 import {
   "pi-moon/core/action",
   "pi-moon/core/message",
+  "pi-moon/core/sys",
   "moonbitlang/async",
-  "moonbitlang/async/fs",
-  "moonbitlang/async/process",
-  "moonbitlang/async/shell",
   "moonbitlang/core/env",
   "moonbitlang/core/json",
   "moonbitlang/core/encoding/base64",
   "moonbitlang/core/encoding/utf8",
 }
 
-supported_targets = "+native"
+supported_targets = "js+native"
 
 warnings = "-79-67"
+
+import {
+  "moonbitlang/async/fs",
+} for "wbtest"
+
+// 工具测试自己造临时目录（@fs + 真实文件系统），只在 native 上跑。
+options(
+  targets: {
+    "tools_wbtest.mbt": [ "native" ],
+  },
+)

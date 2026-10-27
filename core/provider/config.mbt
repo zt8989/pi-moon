@@ -471,17 +471,11 @@ fn trim_trailing_slash(path : String) -> String {
 
 ///|
 async fn read_json_file(path : String, diagnostics : Array[String]) -> Json? {
-  let exists = @fs.exists(path) catch { _ => false }
+  let exists = @sys.exists(path) catch { _ => false }
   if !exists {
     return None
   }
-  let data = @fs.read_file(path) catch {
-    err => {
-      diagnostics.push(path + ": " + err.to_string())
-      return None
-    }
-  }
-  let text = data.text() catch {
+  let text = @sys.read_text(path) catch {
     err => {
       diagnostics.push(path + ": " + err.to_string())
       return None
@@ -798,14 +792,14 @@ pub(all) struct ResolvedProvider {
 }
 
 ///|
-/// 交给 faceoff 的连接设置：URL 拼接、默认值都与库保持同一套。
+/// 交给传输层的连接设置：URL 拼接与默认值集中在这里。
 ///
-/// `system` 只影响 `@faceoff.request_body`（本项目不用它 —— agent 需要完整的
+/// `system` 只影响 `request_body`（本项目不用它 —— agent 需要完整的
 /// messages 历史），但填上它让 `Settings` 是一个完整可用的对象。
-pub fn ResolvedProvider::faceoff_settings(
+pub fn ResolvedProvider::endpoint_settings(
   self : ResolvedProvider,
   system_prompt : String,
-) -> @faceoff.Settings {
+) -> Settings {
   {
     api_key: self.api_key,
     base_url: self.base_url,

@@ -20,7 +20,6 @@ preferred_target = "native"
 description = "Elm-architecture code agent core with a pi-compatible OpenAI provider, in MoonBit"
 
 import {
-  "conglinyizhi/moonbit-llm-faceoff@0.2.0",
   // markdown 解析：CommonMark CST（mizchi/markdown 的解析链路 fork），
   // TUI 只负责把 AST 画成带样式的行。
   "NoahLiu/mdparse@0.1.0",

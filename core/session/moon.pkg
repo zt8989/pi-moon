@@ -3,20 +3,27 @@ import {
   "pi-moon/core/message",
   "pi-moon/core/state",
   "pi-moon/core/trace",
-  "moonbitlang/async/fs",
+  "pi-moon/core/sys",
   "moonbitlang/core/json",
-  "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/immut/hashmap" @ihm,
   "moonbitlang/core/random" @random,
-  "moonbitlang/core/env",
 }
 
 import {
   "pi-moon/core/compact",
   "pi-moon/core/loop",
   "moonbitlang/async",
+  "moonbitlang/async/fs",
+  "moonbitlang/core/encoding/utf8",
 } for "wbtest"
 
-supported_targets = "+native"
+supported_targets = "js+native"
 
 warnings = "-79-67"
+
+// 会话测试会往临时目录里真写文件，只在 native 上跑。
+options(
+  targets: {
+    "session_wbtest.mbt": [ "native" ],
+  },
+)

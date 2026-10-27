@@ -142,10 +142,9 @@ async fn load_skill_file(
   name_fallback~ : String,
 ) -> (Skill?, Array[String]) {
   let diagnostics : Array[String] = []
-  let data = @fs.read_file(path) catch {
+  let text = @sys.read_text_lossy(path) catch {
     err => return (None, [skill_warning("读取失败：" + err.to_string(), path)])
   }
-  let text = @utf8.decode_lossy(data.binary())
   let frontmatter = parse_frontmatter(text)
   let description = frontmatter.fields.get("description").unwrap_or("")
   if description.is_empty() {
@@ -182,7 +181,7 @@ async fn scan_skills_dir(
   include_root_files : Bool,
   registry : SkillRegistry,
 ) -> Unit {
-  let entries = @fs.readdir(directory, include_hidden=true) catch {
+  let entries = @sys.readdir(directory, include_hidden=true) catch {
     _ => return
   }
   // 目录里有 SKILL.md → 它是技能根，收下就走，不再递归。
@@ -212,12 +211,12 @@ async fn scan_skills_dir(
       continue
     }
     let path = directory + "/" + entry
-    let kind = @fs.kind(path) catch { _ => continue }
+    let kind = @sys.kind(path) catch { _ => continue }
     match kind {
-      @fs.Directory => {
+      @sys.Directory => {
         scan_skills_dir(path, scope, false, registry)
       }
-      @fs.Regular =>
+      @sys.Regular =>
         if include_root_files && entry.has_suffix(".md") {
           let (skill, diagnostics) = load_skill_file(
             path,
@@ -244,20 +243,20 @@ async fn add_skill_path(
   scope : String,
   registry : SkillRegistry,
 ) -> Unit {
-  let exists = @fs.exists(raw_path) catch { _ => false }
+  let exists = @sys.exists(raw_path) catch { _ => false }
   if !exists {
     registry.diagnostics.push(skill_warning("路径不存在", raw_path))
     return
   }
-  let kind = @fs.kind(raw_path) catch {
+  let kind = @sys.kind(raw_path) catch {
     err => {
       registry.diagnostics.push(skill_warning(err.to_string(), raw_path))
       return
     }
   }
   match kind {
-    @fs.Directory => scan_skills_dir(raw_path, scope, true, registry)
-    @fs.Regular =>
+    @sys.Directory => scan_skills_dir(raw_path, scope, true, registry)
+    @sys.Regular =>
       if raw_path.has_suffix(".md") {
         let file_name = match raw_path.rev_find("/") {
           Some(index) => raw_path[index + 1:].to_owned()

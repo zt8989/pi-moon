@@ -66,12 +66,11 @@ pub async fn load_theme(agent_dir : String) -> Theme {
 /// `settings.json` 的 `theme` 字段（pi 与 pi-moon 读同一份文件）。
 async fn read_theme_setting(agent_dir : String) -> String? {
   let path = agent_dir + "/settings.json"
-  let exists = @fs.exists(path) catch { _ => false }
+  let exists = @sys.exists(path) catch { _ => false }
   if !exists {
     return None
   }
-  let data = @fs.read_file(path) catch { _ => return None }
-  let text = data.text() catch { _ => return None }
+  let text = @sys.read_text(path) catch { _ => return None }
   let json = @json.parse(text) catch { _ => return None }
   match json {
     Object(obj) =>
@@ -167,12 +166,11 @@ fn theme_candidates(agent_dir : String, name : String) -> Array[String] {
 
 ///|
 async fn read_theme_file(path : String, name : String) -> Theme? {
-  let exists = @fs.exists(path) catch { _ => false }
+  let exists = @sys.exists(path) catch { _ => false }
   if !exists {
     return None
   }
-  let data = @fs.read_file(path) catch { _ => return None }
-  let text = data.text() catch { _ => return None }
+  let text = @sys.read_text(path) catch { _ => return None }
   parse_theme(text, name)
 }
 

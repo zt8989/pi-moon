@@ -84,7 +84,7 @@ moon run cmd/pi-moon -- --no-tools -p "..."
 | 差异 | 原因 |
 | --- | --- |
 | `edit` 只做**严格匹配** | pi 还有 NFKC / 智能引号 / 行尾空白的模糊匹配兜底。严格匹配更可预测，失败信息也照抄 pi。 |
-| `find` 用 `rg --files` + 本地 glob 匹配器 | 不依赖 fd；`*` / `?` / `**` / `[...]` 都支持。没有 `rg` 时退回 `@shell.glob`（此时**不读** .gitignore）。 |
+| `find` 用 `rg --files` + 本地 glob 匹配器 | 不依赖 fd；`*` / `?` / `**` / `[...]` 都支持。没有 `rg` 时退回 `@sys.glob`（两端同一份实现，此时**不读** .gitignore）。 |
 | `read` 的图片不做缩放 | pi 会把大图重新编码；这里原样转成 `data:` URL 发给模型。 |
 | `ToolProgress` 的快照是**尾部截断后的全文** | 与 pi 的 accumulator 口径一致；超过 50KB 时早期内容会被裁掉。 |
 

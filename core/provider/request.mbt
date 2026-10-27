@@ -3,7 +3,7 @@
 // 这是 faceoff 没有覆盖的那一半 —— 它的 `request_body` 只接受一个 prompt
 // （system + user 两条消息），而 agent 需要完整的 messages 历史、工具定义与
 // 思考参数。线格式仍是同一套：请求走 `Settings::chat_completions_url()`，
-// SSE 用 `@faceoff.parse_sse_line` 解析。
+// SSE 用 `parse_sse_line` 解析。
 
 ///|
 pub(all) struct ChatOptions {

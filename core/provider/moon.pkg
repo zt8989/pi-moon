@@ -6,16 +6,17 @@ import {
   "pi-moon/core/state",
   "pi-moon/core/runtime",
   "pi-moon/core/tools",
-  "conglinyizhi/moonbit-llm-faceoff" @faceoff,
+  "pi-moon/core/sys",
   "moonbitlang/async",
   "moonbitlang/async/http",
-  "moonbitlang/async/fs",
   "moonbitlang/core/json",
   "moonbitlang/core/env",
   "moonbitlang/core/ref",
 }
 
 warnings = "-79-67"
+
+supported_targets = "js+native"
 
 // 提供方按 OpenAI 兼容线格式工作，配置格式直接读 pi 的那三份文件：
 //   <agent dir>/models.json   provider / baseUrl / api / 模型目录 / 可选 apiKey
@@ -27,8 +28,14 @@ warnings = "-79-67"
 
 import {
   "pi-moon/core/loop",
+  "moonbitlang/async/fs",
   "moonbitlang/async/http",
   "moonbitlang/async/socket",
 } for "wbtest"
 
-supported_targets = "+native"
+// 提供方测试会真起 socket / 读落盘配置，只在 native 上跑。
+options(
+  targets: {
+    "provider_wbtest.mbt": [ "native" ],
+  },
+)

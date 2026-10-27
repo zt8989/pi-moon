@@ -479,9 +479,9 @@ test "斜杠命令：/resume 开会话面板" {
 
 ///|
 async test "会话面板：列出 sessions 目录，新的在前，当前会话打点" {
-  let root = @fs.tmpdir(prefix="pi-moon-tui-sessions-")
+  let root = @sys.tmpdir("pi-moon-tui-sessions-")
   let dir = root + "/sessions/--C--test--"
-  @fs.mkdir(dir, recursive=true) catch {
+  @sys.mkdir_p(dir) catch {
     _ => abort("mkdir sessions failed")
   }
   let path_old = dir + "/1000.jsonl"
@@ -528,7 +528,7 @@ async test "会话面板：列出 sessions 目录，新的在前，当前会话�
     }
     None => abort("picker not opened")
   }
-  @fs.rmdir(root, recursive=true) catch {
+  @sys.remove_dir(root) catch {
     _ => ()
   }
 }

@@ -1,8 +1,8 @@
 // 真实 provider 的 effect 表：用 faceoff 的线协议 + moonbitlang/async 的 HTTP 客户端。
 //
 // 分工：
-//   - `@faceoff.Settings` 负责 baseUrl → /chat/completions 的拼接与凭证字段；
-//   - `@faceoff.parse_sse_line` 负责 SSE 协议（文本 / 思考 / usage / finish / done）；
+//   - `Settings` 负责 baseUrl → /chat/completions 的拼接与凭证字段；
+//   - `parse_sse_line` 负责 SSE 协议（文本 / 思考 / usage / finish / done）；
 //   - 本文件补上 agent 需要的两样：**messages 历史**（`request.mbt`）与
 //     **delta.tool_calls**（`sse.mbt`）；
 //   - 传输走 `@http.post_stream`，每一行读取套一个空闲超时。
@@ -61,7 +61,7 @@ async fn stream_completion(
 ) -> Unit {
   dispatch.send(@action.LlmStarted)
   let body = build_request_body(resolved, state, options, true).stringify()
-  let settings = resolved.faceoff_settings(state.prompt.system_prompt)
+  let settings = resolved.endpoint_settings(state.prompt.system_prompt)
   let url = settings.chat_completions_url()
   let headers : @http.Headers = Map([])
   headers["Content-Type"] = "application/json"
@@ -403,7 +403,7 @@ async fn run_tools_with_hooks(
             tool_name: skipped.name,
             content: [@message.Text("用户中断，未执行")],
             is_error: true,
-            timestamp: @env.now().reinterpret_as_int64(),
+            timestamp: @sys.now(),
           }),
         )
         index = index + 1
@@ -440,7 +440,7 @@ async fn run_tools_with_hooks(
         tool_name: call.name,
         content: outcome.content,
         is_error: outcome.is_error,
-        timestamp: @env.now().reinterpret_as_int64(),
+        timestamp: @sys.now(),
       }),
     )
     index = index + 1
@@ -508,7 +508,7 @@ async fn summarization_call(
 ) -> Result[SummaryResult, String] {
   let message : @message.Message = @message.UserMsg({
     content: [@message.Text(user_text)],
-    timestamp: @env.now().reinterpret_as_int64(),
+    timestamp: @sys.now(),
     compaction_summary: false,
     tokens_before: 0,
   })
@@ -518,7 +518,7 @@ async fn summarization_call(
     [message],
     max_tokens,
   ).stringify()
-  let settings = resolved.faceoff_settings(system_prompt)
+  let settings = resolved.endpoint_settings(system_prompt)
   let url = settings.chat_completions_url()
   let headers : @http.Headers = Map([])
   headers["Content-Type"] = "application/json"
@@ -728,7 +728,7 @@ async fn run_compact_effect(
   let summary_message = @compact.build_summary_message(
     summary,
     plan.tokens_before,
-    @env.now().reinterpret_as_int64(),
+    @sys.now(),
   )
   let messages : Array[@message.Message] = [summary_message]
   for message in plan.kept {

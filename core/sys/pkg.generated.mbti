@@ -1,0 +1,102 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "pi-moon/core/sys"
+
+import {
+  "moonbitlang/async",
+  "moonbitlang/async/process",
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn cli_args() -> Array[String]
+
+pub fn enable_vt_output() -> Unit
+
+pub async fn exists(String) -> Bool raise SysError
+
+pub fn exit_with(Int32) -> Unit
+
+pub async fn file_size(String) -> Int64 raise SysError
+
+pub async fn glob(String, cwd? : String) -> Array[String] raise SysError
+
+pub async fn kind(String) -> Kind raise SysError
+
+pub async fn mkdir_p(String) -> Unit raise SysError
+
+pub async fn mtime(String) -> Int64 raise SysError
+
+pub fn now() -> Int64
+
+pub async fn read_bytes(String) -> Bytes raise SysError
+
+pub async fn read_from_process() -> OutputPipe raise SysError
+
+pub async fn read_stdin_all() -> String raise SysError
+
+pub async fn read_stdin_until(String) -> String? raise SysError
+
+pub async fn read_text(String) -> String raise SysError
+
+pub async fn read_text_lossy(String) -> String raise SysError
+
+pub async fn readdir(String, include_hidden? : Bool) -> Array[String] raise SysError
+
+pub async fn remove_dir(String) -> Unit raise SysError
+
+pub fn restore_vt_output() -> Unit
+
+pub async fn run_capture(String, Array[String], cwd? : String, timeout_ms? : Int32) -> Capture raise SysError
+
+pub async fn[X] spawn(@async.TaskGroup[X], String, Array[String], extra_env? : Map[String, String], pipe? : OutputPipe, cwd? : String) -> Process raise SysError
+
+pub fn stdin_is_tty() -> Bool
+
+pub fn stdout_is_tty() -> Bool
+
+pub async fn tmpdir(String) -> String raise SysError
+
+pub async fn write_err(String) -> Unit raise SysError
+
+pub async fn write_out(String) -> Unit raise SysError
+
+pub async fn write_text(String, String, append? : Bool) -> Unit raise SysError
+
+// Errors
+pub suberror SysError {
+  SysError(String)
+}
+pub fn SysError::to_string(Self) -> String
+
+// Types and methods
+pub(all) struct Capture {
+  code : Int32
+  out : String
+  err : String
+}
+pub fn Capture::exit_code(Self) -> Int32
+pub fn Capture::stderr(Self) -> String
+pub fn Capture::stdout(Self) -> String
+
+pub(all) enum Kind {
+  Regular
+  Directory
+  Other
+} derive(Eq, @debug.Debug)
+
+pub(all) struct OutputPipe {
+  reader : @process.ReadFromProcess
+  writer : &@process.ProcessOutput
+}
+pub fn OutputPipe::close(Self) -> Unit
+pub async fn OutputPipe::read_some(Self, max_len? : Int32) -> Bytes? raise SysError
+
+pub(all) struct Process {
+  inner : @process.Process
+}
+pub fn Process::cancel(Self) -> Unit
+pub async fn Process::wait(Self) -> Int32
+
+// Type aliases
+
+// Traits

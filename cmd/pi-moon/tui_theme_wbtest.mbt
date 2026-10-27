@@ -159,13 +159,13 @@ test "主题：composer 框线跟着思考级别换（同 pi 的 thinking*）" {
 ///|
 async test "主题：<agent dir>/themes 下的主题优先于内嵌" {
   let dir = "_build/theme-test-custom"
-  @fs.rmdir(dir, recursive=true) catch {
+  @sys.remove_dir(dir) catch {
     _ => ()
   }
-  @fs.mkdir(dir, recursive=true)
-  @fs.mkdir(dir + "/themes", recursive=true)
-  @fs.write_file(dir + "/settings.json", "{\"theme\":\"mine\"}")
-  @fs.write_file(
+  @sys.mkdir_p(dir)
+  @sys.mkdir_p(dir + "/themes")
+  @sys.write_text(dir + "/settings.json", "{\"theme\":\"mine\"}")
+  @sys.write_text(
     dir + "/themes/mine.json",
     "{\"name\":\"mine\",\"appearance\":\"light\",\"colors\":{\"muted\":\"#010203\",\"userMessageBg\":\"#0a0b0c\"}}",
   )
@@ -177,7 +177,7 @@ async test "主题：<agent dir>/themes 下的主题优先于内嵌" {
   assert_eq(palette.user_bg, "rgb(10,11,12)")
   // 主题里缺的 token 用 dark 的默认值补齐，不会漏成空串。
   assert_eq(palette.dim, "rgb(126,136,142)")
-  @fs.rmdir(dir, recursive=true) catch {
+  @sys.remove_dir(dir) catch {
     _ => ()
   }
 }
@@ -185,15 +185,15 @@ async test "主题：<agent dir>/themes 下的主题优先于内嵌" {
 ///|
 async test "主题：设置指向 dark/light 但没有主题文件时用内嵌的" {
   let dir = "_build/theme-test-builtin"
-  @fs.rmdir(dir, recursive=true) catch {
+  @sys.remove_dir(dir) catch {
     _ => ()
   }
-  @fs.mkdir(dir, recursive=true)
-  @fs.write_file(dir + "/settings.json", "{\"theme\":\"light\"}")
+  @sys.mkdir_p(dir)
+  @sys.write_text(dir + "/settings.json", "{\"theme\":\"light\"}")
   let theme = load_theme(dir)
   assert_eq(theme.name, "light")
   assert_eq(theme.color_or("userMessageBg", ""), "rgb(223,231,236)")
-  @fs.rmdir(dir, recursive=true) catch {
+  @sys.remove_dir(dir) catch {
     _ => ()
   }
 }

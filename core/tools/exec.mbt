@@ -7,7 +7,7 @@
 // 与 pi 的差异（都写进了 docs/tools.md）：
 //   - edit 只做严格匹配，不做 pi 的模糊匹配（NFKC / 智能引号归一）；
 //   - find 用 `rg --files` + 本项目的 glob 匹配器（pi 用 fd），没有 rg 时退回
-//     `@shell.glob`（此时不读 .gitignore）。
+//     `@sys.glob`（此时不读 .gitignore）。
 //
 // shell 工具输出是**边跑边读**的：stdout / stderr 指向同一个管道（因此顺序就是
 // 命令实际写的顺序），每 100ms 把尾部截断后的当前全文交给 `on_progress`。
@@ -184,17 +184,17 @@ fn arg_edits(args : Map[String, Json]) -> Array[(String, String)] raise {
 async fn execute_read(cwd : String, args : Map[String, Json]) -> ToolOutcome {
   let raw_path = arg_string(args, "path")
   let path = resolve_path(raw_path, cwd)
-  let kind = @fs.kind(path) catch { err => raise Failed(err.to_string()) }
+  let kind = @sys.kind(path) catch { err => raise Failed(err.to_string()) }
   match kind {
     Directory => raise Failed("Path is a directory: " + path)
     _ => ()
   }
   match image_mime(path) {
     Some(mime) => {
-      let data = @fs.read_file(path) catch {
+      let bytes = @sys.read_bytes(path) catch {
         err => raise Failed(err.to_string())
       }
-      let encoded = @base64.encode(data.binary())
+      let encoded = @base64.encode(bytes)
       {
         content: [
           @message.Text("Read image file [" + mime + "]"),
@@ -213,8 +213,9 @@ async fn read_text_file(
   path : String,
   args : Map[String, Json],
 ) -> ToolOutcome {
-  let data = @fs.read_file(path) catch { err => raise Failed(err.to_string()) }
-  let text = @utf8.decode_lossy(data.binary())
+  let text = @sys.read_text_lossy(path) catch {
+    err => raise Failed(err.to_string())
+  }
   let all_lines = split_all_lines(text)
   let total_lines = all_lines.length()
   let offset = match arg_opt_int(args, "offset") {
@@ -332,13 +333,13 @@ async fn execute_write(cwd : String, args : Map[String, Json]) -> ToolOutcome {
   let content = arg_string(args, "content")
   let path = resolve_path(raw_path, cwd)
   let directory = parent_dir(path)
-  let directory_exists = @fs.exists(directory) catch { _ => false }
+  let directory_exists = @sys.exists(directory) catch { _ => false }
   if !directory_exists {
-    @fs.mkdir(directory, recursive=true) catch {
+    @sys.mkdir_p(directory) catch {
       err => raise Failed("Could not create directory: " + err.to_string())
     }
   }
-  @fs.write_file(path, content) catch {
+  @sys.write_text(path, content) catch {
     err => raise Failed(err.to_string())
   }
   ok_text("Successfully wrote to " + raw_path)
@@ -351,11 +352,10 @@ async fn execute_edit(cwd : String, args : Map[String, Json]) -> ToolOutcome {
   let raw_path = arg_string(args, "path")
   let edits = arg_edits(args)
   let path = resolve_path(raw_path, cwd)
-  let data = @fs.read_file(path) catch {
+  let raw_content = @sys.read_text_lossy(path) catch {
     err =>
       raise Failed("Could not edit file: " + raw_path + ". " + err.to_string())
   }
-  let raw_content = @utf8.decode_lossy(data.binary())
   // BOM 与行尾都先归一：模型看不到 BOM，也不该为 CRLF 背锅。
   let (bom, without_bom) = if raw_content.has_prefix("\u{feff}") {
     ("\u{feff}", raw_content[1:].to_owned())
@@ -468,7 +468,7 @@ async fn execute_edit(cwd : String, args : Map[String, Json]) -> ToolOutcome {
   } else {
     bom + updated
   }
-  @fs.write_file(path, final_content) catch {
+  @sys.write_text(path, final_content) catch {
     err => raise Failed(err.to_string())
   }
   ok_text(
@@ -532,24 +532,23 @@ async fn collect_shell_stream(
 ) -> Int32 {
   let mut exit_code = -1
   @async.with_task_group(group => {
-    let (reader, writer) = @process.read_from_process() catch {
+    let pipe = @sys.read_from_process() catch {
       err => raise Failed("Failed to create output pipe: " + err.to_string())
     }
-    defer reader.close()
-    let process = @process.spawn(
+    defer pipe.close()
+    let process = @sys.spawn(
       group,
       program,
       arguments,
       extra_env~,
-      stdout=writer,
-      stderr=writer,
+      pipe~,
       cwd~,
     )
     let mut last_emit = 0L
     let mut emitted = false
     let mut reading = true
     while reading {
-      let chunk = reader.read_some(max_len=8192) catch {
+      let chunk = pipe.read_some(max_len=8192) catch {
         error =>
           if @async.is_cancellation_error(error) {
             raise error
@@ -738,9 +737,9 @@ async fn execute_shell(
 
 ///|
 async fn save_full_output(content : String) -> String {
-  let directory = @fs.tmpdir(prefix="pi-moon-bash") catch { _ => return "" }
+  let directory = @sys.tmpdir("pi-moon-bash") catch { _ => return "" }
   let path = directory + "/output.log"
-  @fs.write_file(path, content) catch {
+  @sys.write_text(path, content) catch {
     _ => return ""
   }
   path
@@ -765,7 +764,7 @@ async fn resolve_bash_shell() -> (String, Array[String]) {
       None => ()
     }
     for candidate in candidates {
-      if (@fs.exists(candidate) catch { _ => false }) {
+      if (@sys.exists(candidate) catch { _ => false }) {
         return (candidate, ["-c"])
       }
     }
@@ -779,7 +778,7 @@ async fn resolve_bash_shell() -> (String, Array[String]) {
           "  3. Use the powershell tool instead",
         )
     }
-  } else if (@fs.exists("/bin/bash") catch { _ => false }) {
+  } else if (@sys.exists("/bin/bash") catch { _ => false }) {
     ("/bin/bash", ["-c"])
   } else {
     match command_on_path("bash") {
@@ -817,7 +816,7 @@ async fn command_on_path(executable : String) -> String? {
   let env = @env.get_env_vars()
   let finder = if is_windows_env(env) { "where" } else { "which" }
   let stdout = try {
-    let output = @shell.Cmd(finder, [executable]).output(timeout_ms=5000)
+    let output = @sys.run_capture(finder, [executable], timeout_ms=5000)
     if output.exit_code() == 0 {
       Some(output.stdout())
     } else {
@@ -831,7 +830,7 @@ async fn command_on_path(executable : String) -> String? {
     Some(stdout) => {
       for line in split_all_lines(stdout) {
         let candidate = line.trim().to_owned()
-        if !candidate.is_empty() && (@fs.exists(candidate) catch { _ => false }) {
+        if !candidate.is_empty() && (@sys.exists(candidate) catch { _ => false }) {
           return Some(candidate)
         }
       }
@@ -849,7 +848,7 @@ async fn execute_grep(cwd : String, args : Map[String, Json]) -> ToolOutcome {
     arg_opt_string(args, "path").unwrap_or("."),
     cwd,
   )
-  let kind = @fs.kind(search_path) catch {
+  let kind = @sys.kind(search_path) catch {
     _ => raise Failed("Path not found: " + search_path)
   }
   let is_directory = match kind {
@@ -896,7 +895,7 @@ async fn execute_grep(cwd : String, args : Map[String, Json]) -> ToolOutcome {
   arguments.push("--")
   arguments.push(pattern)
   arguments.push(target)
-  let output = @shell.Cmd("rg", arguments, cwd=run_cwd).output() catch {
+  let output = @sys.run_capture("rg", arguments, cwd=run_cwd) catch {
     err =>
       raise Failed(
         "ripgrep (rg) is not available and could not be downloaded: " +
@@ -1047,10 +1046,10 @@ async fn execute_find(cwd : String, args : Map[String, Json]) -> ToolOutcome {
     arg_opt_string(args, "path").unwrap_or("."),
     cwd,
   )
-  if !(@fs.exists(search_path) catch { _ => false }) {
+  if !(@sys.exists(search_path) catch { _ => false }) {
     raise Failed("Path not found: " + search_path)
   }
-  let kind = @fs.kind(search_path) catch {
+  let kind = @sys.kind(search_path) catch {
     _ => raise Failed("Path not found: " + search_path)
   }
   let search_is_directory = match kind {
@@ -1127,7 +1126,7 @@ async fn execute_find(cwd : String, args : Map[String, Json]) -> ToolOutcome {
 async fn rg_files(search_path : String) -> Array[String]? {
   let arguments : Array[String] = ["--files", "--hidden", "--color=never", "."]
   try {
-    let output = @shell.Cmd("rg", arguments, cwd=search_path).output()
+    let output = @sys.run_capture("rg", arguments, cwd=search_path)
     if output.exit_code() != 0 && output.exit_code() != 1 {
       return None
     }
@@ -1145,10 +1144,10 @@ async fn rg_files(search_path : String) -> Array[String]? {
 }
 
 ///|
-/// 没有 rg 时的退路：`@shell.glob`（不读 .gitignore）。
+/// 没有 rg 时的退路：`@sys.glob`（不读 .gitignore）。
 async fn glob_files(pattern : String, search_path : String) -> Array[String] {
   let effective = if pattern.contains("/") { pattern } else { "**/" + pattern }
-  @shell.glob(effective, cwd=search_path) catch {
+  @sys.glob(effective, cwd=search_path) catch {
     err => raise Failed("Failed to expand glob: " + err.to_string())
   }
 }
@@ -1167,10 +1166,10 @@ fn is_ignored_path(path : String) -> Bool {
 async fn execute_ls(cwd : String, args : Map[String, Json]) -> ToolOutcome {
   let raw_path = arg_opt_string(args, "path").unwrap_or(".")
   let directory = resolve_path(raw_path, cwd)
-  if !(@fs.exists(directory) catch { _ => false }) {
+  if !(@sys.exists(directory) catch { _ => false }) {
     raise Failed("Path not found: " + directory)
   }
-  let kind = @fs.kind(directory) catch {
+  let kind = @sys.kind(directory) catch {
     _ => raise Failed("Path not found: " + directory)
   }
   let is_directory = match kind {
@@ -1191,7 +1190,7 @@ async fn execute_ls(cwd : String, args : Map[String, Json]) -> ToolOutcome {
       value
     }
   }
-  let entries = @fs.readdir(directory, include_hidden=true) catch {
+  let entries = @sys.readdir(directory, include_hidden=true) catch {
     err => raise Failed("Cannot read directory: " + err.to_string())
   }
   entries.sort_by_key(fn(name) { name.to_lower() })
@@ -1202,7 +1201,7 @@ async fn execute_ls(cwd : String, args : Map[String, Json]) -> ToolOutcome {
       entry_limit_reached = true
       break
     }
-    let entry_kind = @fs.kind(directory + "/" + entry) catch { _ => continue }
+    let entry_kind = @sys.kind(directory + "/" + entry) catch { _ => continue }
     let suffix = match entry_kind {
       Directory => "/"
       _ => ""
