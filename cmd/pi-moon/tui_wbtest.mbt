@@ -1040,3 +1040,38 @@ test "markdown：流式正文走 markdown 渲染且末行带光标" {
   // 假光标接在最后一行行尾。
   assert_true(frame.contains("█"))
 }
+
+///|
+test "markdown：相同 (text, width, colors) 命中缓存" {
+  let colors = MarkdownColors::defaults()
+  markdown_cache.clear()
+  let first = markdown_lines("## 缓存标题\n\n- 一项", 40, colors~)
+  let size_after_first = markdown_cache.length()
+  let second = markdown_lines("## 缓存标题\n\n- 一项", 40, colors~)
+  // 命中：不再新增条目，内容一致。
+  assert_eq(markdown_cache.length(), size_after_first)
+  assert_eq(first.length(), second.length())
+  assert_eq(first[0].text, second[0].text)
+  // 宽度或颜色变化是不同的 key。
+  let _ = markdown_lines("## 缓存标题\n\n- 一项", 60, colors~)
+  let other_colors = { ..colors, heading: "#123456" }
+  let _ = markdown_lines("## 缓存标题\n\n- 一项", 40, colors=other_colors)
+  assert_eq(markdown_cache.length(), size_after_first + 2)
+}
+
+///|
+test "markdown：缓存超上限按插入序淘汰" {
+  markdown_cache.clear()
+  let colors = MarkdownColors::defaults()
+  for i in 0..<markdown_cache_capacity {
+    let _ = markdown_lines("淘汰测试 \{i}", 40, colors~)
+  }
+  assert_eq(markdown_cache.length(), markdown_cache_capacity)
+  // 再插一条：总量封顶，最老的 "淘汰测试 0" 被挤出去。
+  let _ = markdown_lines("淘汰测试 溢出", 40, colors~)
+  assert_eq(markdown_cache.length(), markdown_cache_capacity)
+  // 被淘汰的 key 再查会重算，结果仍然正确。
+  let lines = markdown_lines("淘汰测试 0", 40, colors~)
+  assert_true(lines[0].text.contains("淘汰测试 0"))
+  assert_eq(markdown_cache.length(), markdown_cache_capacity)
+}

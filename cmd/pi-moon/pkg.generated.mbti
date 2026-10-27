@@ -122,6 +122,10 @@ type CliArgs
 
 type CompactSnapshot
 
+type MarkdownCacheEntry
+
+type MarkdownCacheKey derive(Eq, Hash)
+
 type MarkdownCell
 
 pub(all) struct MarkdownColors {
@@ -138,7 +142,7 @@ pub(all) struct MarkdownColors {
   diff_add : String
   diff_removed : String
   diff_context : String
-} derive(Eq, @debug.Debug)
+} derive(Eq, Hash, @debug.Debug)
 pub fn MarkdownColors::defaults() -> Self
 pub fn MarkdownColors::from_theme(Theme) -> Self
 

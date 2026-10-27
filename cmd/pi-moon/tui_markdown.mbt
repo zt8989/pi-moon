@@ -41,7 +41,7 @@ pub(all) struct MarkdownColors {
   diff_add : String
   diff_removed : String
   diff_context : String
-} derive(Eq, Debug)
+} derive(Eq, Hash, Debug)
 
 ///|
 pub fn MarkdownColors::from_theme(theme : Theme) -> MarkdownColors {
@@ -74,15 +74,83 @@ pub fn MarkdownColors::defaults() -> MarkdownColors {
 ///|
 /// markdown 文本 → 屏幕行（宽度已经是**内容宽度**：调用方自己把左侧内边距
 /// 算进去）。首尾的空行会被去掉 —— 调用方在块前后自己留白。
+///|
+/// 缓存 key：正文、内容宽度、颜色三者任一变化都会重算。
+struct MarkdownCacheKey {
+  text : String
+  width : Int32
+  colors : MarkdownColors
+} derive(Eq, Hash)
+
+///|
+struct MarkdownCacheEntry {
+  lines : Array[StyledLine]
+  seq : Int64
+}
+
+///|
+/// 渲染缓存的容量上限。历史消息的条目稳定命中；流式正文每来一个 delta
+/// 就换一个新 key，是主要的淘汰来源。满了按插入序淘汰最老的一条。
+let markdown_cache_capacity : Int = 256
+
+///|
+let markdown_cache : Map[MarkdownCacheKey, MarkdownCacheEntry] = Map([], capacity=64)
+
+///|
+let markdown_cache_seq : Ref[Int64] = Ref(0L)
+
+///|
+fn cache_markdown_lines(
+  key : MarkdownCacheKey,
+  lines : Array[StyledLine],
+) -> Unit {
+  if markdown_cache.length() >= markdown_cache_capacity {
+    // Map 无序，用插入序号找最老的一条；扫描 O(cap)，淘汰频率低。
+    let mut oldest_key : MarkdownCacheKey? = None
+    let mut oldest_seq : Int64 = markdown_cache_seq.val + 1L
+    for k, v in markdown_cache {
+      if v.seq < oldest_seq {
+        oldest_seq = v.seq
+        oldest_key = Some(k)
+      }
+    }
+    match oldest_key {
+      Some(k) => {
+        let _ = markdown_cache.remove(k)
+      }
+      None => ()
+    }
+  }
+  let seq = markdown_cache_seq.val + 1L
+  markdown_cache_seq.val = seq
+  markdown_cache.set(key, { lines, seq })
+}
+
+///|
+/// markdown 文本 → 屏幕行（宽度已经是**内容宽度**：调用方自己把左侧内边距
+/// 算进去）。首尾的空行会被去掉 —— 调用方在块前后自己留白。
+///
+/// 结果按 (text, width, colors) 缓存：对话页每帧全量重画，历史消息的 key
+/// 不变，命中后跳过 parse + 渲染，只有正在流的那条每帧真正重算。返回的
+/// 数组是缓存共享的，调用方只读。js / native 双端都只是进程内 Map，
+/// 不依赖任何平台能力。
 pub fn markdown_lines(
   text : String,
   width : Int32,
   colors~ : MarkdownColors = MarkdownColors::defaults(),
 ) -> Array[StyledLine] {
-  let document = @md.parse(text).document
-  trim_blank_edges(
-    render_blocks(document.children, width, document.definitions, colors),
-  )
+  let key : MarkdownCacheKey = { text, width, colors }
+  match markdown_cache.get(key) {
+    Some(entry) => entry.lines
+    None => {
+      let document = @md.parse(text).document
+      let lines = trim_blank_edges(
+        render_blocks(document.children, width, document.definitions, colors),
+      )
+      cache_markdown_lines(key, lines)
+      lines
+    }
+  }
 }
 
 ///|
@@ -144,7 +212,8 @@ pub fn trim_partial_closing_fence(text : String) -> String {
 ///|
 /// String 下标返回的是码元（UInt16），统一转回 Char 再比较。
 fn char_at(line : String, index : Int) -> Char {
-  Char::from_int(line[index].to_int())
+  // String 下标取的是 UTF-16 码元，必然落在合法 Char 范围内。
+  line[index].to_int().unsafe_to_char()
 }
 
 ///|
