@@ -1,4 +1,5 @@
 members = [
   ".",
   "vendor/tui",
+  "vendor/tui/examples/command-launcher",
 ]
