@@ -56,6 +56,8 @@ pub fn stdout_is_tty() -> Bool
 
 pub async fn tmpdir(String) -> String raise SysError
 
+pub async fn write_bytes(String, Bytes) -> Unit raise SysError
+
 pub async fn write_err(String) -> Unit raise SysError
 
 pub async fn write_out(String) -> Unit raise SysError

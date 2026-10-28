@@ -49,6 +49,13 @@ extern "js" fn js_write_text(
   #| }
 
 ///|
+extern "js" fn js_write_bytes(path : String, content : Bytes) -> Unit =
+  #| (path, content) => {
+  #|   try { require('node:fs').writeFileSync(path, content) }
+  #|   catch (e) { globalThis.__pi_moon_error = String((e && e.message) || e) }
+  #| }
+
+///|
 extern "js" fn js_exists(path : String) -> Bool =
   #| (path) => require('node:fs').existsSync(path)
 
@@ -111,6 +118,12 @@ pub async fn write_text(
   append? : Bool = false,
 ) -> Unit raise SysError {
   js_write_text(path, content, append)
+  raise_pending_error()
+}
+
+///|
+pub async fn write_bytes(path : String, content : Bytes) -> Unit raise SysError {
+  js_write_bytes(path, content)
   raise_pending_error()
 }
 

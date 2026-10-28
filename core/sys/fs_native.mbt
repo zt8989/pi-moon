@@ -31,6 +31,13 @@ pub async fn write_text(
 }
 
 ///|
+pub async fn write_bytes(path : String, content : Bytes) -> Unit raise SysError {
+  @fs.write_file(path, content, create_mode=@fs.CreateOrTruncate) catch {
+    err => raise SysError(err.to_string())
+  }
+}
+
+///|
 pub async fn exists(path : String) -> Bool raise SysError {
   @fs.exists(path) catch {
     err => raise SysError(err.to_string())
@@ -61,6 +68,12 @@ pub async fn readdir(
 
 ///|
 pub async fn mkdir_p(path : String) -> Unit raise SysError {
+  // `mkdir -p` 的语义：目录已经在那儿不算错。`@fs.mkdir(recursive=true)` 在
+  // 目标是已存在的目录时仍然报 EEXIST，所以先问一次。
+  let exists = @fs.exists(path) catch { _ => false }
+  if exists {
+    return
+  }
   @fs.mkdir(path, recursive=true) catch {
     err => raise SysError(err.to_string())
   }
