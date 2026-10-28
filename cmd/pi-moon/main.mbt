@@ -617,13 +617,50 @@ async fn report_compaction(
 }
 
 ///|
-/// 启动横幅（elA 的 `buildStartupBanner` 同形）：进了 prompt 的上下文文件、
-/// 技能名单、装载诊断。横幅画在对话页顶部随对话滚走 —— 技能名要反复对照
-/// 打命令，但不能永远占着首屏，这是两个要求的交集。
+/// 字典序比较。这个工具链里的 `String::compare` 不对称
+/// （`"tdd".compare("recap")` 是 -1，反倒是 1），排序不能用；
+/// 按 code unit 逐位比，横幅里的名单都是普通标识符，够用。
+fn text_less(a : String, b : String) -> Bool {
+  let la = a.length()
+  let lb = b.length()
+  let shared = if la < lb { la } else { lb }
+  for index in 0..<shared {
+    let ca = a[index]
+    let cb = b[index]
+    if ca != cb {
+      return ca < cb
+    }
+  }
+  la < lb
+}
+
+///|
+/// 用 `text_less` 的稳定排序（见上，`sort_by` + `compare` 不可信）。
+fn sort_text(items : Array[String]) -> Array[String] {
+  let out = items.copy()
+  let n = out.length()
+  for i in 0..<n {
+    for j in 0..<(n - 1 - i) {
+      if text_less(out[j + 1], out[j]) {
+        let t = out[j]
+        out[j] = out[j + 1]
+        out[j + 1] = t
+      }
+    }
+  }
+  out
+}
+
+///|
+/// 启动横幅（pi 的启动画面同形）：进了 prompt 的上下文文件、技能名单、
+/// prompt 模板命令、扩展清单，段间空行。横幅画在对话页顶部随对话滚走 ——
+/// 技能与命令名要反复对照打，但不能永远占着首屏，这是两个要求的交集。
 fn build_banner(
   cwd : String,
   context_files : Array[@context.ContextFile],
   skills : Array[@context.Skill],
+  prompts : Array[@context.PromptTemplate],
+  extension_labels : Array[String],
   diagnostics : Array[String],
   system_prompt : String,
 ) -> Array[String] {
@@ -654,6 +691,7 @@ fn build_banner(
       labels.push(@context.context_display_path(file.path, cwd, home))
     }
     blocks.push("[Context] " + labels.join(", "))
+    blocks.push("")
   }
   let names : Array[String] = []
   for skill in skills {
@@ -666,10 +704,24 @@ fn build_banner(
     }
   }
   if !names.is_empty() {
-    names.sort_by(fn(a, b) { a.compare(b) })
-    blocks.push("[Skills] " + names.join(", "))
+    blocks.push("[Skills] " + sort_text(names).join(", "))
+    blocks.push("")
+  }
+  if !prompts.is_empty() {
+    let commands : Array[String] = []
+    for template in prompts {
+      commands.push("/" + template.name)
+    }
+    blocks.push("[Prompts] " + sort_text(commands).join(", "))
+    blocks.push("")
+  }
+  if !extension_labels.is_empty() {
+    blocks.push("[Extensions] " + extension_labels.join(", "))
   }
   if !diagnostics.is_empty() {
+    if !blocks.is_empty() {
+      blocks.push("")
+    }
     blocks.push("[Skill conflicts] " + diagnostics.join("; "))
   }
   blocks
@@ -707,6 +759,15 @@ async fn run(args : CliArgs) -> Unit {
     Some(cwd) => cwd
     None => "."
   }
+  // 扩展：沙盒化装载。编译只发生在启动前的这一处，命中缓存时连 JS 引擎
+  // 都不起（快照直接 memcpy 回去）。所以这段放在会话/prompt 之前。
+  let ext_startup = @ext.prepare_at_startup(cwd, config.agent_dir)
+  for diagnostic in ext_startup.diagnostics {
+    eprintln("[ext] " + diagnostic)
+  }
+  if !ext_startup.names.is_empty() {
+    eprintln("[ext] 已装载：" + ext_startup.names.join(", "))
+  }
   // 新会话的「默认装载」：当前配置 + 当前工具选择 + 上下文文件 + 技能。
   // 恢复会话时这三份只在 fallback 里用 —— prompt 是装载时定下的，原样回来。
   let fallback_tool_names = selected_tools(config, args)
@@ -724,6 +785,11 @@ async fn run(args : CliArgs) -> Unit {
   )
   for diagnostic in skill_registry.diagnostics {
     eprintln("[skills] " + diagnostic)
+  }
+  // prompt 模板（pi 的 /命令）：只进横幅与补全，展开在输入侧。
+  let prompt_templates = @context.load_prompt_templates(cwd, config.agent_dir)
+  for diagnostic in prompt_templates.1 {
+    eprintln("[prompts] " + diagnostic)
   }
   let fallback_prompt : @action.PromptInitData = {
     system_prompt: build_system_prompt(
@@ -949,6 +1015,8 @@ async fn run(args : CliArgs) -> Unit {
           cwd,
           context_files,
           skill_registry.skills,
+          prompt_templates.0,
+          ext_startup.labels,
           skill_registry.diagnostics,
           prompt_data.system_prompt,
         )

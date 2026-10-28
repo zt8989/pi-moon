@@ -1075,3 +1075,69 @@ test "markdown：缓存超上限按插入序淘汰" {
   assert_true(lines[0].text.contains("淘汰测试 0"))
   assert_eq(markdown_cache.length(), markdown_cache_capacity)
 }
+
+///|
+test "build_banner：四段顺序、字典序、段间空行（pi 的启动画面同形）" {
+  let files : Array[@context.ContextFile] = [
+    { path: "/tmp/proj/AGENTS.md", content: "规则" },
+  ]
+  let skills : Array[@context.Skill] = [
+    {
+      name: "zzz",
+      description: "",
+      file_path: "/s/zzz/SKILL.md",
+      base_dir: "/s/zzz",
+      disable_model_invocation: false,
+      scope: "user",
+    },
+    {
+      name: "aaa",
+      description: "",
+      file_path: "/s/aaa/SKILL.md",
+      base_dir: "/s/aaa",
+      disable_model_invocation: false,
+      scope: "user",
+    },
+  ]
+  let prompts : Array[@context.PromptTemplate] = [
+    { name: "review", description: "", path: "/p/review.md", scope: "user" },
+    { name: "fix-loop", description: "", path: "/p/fix-loop.md", scope: "project" },
+  ]
+  let banner = build_banner(
+    "/tmp/proj",
+    files,
+    skills,
+    prompts,
+    ["demo.js"],
+    [],
+    "<project_context path=\"/tmp/proj/AGENTS.md\">" +
+    "<name>aaa</name><name>zzz</name>",
+  )
+  // 段顺序照 pi：Context → Skills → Prompts → Extensions，段间一个空行。
+  assert_eq(
+    banner,
+    [
+      "[Context] AGENTS.md",
+      "",
+      "[Skills] aaa, zzz",
+      "",
+      "[Prompts] /fix-loop, /review",
+      "",
+      "[Extensions] demo.js",
+    ],
+  )
+}
+
+///|
+test "build_banner：没有扩展与 prompt 时不出现对应段" {
+  let banner = build_banner(
+    "/tmp/proj",
+    [],
+    [],
+    [],
+    [],
+    ["重名：skill \"x\""],
+    "",
+  )
+  assert_eq(banner, ["[Skill conflicts] 重名：skill \"x\""])
+}

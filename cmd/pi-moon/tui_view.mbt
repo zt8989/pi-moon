@@ -42,6 +42,11 @@ pub fn chat_lines(
   let out : Array[StyledLine] = []
   // 启动横幅在最前：黄色段落标题 + 灰色内容，随对话一起滚。
   for block in banner {
+    if block.is_empty() {
+      // 段与段之间的空行（pi 的启动画面段落分隔）。
+      out.push(blank_line())
+      continue
+    }
     let (head, rest) = match block.find(" ") {
       Some(index) => (block[:index].to_owned(), block[index + 1:].to_owned())
       None => (block, "")

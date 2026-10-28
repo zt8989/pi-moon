@@ -97,13 +97,31 @@ read 就写 `bash`（模型得有一条能读文件的路）；两个都没有�
 且消息里能认出它来。未知名字原样返回 —— 静默吞掉会让用户以为生效了；
 读失败把原因附在原命令后面，同样不吞。
 
+## Prompt 模板（`/命令`）
+
+一个 Markdown 文件就是一个 `/命令`（pi 的 prompt-templates 同规）：文件名是
+命令名，frontmatter 的 `description`（缺省取正文第一个非空行）进横幅。
+
+- 位置：`<agent dir>/prompts/*.md`（user）与 `<cwd>/.pi/prompts/*.md`
+  （project），只扫直接的 `.md` 子文件，不递归；
+- 同名时用户级先装载的获胜，被忽略的记一条 `[prompts]` 诊断；
+- 模板的展开（`$1` / `$@` / `${1:-default}` 替换）在输入侧，装载层只负责
+  发现与展示。
+
 ## 启动横幅（TUI）
 
-对话页顶部常驻三段（`cmd/pi-moon/main.mbt` 的 `build_banner`）：
+对话页顶部常驻四段（`cmd/pi-moon/main.mbt` 的 `build_banner`），形状与 pi
+的启动画面同形：标签行 + 缩进换行的清单，段间空行：
 
 ```text
  [Context] AGENTS.md, ~/.pi/agent/AGENTS.md
+
  [Skills] demo, other
+
+ [Prompts] /review, /fix-loop
+
+ [Extensions] demo.js
+
  [Skill conflicts] 重名：skill "demo" 冲突…
 ```
 
@@ -112,4 +130,11 @@ read 就写 `bash`（模型得有一条能读文件的路）；两个都没有�
   报磁盘上现在的清单会撒谎；
 - `[Skills]`：名字排序后逗号连排；没进 prompt 的（prompt 没有技能段）标
   `*` —— 装了和「模型知道」是两回事；
+- `[Prompts]`：`/命令` 按名字排序，见上节；
+- `[Extensions]`：沙盒里装载成功的扩展，显示「装了什么」—— 单文件带后缀
+  （`demo.js`），目录式扩展是目录名；顺序即装载顺序，不排序（与 pi 一致）；
 - `[Skill conflicts]`：装载诊断，排在清单后。
+
+注意：横幅里的排序不用 `Array::sort_by` + `String::compare` —— 这个工具链
+里的 `compare` 不对称（`"tdd".compare("recap")` 是 -1，反倒是 1），`cmd`
+侧改用自己的字典序比较（`text_less` / `sort_text`）。

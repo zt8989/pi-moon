@@ -5,6 +5,7 @@ import {
   "pi-moon/core/action",
   "pi-moon/core/compact",
   "pi-moon/core/context",
+  "pi-moon/core/ext",
   "pi-moon/core/state",
   "pi-moon/core/runtime",
   "pi-moon/core/loop",
