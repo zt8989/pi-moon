@@ -7,7 +7,7 @@ pi 的 codemode 用的就是它），编译产物是一份 **VM 快照**；启�
 
 ```text
 启动前（一次）                                   启动后（每次）
-  发现扩展 ──► 体检 ──► 打包成一段 JS ──► 沙盒 eval ──► 快照落盘
+  发现扩展 ──► 转译 TS→CJS ──► 体检 ──► 打包成一段 JS ──► 沙盒 eval ──► 快照落盘
                             │                              │
                  命中缓存则整段跳过 ─────────────────────────┤
                                                            ▼
@@ -42,10 +42,11 @@ malloc 给的地址，落盘就失效 —— 于是「编译一次、启动只 m
 core/ext/
   ext.mbt          类型：来源、跳过原因、装载步骤、缓存键（FNV-1a 64）
   discover.mbt     <agent dir>/extensions、<cwd>/.pi/extensions、--extension
-  scan.mbt         import 说明符体检（node 内建 / 相对路径 / 裸包）
+  scan.mbt         import 说明符 + Node 全局体检（shim 名单里的包放行）
+  transpile.mbt    启动前用 pi 的 jiti 把 TS/ESM 转成 CJS（只在未命中缓存时）
   prepare.mbt      启动前的计划与缓存判定
   compile.mbt      eval → 快照 → 落盘；元数据 JSON
-  prelude.mbt      沙盒里的 `pi` 对象（registerTool / registerCommand / on）
+  prelude.mbt      沙盒里的 `pi` 对象 + `require` shim（pi 的四个包 / typebox）
   vm.mbt           宿主形状 + 快照头解析
   vm_native.mbt    wasm3 的 MoonBit FFI
   vm_js.mbt        js 后端：node 上的 quickjs-wasi（@js_async.Promise 桥接）
@@ -59,8 +60,12 @@ core/ext/
 1. **发现**（`discover`）：`<agent dir>/extensions` 与 `<cwd>/.pi/extensions`，
    单文件 `.ts/.mts/.cts/.js/.mjs/.cjs` 或「目录 + `index.ts`/`index.js`」。
    `node_modules` 与点开头的目录不递归。
-2. **体检**（`scan`）：在**编译后**的 JS 上扫两样东西，命中任一条就跳过，
-   不装垫片：
+2. **转译**（`transpile`）：缓存未命中时，用 pi 装机里的 `jiti` 把
+   TS / ESM 转成沙盒能 eval 的 CJS（`jiti.transform({ ts: true })`）：
+   类型擦除、`import type` 整条消失、`import` 变 `require`、
+   `export default` 变 `exports.default`。找不到 node / jiti 时退回原样源码
+   （纯 JS 扩展照旧能装，`.ts` 会在 eval 时报错并带上提示）。
+3. **体检**（`scan`）：在**转译后**的 JS 上扫两样东西，命中任一条就跳过：
    - import 说明符（`import` / `import()` / `require()`）：`node:*` 与 Node
      内建裸名（`fs`、`child_process`、`worker_threads` …）；相对路径
      （`./x.js`）与裸包名（`lodash`）—— 沙盒里没有模块加载器；
@@ -69,18 +74,53 @@ core/ext/
      漏过去，结果是「装上了，一调 handler 就 ReferenceError」。判定看两边：
      前一个 token 不是 `.`（那是 `foo.process`）、也不是 `const`/`let`/`var`/
      `function`/`class`（那是本地声明）。
+   - 例外是**有 shim 的 pi 包**（见下节），它们不算坏说明符。
    在编译后扫是有意的：`import type { ExtensionAPI } from "…"` 这类纯类型导入
    编译后就不存在了，不该被误判。
-3. **缓存键**（`cache_key`）：`FNV-1a 64(prelude_version ∥ sandbox_version ∥ 源码)`。
+4. **缓存键**（`cache_key`）：
+   `FNV-1a 64(prelude_version ∥ sandbox_version ∥ transpiler_version ∥ 源码)`。
    三者任一变化就重编译。文件在 `<agent dir>/cache/pi-moon/ext/<key>.snapshot`，
    旁边一份 `<key>.json` 存注册清单（工具名、命令名、钩子事件）。
-4. **编译**（`compile_extension`）：`prelude + 扩展源 + 收尾` 拼成一段 script，
+5. **编译**（`compile_extension`）：`prelude + 扩展源 + 收尾` 拼成一段 script，
    在一个刚 `qjs_init` 过的 VM 里 eval；扩展的注册动作往纯数据的 `pi` 对象上累加，
    收尾把清单 `JSON.stringify` 回来，然后整块内存拍成快照落盘。
-5. **启动**：命中缓存的扩展直接读快照；未命中的在启动前编译一次。
+6. **启动**：命中缓存的扩展直接读快照；未命中的在启动前编译一次。
    单个扩展失败只留一条 `[ext]` 诊断，不挡启动。
 
 运行期的成本因此是「读一个 1.3MB 文件 + memcpy」，与本机 qjs 引擎无关。
+
+## 兼容 pi 的 import
+
+pi 的扩展几乎都 import pi 自己的包。沙盒用**预置模块 shim** 接住它们：`require`
+只认这几个名字，其余一律在装载前被体检拦下。
+
+| 说明符 | 沙盒里 |
+| --- | --- |
+| `@earendil-works/pi-coding-agent` | `defineTool`（恒等，pi 里也是）、`Type`、`VERSION`；其余导出是「用到才抛」的桩 |
+| `@earendil-works/pi-ai` | `Type`（pi-ai re-export 了 typebox）、`StringEnum`；其余同上 |
+| `typebox` / `@sinclair/typebox` | `Type` 的 JSON Schema 构造器子集 |
+| `@earendil-works/pi-tui` | 全部是桩：渲染器在 pi-moon 里还没接，装了也不会被调用 |
+| `node:*` 与其它包 | **不装**（体检拦下，`NodeDependency` / `UnresolvedImport`） |
+
+`typebox` 的 shim 不是简单的透传：`Type.Object` 会把 `Type.Optional` 的字段排除出
+`required`，于是模型看到的参数 schema 与 pi 里一致。例如
+
+```ts
+parameters: Type.Object({ count: Type.Number(), label: Type.Optional(Type.String()) })
+```
+
+在快照里是
+
+```json
+{"type":"object","properties":{"count":{"type":"number"},"label":{"type":"string"}},"required":["count"]}
+```
+
+`pi` 对象本身也是兜底代理：`registerTool` / `registerCommand` / `on` 是真实现，
+其余宿主 API（渲染器、快捷键、flag、UI）调用会被记进 `registry.unsupported`
+并返回空操作 —— 少一个渲染钩子不该让整个扩展装不进来。
+
+**兼容面实测**（pi 官方 `examples/extensions/` 的 70 个单文件示例）：53 个直接装载，
+17 个因 Node 依赖跳过，0 个编译失败。
 
 ## 扩展里能用到什么
 
@@ -93,6 +133,7 @@ core/ext/
 | `on(event, handler)` | ✅ 注册 | 钩子按 `事件 → handler 序号` 记账 |
 | `registerProvider` / `registerMcpServer` | ⚠️ 计数 | 要网络 / 子进程，沙盒给不了；只记「这个扩展要了它」 |
 | `appendEntry` / `sendMessage` / `setActiveTools` | ⚠️ 空实现 | 会话与工具集是宿主的事 |
+| 其余 `pi.*`（渲染器 / 快捷键 / flag / UI） | ⚠️ 兜底空操作 | 记进 `registry.unsupported`，装载不受影响 |
 
 模块形态：扩展源按 pi 的约定 `export default function (pi) { … }`。沙盒没有 ESM
 加载器，所以 `rewrite_exports` 把顶层 `export default` 改写成
@@ -136,9 +177,8 @@ core/ext/
 2. **TS 扩展**：目前只跑纯 JS。`.ts` 需要在启动前用 node + pi 自带的 jiti 转译
    （`NoCompiler` 就是给这条路径留的位置）。
 3. **缓存清理**：改了源码会换键，旧快照没人删。需要一个 LRU（按 mtime / 大小）。
-4. **`.ts` 源码**：沙盒只能跑转译后的 JS。目前没有转译步骤，`.ts` 里出现类型
-   标注就会在 eval 时报 `SyntaxError`（错误信息里会补一句「需要启动前转译」）。
-   正好是合法 JS 语法的 `.ts` 会被照原样跑掉。
+4. **TS 转译依赖 node + jiti**：两者都来自 pi 装机（`<node_modules>/jiti`）。
+   精简环境里没有它们时退回「原样源码」路径，`.ts` 会报错并提示需要转译。
 
 ## 手动试
 

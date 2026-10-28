@@ -167,13 +167,14 @@ pub async fn compile_extension(
   code : String,
   wasm : Bytes,
   snapshot_path : String,
+  cjs? : Bool = false,
   host? : String = "",
 ) -> CompiledExt raise CompileError {
   let vm = ExtVm::new(wasm, host~) catch {
     error => raise Sandbox(error.to_string())
   }
   defer vm.free()
-  let script = wrap_extension(code)
+  let script = wrap_extension(code, cjs~)
   let registry = vm.eval(script, filename=source.path) catch {
     error => {
       let reason = error.to_string()
@@ -251,8 +252,9 @@ async fn compile_or_error(
   wasm : Bytes,
   snapshot_path : String,
   host : String,
+  cjs : Bool,
 ) -> Result[CompiledExt, CompileError] {
-  let result = try compile_extension(source, code, wasm, snapshot_path, host~) catch {
+  let result = try compile_extension(source, code, wasm, snapshot_path, cjs~, host~) catch {
     error => return Err(error)
   }
   Ok(result)
@@ -291,7 +293,7 @@ pub async fn compile_plan(
         })
         entries.push(entry)
       }
-      Compile(source~, path~, ..) => {
+      Compile(source~, path~, cjs~) => {
         match wasm {
           None => {
             diagnostics.push(
@@ -306,6 +308,7 @@ pub async fn compile_plan(
               bytes,
               path,
               quickjs_package_dir(wasm_path),
+              cjs,
             ) {
               Ok(result) => {
                 compiled_done.push(result)

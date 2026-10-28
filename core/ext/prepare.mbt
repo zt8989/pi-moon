@@ -10,7 +10,7 @@
 ///|
 /// 预置脚本版本。改了 prelude 里的 JS 就必须加一 —— 缓存键包含它，
 /// 否则老快照会被继续用，宿主调一个已经不存在的函数。
-pub let prelude_version : String = "pi-moon-ext/1"
+pub let prelude_version : String = "pi-moon-ext/2"
 
 ///|
 /// 沙盒版本：`quickjs.wasm` 的发布版本。快照不跨版本，所以进缓存键。
@@ -24,42 +24,57 @@ pub let sandbox_version : String = "quickjs-wasi/3.6.2"
 pub async fn plan_source(
   source : ExtSource,
   agent_dir : String,
-  compiled~ : String? = None,
+  transpiler~ : Transpiler? = None,
 ) -> ExtEntry {
-  // 纯 JS 源不需要转译；TS 源由调用方先转译好传进来。
-  let text = match compiled {
-    Some(compiled) => compiled
-    None => {
-      let raw = @sys.read_text(source.path) catch {
-        error => return { source, step: Skip(reason=Unreadable(error.to_string())) }
-      }
-      raw
-    }
+  // 先读源码、算缓存键：命中就到此为止 —— 不转译、不体检，启动路径上
+  // 只剩一次 read + 一次 stat。
+  let raw = @sys.read_text(source.path) catch {
+    error => return { source, step: Skip(reason=Unreadable(error.to_string())) }
+  }
+  let key = cache_key(
+    raw,
+    prelude_version~,
+    sandbox_version=sandbox_version + "+" + transpiler_version,
+  )
+  let path = ext_cache_path(agent_dir, key)
+  let cached = @sys.exists(path) catch { _ => false }
+  if cached {
+    return { source, step: Cached(cache_key=key, path~) }
+  }
+  // 未命中：先转译（TS / ESM → CJS），再在**将要执行的代码**上做体检。
+  // 没有工具链时退回原样源码：纯 JS 扩展照旧能装，TS 会在 eval 时报
+  // SyntaxError 并带上「需要转译」的提示。
+  let code = match transpiler {
+    Some(transpiler) => transpile_or_none(transpiler, source.path)
+    None => None
+  }
+  let (code, is_cjs) = match code {
+    Some(cjs) => (cjs, true)
+    None => (raw, false)
   }
   // Node 全局先查：`process.env` 这类没有 import，光看说明符会漏过去，
   // 结果是「装上了，一调 handler 就 ReferenceError」。
-  match first_node_global(text) {
+  match first_node_global(code) {
     Some(name) => return { source, step: Skip(reason=NodeDependency(name)) }
     None => ()
   }
-  match first_unsupported_import(text) {
+  match first_unsupported_import(code) {
     Some((kind, spec)) =>
       match kind {
         SpecifierKind::NodeBuiltin =>
           return { source, step: Skip(reason=NodeDependency(spec)) }
         _ => return { source, step: Skip(reason=UnresolvedImport(spec)) }
       }
-    None => ()
+    _ => ()
   }
-  let key = cache_key(text, prelude_version~, sandbox_version~)
-  let path = ext_cache_path(agent_dir, key)
-  let cached = @sys.exists(path) catch { _ => false }
-  let step = if cached {
-    Cached(cache_key=key, path~)
-  } else {
-    Compile(cache_key=key, path~, source=text)
-  }
-  { source, step }
+  { source, step: Compile(cache_key=key, path~, source=code, cjs=is_cjs) }
+}
+
+///|
+/// 转译失败就当没转译（保留原样源码那条路），原因留给调用方的诊断。
+async fn transpile_or_none(transpiler : Transpiler, path : String) -> String? {
+  let result = try transpile(transpiler, path) catch { _ => return None }
+  Some(result)
 }
 
 ///|
@@ -68,11 +83,21 @@ pub async fn plan(
   cwd : String,
   agent_dir : String,
   explicit~ : Array[String] = [],
+  transpiler? : Transpiler? = None,
 ) -> ExtPlan {
   let (sources, diagnostics) = discover(cwd, agent_dir, explicit~)
+  // 工具链只探一次：每个扩展都 spawn 一次 `node --version` 太贵。
+  let transpiler = match transpiler {
+    Some(transpiler) => Some(transpiler)
+    None =>
+      match load_quickjs_wasm(agent_dir) {
+        Some((wasm_path, _)) => find_transpiler(quickjs_package_dir(wasm_path))
+        None => None
+      }
+  }
   let entries : Array[ExtEntry] = []
   for source in sources {
-    let entry = plan_source(source, agent_dir)
+    let entry = plan_source(source, agent_dir, transpiler~)
     match entry.step {
       Skip(reason~) =>
         diagnostics.push(

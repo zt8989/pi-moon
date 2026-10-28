@@ -75,7 +75,15 @@ pub(all) enum ExtStep {
   /// 缓存命中：直接恢复快照，不跑编译器。
   Cached(cache_key~ : String, path~ : String)
   /// 缓存未命中：启动前编译一次，写出缓存。
-  Compile(cache_key~ : String, path~ : String, source~ : String)
+  ///
+  /// `source` 已经是 jiti 转译过的 CJS（`cjs = true`）或原样源码；后者由
+  /// `wrap_extension` 自己改写 `export default`。
+  Compile(
+    cache_key~ : String,
+    path~ : String,
+    source~ : String,
+    cjs~ : Bool
+  )
   /// 不装载。
   Skip(reason~ : ExtSkip)
 } derive(Eq, Debug)
@@ -84,7 +92,7 @@ pub(all) enum ExtStep {
 pub fn ExtStep::to_string(self : ExtStep) -> String {
   match self {
     Cached(cache_key~, ..) => "Cached(" + cache_key + ")"
-    Compile(cache_key~, ..) => "Compile(" + cache_key + ")"
+    Compile(cache_key~, cjs~, ..) => "Compile(" + cache_key + ", cjs=" + cjs.to_string() + ")"
     Skip(reason~) => "Skip(" + reason.to_string() + ")"
   }
 }

@@ -34,10 +34,38 @@ let node_globals : Array[String] = [
 let declaration_keywords : Array[String] = ["const", "let", "var", "function", "class"]
 
 ///|
+/// 沙盒里**有 shim** 的裸包。扩展 import 它们不会跳过：预置脚本给了同名
+/// 模块（`defineTool` 是恒等、`typebox` 描述工具参数），其余导出是「用到才
+/// 报错」的可调用桩。
+///
+/// 这份名单照 pi 官方 examples 的 import 统计定的：pi-coding-agent 77 次、
+/// pi-tui 21、pi-ai 11、typebox 10。node:* 不在此列 —— 那是真的没有。
+let shimmed_packages : Array[String] = [
+  "@earendil-works/pi-coding-agent",
+  "@earendil-works/pi-tui",
+  "@earendil-works/pi-ai",
+  "typebox",
+  "@sinclair/typebox",
+]
+
+///|
+/// 说明符是否由沙盒预置脚本提供（含子路径，如 `typebox/value`）。
+pub fn is_shimmed_package(spec : String) -> Bool {
+  for name in shimmed_packages {
+    if spec == name || spec.has_prefix(name + "/") {
+      return true
+    }
+  }
+  false
+}
+
+///|
 /// 一个 import / require 的说明符及其判定结果。
 pub(all) enum SpecifierKind {
-  /// 沙盒里能用的：空说明符（不该出现）或 `data:`/`virtual:` 这类宿主垫的。
+  /// 沙盒里能用的：空说明符，或预置脚本提供 shim 的 pi 包。
   Allowed
+  /// 预置脚本里有同名模块（`defineTool` / `typebox` 那几个）。
+  Shimmed
   /// Node 内建模块。
   NodeBuiltin
   /// 相对路径 —— 沙盒里没有模块加载器，解析不了。
@@ -64,8 +92,8 @@ pub fn classify_specifier(spec : String) -> SpecifierKind {
   if node_builtins.contains(spec) {
     return NodeBuiltin
   }
-  if spec.has_prefix("http://") || spec.has_prefix("https://") {
-    return Package
+  if is_shimmed_package(spec) {
+    return Shimmed
   }
   Package
 }
@@ -254,7 +282,7 @@ pub fn first_unsupported_import(source : String) -> (SpecifierKind, String)? {
   for spec in import_specifiers(source) {
     let kind = classify_specifier(spec)
     match kind {
-      Allowed => continue
+      Allowed | Shimmed => continue
       _ => return Some((kind, spec))
     }
   }

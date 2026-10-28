@@ -12,7 +12,7 @@ pub fn cache_key(String, prelude_version~ : String, sandbox_version~ : String) -
 
 pub fn classify_specifier(String) -> SpecifierKind
 
-pub async fn compile_extension(ExtSource, String, Bytes, String, host? : String) -> CompiledExt raise CompileError
+pub async fn compile_extension(ExtSource, String, Bytes, String, cjs? : Bool, host? : String) -> CompiledExt raise CompileError
 
 pub async fn compile_plan(ExtPlan, String, wasm_path? : String?) -> (Array[CompiledExt], ExtPlan)
 
@@ -28,6 +28,8 @@ pub fn ext_label(ExtSource) -> String
 
 pub fn ext_meta_path(String, String) -> String
 
+pub async fn find_transpiler(String) -> Transpiler?
+
 pub fn first_node_global(String) -> String?
 
 pub fn first_unsupported_import(String) -> (SpecifierKind, String)?
@@ -37,6 +39,8 @@ pub fn fnv1a64(String) -> UInt64
 pub fn hex64(UInt64) -> String
 
 pub fn import_specifiers(String) -> Array[String]
+
+pub fn is_shimmed_package(String) -> Bool
 
 pub fn is_source_file(String) -> Bool
 
@@ -48,9 +52,9 @@ pub fn parent_dir(String) -> String
 
 pub fn parse_registry(String) -> (Array[String], Array[String], Array[String])
 
-pub async fn plan(String, String, explicit? : Array[String]) -> ExtPlan
+pub async fn plan(String, String, explicit? : Array[String], transpiler? : Transpiler?) -> ExtPlan
 
-pub async fn plan_source(ExtSource, String, compiled? : String?) -> ExtEntry
+pub async fn plan_source(ExtSource, String, transpiler? : Transpiler?) -> ExtEntry
 
 pub let prelude_version : String
 
@@ -76,7 +80,11 @@ pub let snapshot_version : Int32
 
 pub fn stem_of(String) -> String
 
-pub fn wrap_extension(String) -> String
+pub async fn transpile(Transpiler, String) -> String raise TranspileError
+
+pub let transpiler_version : String
+
+pub fn wrap_extension(String, cjs? : Bool) -> String
 
 // Errors
 pub suberror CompileError {
@@ -85,6 +93,12 @@ pub suberror CompileError {
   Sandbox(String)
 }
 pub fn CompileError::to_string(Self) -> String
+
+pub suberror TranspileError {
+  NoToolchain
+  Failed(String)
+}
+pub fn TranspileError::to_string(Self) -> String
 
 pub suberror VmError {
   VmInit(String)
@@ -141,7 +155,7 @@ pub(all) struct ExtSource {
 
 pub(all) enum ExtStep {
   Cached(cache_key~ : String, path~ : String)
-  Compile(cache_key~ : String, path~ : String, source~ : String)
+  Compile(cache_key~ : String, path~ : String, source~ : String, cjs~ : Bool)
   Skip(reason~ : ExtSkip)
 } derive(Eq, @debug.Debug)
 pub fn ExtStep::to_string(Self) -> String
@@ -166,6 +180,7 @@ pub(all) struct SnapshotHeader {
 
 pub(all) enum SpecifierKind {
   Allowed
+  Shimmed
   NodeBuiltin
   Relative
   Package
@@ -179,6 +194,11 @@ pub(all) struct StartupExt {
   events : Array[String]
   diagnostics : Array[String]
   snapshots : Array[(String, String)]
+}
+
+pub(all) struct Transpiler {
+  node : String
+  jiti : String
 }
 
 // Type aliases
