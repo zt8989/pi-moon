@@ -10,12 +10,6 @@ pub fn base_name(String) -> String
 
 pub fn cache_key(String, prelude_version~ : String, sandbox_version~ : String) -> String
 
-pub fn classify_specifier(String) -> SpecifierKind
-
-pub async fn compile_extension(ExtSource, String, Bytes, String, cjs? : Bool, host? : String) -> CompiledExt raise CompileError
-
-pub async fn compile_plan(ExtPlan, String, wasm_path? : String?) -> (Array[CompiledExt], ExtPlan)
-
 pub async fn discover(String, String, explicit? : Array[String]) -> (Array[ExtSource], Array[String])
 
 pub async fn discover_explicit(String) -> ExtSource?
@@ -28,96 +22,51 @@ pub fn ext_label(ExtSource) -> String
 
 pub fn ext_meta_path(String, String) -> String
 
-pub async fn find_transpiler(String) -> Transpiler?
-
-pub fn first_node_global(String) -> String?
-
-pub fn first_unsupported_import(String) -> (SpecifierKind, String)?
+pub async fn find_bun() -> String
 
 pub fn fnv1a64(String) -> UInt64
 
 pub fn hex64(UInt64) -> String
 
-pub fn import_specifiers(String) -> Array[String]
+pub fn host_cache_version() -> String
 
-pub fn is_shimmed_package(String) -> Bool
+pub let host_script_source : String
+
+pub let host_version : String
 
 pub fn is_source_file(String) -> Bool
 
-pub async fn load_quickjs_wasm(String) -> (String, Bytes)?
-
-pub async fn load_registry(String) -> (Array[String], Array[String], Array[String])?
+pub async fn load_extension(HostPaths, ExtSource, String) -> HostLoad raise HostError
 
 pub fn parent_dir(String) -> String
 
-pub fn parse_registry(String) -> (Array[String], Array[String], Array[String])
+pub fn parse_load(String) -> HostLoad raise HostError
 
-pub async fn plan(String, String, explicit? : Array[String], transpiler? : Transpiler?) -> ExtPlan
+pub async fn plan(String, String, explicit? : Array[String]) -> ExtPlan
 
-pub async fn plan_source(ExtSource, String, transpiler? : Transpiler?) -> ExtEntry
+pub async fn plan_source(ExtSource, String) -> ExtEntry
 
 pub let prelude_version : String
 
 pub async fn prepare_at_startup(String, String, explicit? : Array[String]) -> StartupExt
 
-pub fn quickjs_package_dir(String) -> String
+pub async fn prepare_host_paths(String, String, String) -> HostPaths raise HostError
 
-pub fn read_snapshot_header(Bytes) -> SnapshotHeader?
-
-pub fn registry_json(CompiledExt) -> String
-
-pub async fn resolve_quickjs_wasm(String) -> String?
-
-pub fn rewrite_exports(String) -> String
+pub async fn resolve_pi_modules(String) -> String?
 
 pub let sandbox_version : String
 
-pub let snapshot_header_size : Int32
-
-pub let snapshot_magic : UInt32
-
-pub let snapshot_version : Int32
-
 pub fn stem_of(String) -> String
 
-pub async fn transpile(Transpiler, String) -> String raise TranspileError
-
-pub let transpiler_version : String
-
-pub fn wrap_extension(String, cjs? : Bool) -> String
-
 // Errors
-pub suberror CompileError {
-  Evaluation(String)
-  WriteFailed(String)
-  Sandbox(String)
+pub suberror HostError {
+  HostStartup(String)
+  HostFailure(String)
+  NoBun
 }
-pub fn CompileError::to_string(Self) -> String
-
-pub suberror TranspileError {
-  NoToolchain
-  Failed(String)
-}
-pub fn TranspileError::to_string(Self) -> String
-
-pub suberror VmError {
-  VmInit(String)
-  VmEval(String)
-  VmSnapshot(String)
-  VmUnsupported
-}
-pub fn VmError::to_string(Self) -> String
+pub fn HostError::to_string(Self) -> String
 
 // Types and methods
-pub(all) struct CompiledExt {
-  name : String
-  label : String
-  snapshot_path : String
-  tools : Array[String]
-  commands : Array[String]
-  events : Array[String]
-} derive(@debug.Debug)
-
 pub(all) struct ExtEntry {
   source : ExtSource
   step : ExtStep
@@ -155,36 +104,31 @@ pub(all) struct ExtSource {
 
 pub(all) enum ExtStep {
   Cached(cache_key~ : String, path~ : String)
-  Compile(cache_key~ : String, path~ : String, source~ : String, cjs~ : Bool)
+  Compile(cache_key~ : String, path~ : String, source~ : String)
   Skip(reason~ : ExtSkip)
 } derive(Eq, @debug.Debug)
 pub fn ExtStep::to_string(Self) -> String
 
-pub(all) struct ExtVm {
-  handle : Int64
-} derive(Eq)
-pub fn ExtVm::eval(Self, String, filename? : String) -> String raise VmError
-pub fn ExtVm::free(Self) -> Unit
-pub async fn ExtVm::new(Bytes, host? : String) -> Self raise VmError
-pub fn ExtVm::quickjs_version(Self) -> String
-pub async fn ExtVm::restore(Bytes, Bytes, host? : String) -> Self raise VmError
-pub fn ExtVm::snapshot(Self) -> Bytes raise VmError
+pub(all) struct HostLoad {
+  tools : Array[String]
+  commands : Array[String]
+  events : Array[String]
+  unsupported : Array[String]
+  denied : Array[String]
+  child_calls : Array[String]
+  built : Bool
+  ms : Int32
+}
 
-pub(all) struct SnapshotHeader {
-  memory_size : Int32
-  stack_pointer : UInt32
-  runtime_ptr : UInt32
-  context_ptr : UInt32
-  extensions : Int32
-} derive(Eq, @debug.Debug)
-
-pub(all) enum SpecifierKind {
-  Allowed
-  Shimmed
-  NodeBuiltin
-  Relative
-  Package
-} derive(Eq, @debug.Debug)
+pub(all) struct HostPaths {
+  bun : String
+  script : String
+  root : String
+  modules : String
+  cwd : String
+  agent_dir : String
+}
+pub fn HostPaths::bun_missing(Self) -> Bool
 
 pub(all) struct StartupExt {
   names : Array[String]
@@ -193,12 +137,8 @@ pub(all) struct StartupExt {
   commands : Array[String]
   events : Array[String]
   diagnostics : Array[String]
-  snapshots : Array[(String, String)]
-}
-
-pub(all) struct Transpiler {
-  node : String
-  jiti : String
+  artifacts : Array[(String, String)]
+  available : Bool
 }
 
 // Type aliases

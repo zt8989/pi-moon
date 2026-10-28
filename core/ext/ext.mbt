@@ -1,14 +1,14 @@
 // pi 扩展的发现与装载规划。
 //
 // 一座「启动前」的桥：读磁盘上的扩展源，判断它能不能进沙盒，算出缓存键，
-// 给出「这次启动要不要编译」的结论。运行期（沙盒、快照恢复、事件派发）在
-// 宿主层，不在这里。
+// 给出「这次启动要不要打包」的结论。运行期（装载、调用、事件派发）在宿主
+// 进程（bun）那边，不在这里。
 //
 // 与 pi 的对应关系：
 //   - 位置照 pi 的 `loadExtensions`：`<agent dir>/extensions` 与
 //     `<cwd>/.pi/extensions`，单文件或「目录 + index.ts/index.js」；
-//   - 与 pi 的刻意差异：pi 用 jiti 在原进程里跑 TS，这里一律编译成快照后
-//     进 wasm 沙盒 —— 于是「扩展能做什么」被削到沙盒里那套 API。
+//   - 与 pi 的差异：pi 在本进程里 jiti 加载扩展；这里交给独立的 bun 宿主，
+//     文件系统访问按 cwd / agent 目录 / 临时目录白名单卡（见 docs/extensions.md）。
 
 ///|
 /// 扩展从哪儿来。决定诊断信息里的标签，也决定重名时的排序。
@@ -72,18 +72,12 @@ pub fn ExtSkip::to_string(self : ExtSkip) -> String {
 ///|
 /// 一次启动对某个扩展要做的事。
 pub(all) enum ExtStep {
-  /// 缓存命中：直接恢复快照，不跑编译器。
+  /// 缓存命中：产物已经在磁盘上，宿主直接 import，不再打包。
   Cached(cache_key~ : String, path~ : String)
-  /// 缓存未命中：启动前编译一次，写出缓存。
+  /// 缓存未命中：启动前打包一次，产物落在 `path`。
   ///
-  /// `source` 已经是 jiti 转译过的 CJS（`cjs = true`）或原样源码；后者由
-  /// `wrap_extension` 自己改写 `export default`。
-  Compile(
-    cache_key~ : String,
-    path~ : String,
-    source~ : String,
-    cjs~ : Bool
-  )
+  /// `source` 是原样源码 —— 转译是 bun 宿主的活，MoonBit 侧不碰 TS。
+  Compile(cache_key~ : String, path~ : String, source~ : String)
   /// 不装载。
   Skip(reason~ : ExtSkip)
 } derive(Eq, Debug)
@@ -92,7 +86,7 @@ pub(all) enum ExtStep {
 pub fn ExtStep::to_string(self : ExtStep) -> String {
   match self {
     Cached(cache_key~, ..) => "Cached(" + cache_key + ")"
-    Compile(cache_key~, cjs~, ..) => "Compile(" + cache_key + ", cjs=" + cjs.to_string() + ")"
+    Compile(cache_key~, ..) => "Compile(" + cache_key + ")"
     Skip(reason~) => "Skip(" + reason.to_string() + ")"
   }
 }
@@ -129,22 +123,23 @@ pub fn ExtPlan::skipped(self : ExtPlan) -> Array[ExtEntry] {
 
 ///|
 /// 缓存目录：`<agent dir>/cache/pi-moon/ext`。放 agent 目录下而不是项目里，
-/// 是因为快照与 cwd 无关，跨项目复用同一份。
+/// 是因为产物与 cwd 无关，跨项目复用同一份。
 pub fn ext_cache_dir(agent_dir : String) -> String {
   agent_dir + "/cache/pi-moon/ext"
 }
 
 ///|
-/// 单个扩展的缓存文件：`<cache dir>/<key>.snapshot`。
+/// 单个扩展的缓存标记：`<cache dir>/<key>.snapshot`。
+///
+/// 真正的产物是 `<cache dir>/host/build/<key>.mjs`（宿主写入），这个标记
+/// 只用来在启动前判断「要不要打包」，不用来读内容。
 pub fn ext_cache_path(agent_dir : String, cache_key : String) -> String {
   ext_cache_dir(agent_dir) + "/" + cache_key + ".snapshot"
 }
 
 ///|
-/// 快照旁边的元数据：`<cache dir>/<key>.json`。
-///
-/// 注册清单（工具名、命令名、钩子事件）活在 JS 堆里，光有快照读不出来；
-/// 编译时顺手落一份 JSON，命中缓存时就不用为了拿清单再起一次沙盒。
+/// 旧版（wasm 快照）留下的元数据路径。现在注册清单由宿主在装载时回传，
+/// 这个函数只为兼容早期缓存目录，不再写入。
 pub fn ext_meta_path(agent_dir : String, cache_key : String) -> String {
   ext_cache_dir(agent_dir) + "/" + cache_key + ".json"
 }
@@ -153,7 +148,7 @@ pub fn ext_meta_path(agent_dir : String, cache_key : String) -> String {
 /// 缓存键的构成：扩展源码 + 预置脚本版本 + 沙盒版本。
 ///
 /// 三者任一变化都必须重编译 —— 预置脚本改了（宿主换了 API 形状）、
-/// quickjs 换了（快照不跨版本）、扩展源码改了。
+/// 宿主脚本换了、扩展源码改了。
 pub fn cache_key(
   source : String,
   prelude_version~ : String,

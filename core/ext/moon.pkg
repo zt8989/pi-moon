@@ -1,16 +1,16 @@
-// pi 扩展：发现、体检、缓存、启动前编译，以及跑扩展的沙盒宿主。
+// pi 扩展：发现、体检、缓存、启动前打包，以及宿主进程（bun）的 RPC。
 //
-// 分工照 core/sys 的老规矩：本包只管「哪些扩展能加载、要不要重新编译、
-// 缓存在哪」，真正跑 JS 的是宿主层（wasm3 里的 quickjs + 快照）。
+// 形状照 magpie：主程序不嵌 JS 引擎，扩展跑在独立的 bun 进程里，两边按行
+// 说 JSON。于是 TypeScript 转译、npm 解析、Node API 都由 bun 那边负责，
+// MoonBit 侧只剩「发现 / 体检 / 缓存 / 起进程 / 说话」。
 //
 // 关键约束（决定了本包不存在的东西）：
-//   - 运行期不碰 Node：宿主是 wasm3 + pi 的 quickjs.wasm，见 docs/extensions.md；
-//   - 编译只发生在启动前，产物是 VM 快照，命中缓存时启动不碰 JS 引擎；
-//   - 源码里出现 Node 专属依赖的扩展直接跳过，不尝试垫片。
+//   - 不嵌 JS 引擎：没有 wasm 运行时、没有快照、没有 host_call 桥；
+//   - 打包只发生在缓存未命中时（Bun.build），产物按内容哈希落盘；
+//   - 文件系统访问走扩展侧的策略模块按「cwd / agent 目录 / 临时目录」白名单卡。
 
 import {
   "pi-moon/core/sys",
-  "moonbitlang/async/js_async",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/env",
   "moonbitlang/core/json",
@@ -30,25 +30,6 @@ import {
 options(
   targets: {
     "ext_wbtest.mbt": [ "native" ],
-    "compile_wbtest.mbt": [ "native" ],
-    "vm_native.mbt": [ "native" ],
-    "vm_js.mbt": [ "js" ],
+    "host_wbtest.mbt": [ "native" ],
   },
-  "native-stub": [
-    "host/ext_host.c",
-    "host/wasm3/m3_bind.c",
-    "host/wasm3/m3_code.c",
-    "host/wasm3/m3_compile.c",
-    "host/wasm3/m3_core.c",
-    "host/wasm3/m3_deterministic.c",
-    "host/wasm3/m3_env.c",
-    "host/wasm3/m3_exec.c",
-    "host/wasm3/m3_function.c",
-    "host/wasm3/m3_info.c",
-    "host/wasm3/m3_module.c",
-    "host/wasm3/m3_parse.c",
-    "host/wasm3/m3_snapshot.c",
-    "host/wasm3/m3_validate.c",
-    "host/wasm3/m3_xxh64.c",
-  ],
 )

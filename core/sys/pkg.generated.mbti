@@ -3,6 +3,7 @@ package "pi-moon/core/sys"
 
 import {
   "moonbitlang/async",
+  "moonbitlang/async/pipe",
   "moonbitlang/async/process",
   "moonbitlang/core/debug",
 }
@@ -48,7 +49,7 @@ pub fn restore_vt_output() -> Unit
 
 pub async fn run_capture(String, Array[String], cwd? : String, timeout_ms? : Int32) -> Capture raise SysError
 
-pub async fn[X] spawn(@async.TaskGroup[X], String, Array[String], extra_env? : Map[String, String], pipe? : OutputPipe, cwd? : String) -> Process raise SysError
+pub async fn[X] spawn(@async.TaskGroup[X], String, Array[String], extra_env? : Map[String, String], pipe? : OutputPipe, stdin? : InputPipe, cwd? : String) -> Process raise SysError
 
 pub fn stdin_is_tty() -> Bool
 
@@ -63,6 +64,8 @@ pub async fn write_err(String) -> Unit raise SysError
 pub async fn write_out(String) -> Unit raise SysError
 
 pub async fn write_text(String, String, append? : Bool) -> Unit raise SysError
+
+pub async fn write_to_process() -> InputPipe raise SysError
 
 // Errors
 pub suberror SysError {
@@ -79,6 +82,13 @@ pub(all) struct Capture {
 pub fn Capture::exit_code(Self) -> Int32
 pub fn Capture::stderr(Self) -> String
 pub fn Capture::stdout(Self) -> String
+
+pub(all) struct InputPipe {
+  reader : @pipe.PipeRead
+  writer : @pipe.PipeWrite
+}
+pub fn InputPipe::close(Self) -> Unit
+pub async fn InputPipe::write(Self, String) -> Unit raise SysError
 
 pub(all) enum Kind {
   Regular

@@ -1,209 +1,162 @@
-# 扩展：pi 的扩展进 wasm 沙盒
+# 扩展：pi 的扩展跑在独立 bun 宿主里
 
 pi 的扩展是 TypeScript 模块，在 pi 进程里跑，拿的是完整的 `ExtensionAPI`。
-pi-moon 把它们装进 **pi 自己的 quickjs.wasm**（[`quickjs-wasi`](https://github.com/vercel-labs/quickjs-wasi)，
-pi 的 codemode 用的就是它），编译产物是一份 **VM 快照**；启动时只是把那份内存
-`memcpy` 回去。运行期不碰 Node，也不需要为某个扩展重新解析一次 JS。
+pi-moon 用的也是同一份扩展、同一份 `@earendil-works/*` 包，但不嵌 JS 引擎：
+扩展跑在一个 **独立的 bun 进程**里，两边按行说 JSON。
+
+形状照 magpie（Go 主程序 + Bun 插件宿主子进程）：
 
 ```text
-启动前（一次）                                   启动后（每次）
-  发现扩展 ──► 转译 TS→CJS ──► 体检 ──► 打包成一段 JS ──► 沙盒 eval ──► 快照落盘
-                            │                              │
-                 命中缓存则整段跳过 ─────────────────────────┤
-                                                           ▼
-                                           恢复快照（memcpy 内存 + 栈指针）
+pi-moon (MoonBit native)                 ext host (bun)
+  发现扩展 ─┐                         ┌─ 打包（Bun.build，命中缓存则跳过）
+  算缓存键 ─┼──► spawn bun ──────────►├─ 加载（bun 自己转译 TS）
+  读注册表 ◄┘   --mode load（一次性） └─ 回传 JSON：工具 / 命令 / 事件钩子
 ```
 
-## 为什么是 wasm + 快照
+## 为什么是宿主进程，不是嵌引擎
 
-因为快照只能这么来。快照要拷的是「VM 的全部状态」，也就是：
+一开始试的是「把 pi 的 `quickjs.wasm` 用 wasm3 嵌进 native 二进制、编译产物存
+VM 快照」。能跑，但代价很硬：
 
-- 一整块**线性内存**（JS 堆、字符串、对象图全在里面）；
-- wasm 的 `__stack_pointer`；
-- quickjs 的 runtime / context 指针。
+| | 嵌 wasm 引擎 | 宿主子进程 |
+| --- | --- | --- |
+| 同一段 JS（2M 次循环） | 1675 ms | 76 ms（bun/V8 级） |
+| 自定义 C | ~1000 行（wasm3 + WASI shim + 快照序列化 + `host_call` 桥） | 0 |
+| TypeScript | 得先自己转译，且只能跑纯 JS | bun 直接跑 |
+| npm 依赖 | 解析不了 | 用 pi 装机里的 node_modules |
+| Node API | 全禁（否则等于没沙盒） | 放行，靠路径白名单 |
+| 启动成本 | 恢复 1.3MB 快照 | 起 bun（首次打包较慢，之后 ~50–200ms） |
 
-这三样只有在 wasm 里才是一段「可以整体拷进拷出的字节」。原生 QuickJS 的堆是
-malloc 给的地址，落盘就失效 —— 于是「编译一次、启动只 memcpy」这条路只有 wasm 走得通。
+结论：**宿主外置**。magpie 也是这么做的（`the plugin host quit` / `Bun has no
+build for %s` 那些字符串就是它的插件宿主逻辑）。
 
-宿主有两个后端，沙盒语义完全一样（同一份 `quickjs.wasm`、同一种快照格式）：
-
-- **native**：vendored 的 [wasm3](https://github.com/wasm3/wasm3)（C，MIT，
-  无依赖），走 `core/ext` 的 `native-stub` 编进可执行文件；
-- **js**：直接复用 pi 装机里的 `quickjs-wasi`（npm，ESM），启动时
-  `await import()` 它的 `dist/index.js`，VM 句柄是进程内 `id → VM` 表的下标。
-
-两个后端的快照可以互换：wasm3 拍出来的 `.snapshot` 能被 pi 的 `quickjs-wasi`
-`restore` 回来（含注册表与 handler 函数），反过来也一样。`quickjs.wasm` 的 import 面很小，
-一共 12 个：6 个 `env.host_*`（时钟、中断、Promise 拒绝、模块加载、宿主函数回调）
-加 6 个 WASI（`fd_write` / `clock_time_get` / `random_get` …）。这些全部在
-`core/ext/host/ext_host.c` 里实现，文件系统一律 `ENOSYS`：
-
-```text
-core/ext/
-  ext.mbt          类型：来源、跳过原因、装载步骤、缓存键（FNV-1a 64）
-  discover.mbt     <agent dir>/extensions、<cwd>/.pi/extensions、--extension
-  scan.mbt         import 说明符 + Node 全局体检（shim 名单里的包放行）
-  transpile.mbt    启动前用 pi 的 jiti 把 TS/ESM 转成 CJS（只在未命中缓存时）
-  prepare.mbt      启动前的计划与缓存判定
-  compile.mbt      eval → 快照 → 落盘；元数据 JSON
-  prelude.mbt      沙盒里的 `pi` 对象 + `require` shim（pi 的四个包 / typebox）
-  vm.mbt           宿主形状 + 快照头解析
-  vm_native.mbt    wasm3 的 MoonBit FFI
-  vm_js.mbt        js 后端：node 上的 quickjs-wasi（@js_async.Promise 桥接）
-  wasm_resolve.mbt 找 pi 装机里的 quickjs.wasm
-  host/ext_host.c  实例化 / WASI import / 快照序列化
-  host/wasm3/      vendored wasm3
-```
+代价说清楚：运行期依赖 `bun` 可执行文件（找不到就整体关闭扩展，并给一条诊断）。
+`jiti` 也不再需要 —— bun 自己转译 TS。
 
 ## 一次启动的时序
 
-1. **发现**（`discover`）：`<agent dir>/extensions` 与 `<cwd>/.pi/extensions`，
-   单文件 `.ts/.mts/.cts/.js/.mjs/.cjs` 或「目录 + `index.ts`/`index.js`」。
-   `node_modules` 与点开头的目录不递归。
-2. **转译**（`transpile`）：缓存未命中时，用 pi 装机里的 `jiti` 把
-   TS / ESM 转成沙盒能 eval 的 CJS（`jiti.transform({ ts: true })`）：
-   类型擦除、`import type` 整条消失、`import` 变 `require`、
-   `export default` 变 `exports.default`。找不到 node / jiti 时退回原样源码
-   （纯 JS 扩展照旧能装，`.ts` 会在 eval 时报错并带上提示）。
-3. **体检**（`scan`）：在**转译后**的 JS 上扫两样东西，命中任一条就跳过：
-   - import 说明符（`import` / `import()` / `require()`）：`node:*` 与 Node
-     内建裸名（`fs`、`child_process`、`worker_threads` …）；相对路径
-     （`./x.js`）与裸包名（`lodash`）—— 沙盒里没有模块加载器；
-   - Node 专有全局：`process`、`Buffer`、`__dirname`、`__filename`、
-     `setImmediate`、`clearImmediate`。它们不出现在 import 里，光看说明符会
-     漏过去，结果是「装上了，一调 handler 就 ReferenceError」。判定看两边：
-     前一个 token 不是 `.`（那是 `foo.process`）、也不是 `const`/`let`/`var`/
-     `function`/`class`（那是本地声明）。
-   - 例外是**有 shim 的 pi 包**（见下节），它们不算坏说明符。
-   在编译后扫是有意的：`import type { ExtensionAPI } from "…"` 这类纯类型导入
-   编译后就不存在了，不该被误判。
-4. **缓存键**（`cache_key`）：
-   `FNV-1a 64(prelude_version ∥ sandbox_version ∥ transpiler_version ∥ 源码)`。
-   三者任一变化就重编译。文件在 `<agent dir>/cache/pi-moon/ext/<key>.snapshot`，
-   旁边一份 `<key>.json` 存注册清单（工具名、命令名、钩子事件）。
-5. **编译**（`compile_extension`）：`prelude + 扩展源 + 收尾` 拼成一段 script，
-   在一个刚 `qjs_init` 过的 VM 里 eval；扩展的注册动作往纯数据的 `pi` 对象上累加，
-   收尾把清单 `JSON.stringify` 回来，然后整块内存拍成快照落盘。
-6. **启动**：命中缓存的扩展直接读快照；未命中的在启动前编译一次。
-   单个扩展失败只留一条 `[ext]` 诊断，不挡启动。
+1. **发现**（`discover.mbt`）：`<agent dir>/extensions` 与
+   `<cwd>/.pi/extensions`，单文件 `.ts/.mts/.cts/.js/.mjs/.cjs` 或
+   「目录 + `index.ts`/`index.js`」；`node_modules` 与点开头的目录不递归。
+2. **缓存键**（`ext.mbt`）：`FNV-1a64(prelude_version ∥ host_cache_version ∥ 源码)`。
+   产物落在 `<agent dir>/cache/pi-moon/ext/host/build/<key>.mjs`。
+3. **装载**（`host.mbt`）：`bun <缓存>/ext_host.mjs --mode load …`，一次性进程：
+   打包（缓存未命中才跑）→ 加载 → 回传注册表 → 退出。
+4. **汇总**（`prepare.mbt`）：把工具名 / 命令名 / 事件名汇总成 `StartupExt`，
+   诊断打到 stderr（`[ext]` 前缀），横幅里出 `[Extensions]` 段。
 
-运行期的成本因此是「读一个 1.3MB 文件 + memcpy」，与本机 qjs 引擎无关。
+单个扩展失败只留一条诊断，不影响别的扩展，也不挡启动。
 
-## 兼容 pi 的 import
+## 文件系统白名单
 
-pi 的扩展几乎都 import pi 自己的包。沙盒用**预置模块 shim** 接住它们：`require`
-只认这几个名字，其余一律在装载前被体检拦下。
+扩展能自由用 `node:fs`，但路径按**允许根目录**过滤：`cwd`、agent 目录、
+`TMPDIR`。越界读写在调用点抛错：
 
-| 说明符 | 沙盒里 |
-| --- | --- |
-| `@earendil-works/pi-coding-agent` | `defineTool`（恒等，pi 里也是）、`Type`、`VERSION`；其余导出是「用到才抛」的桩 |
-| `@earendil-works/pi-ai` | `Type`（pi-ai re-export 了 typebox）、`StringEnum`；其余同上 |
-| `typebox` / `@sinclair/typebox` | `Type` 的 JSON Schema 构造器子集 |
-| `@earendil-works/pi-tui` | 全部是桩：渲染器在 pi-moon 里还没接，装了也不会被调用 |
-| `node:*` 与其它包 | **不装**（体检拦下，`NodeDependency` / `UnresolvedImport`） |
-
-`typebox` 的 shim 不是简单的透传：`Type.Object` 会把 `Type.Optional` 的字段排除出
-`required`，于是模型看到的参数 schema 与 pi 里一致。例如
-
-```ts
-parameters: Type.Object({ count: Type.Number(), label: Type.Optional(Type.String()) })
+```text
+扩展沙盒拒绝读路径 /etc/hosts（只允许 cwd / agent 目录 / 临时目录）
 ```
 
-在快照里是
+实现方式有个坑要说清楚：`Bun.build` 的插件**看不到内置模块**
+（`node:fs` 在插件之前就被解析成 external 了），所以策略是在**产物后处理**里做的 ——
+把产物中的 `node:fs` / `node:fs/promises` / `node:child_process` 导入改指向
+`build/policies/*.mjs` 这几个 sidecar，由它们包一层路径检查再转出真模块。
+产物很小（几百字节），import 语句是可枚举的文本。
 
-```json
-{"type":"object","properties":{"count":{"type":"number"},"label":{"type":"string"}},"required":["count"]}
-```
+这是 **JS 层的门禁**：挡得住「顺手读了不该读的文件」，挡不住刻意绕过
+（动态拼路径、`process.binding`）。真正的 OS 级隔离要平台支持，macOS 上的
+`sandbox-exec` 已经不能用（实测直接 `Abort trap: 6`）。
 
-`pi` 对象本身也是兜底代理：`registerTool` / `registerCommand` / `on` 是真实现，
-其余宿主 API（渲染器、快捷键、flag、UI）调用会被记进 `registry.unsupported`
-并返回空操作 —— 少一个渲染钩子不该让整个扩展装不进来。
+## 产物里的两个坑（都实测踩过）
 
-**兼容面实测**（pi 官方 `examples/extensions/` 的 70 个单文件示例）：53 个直接装载，
-17 个因 Node 依赖跳过，0 个编译失败。
+1. **不能给产物加 `?v=` 查询串**。产物里的裸包 import 要按**产物路径**向上
+   找 node_modules，带查询串会把 importer 变成一个找不到的路径 —— 报
+   `Cannot find module … from '<path>?v=…'`。产物名就是内容哈希，源码变了
+   键就变，不需要额外破缓存。
+2. **裸包 import 要改写成绝对路径**。bun 在**进程启动时**就固定了解析根，
+   而 `node_modules` 符号链接是启动后才建的（缓存目录是新建的），于是运行期
+   import 找不到包 —— 表现为「同样的命令在 shell 里手动跑却正常」。所以构建时
+   标 external，构建后按 `modulesDir` 解析成 `file://` 绝对 URL 写回产物。
+
+另外 `bunfig.toml` 里关掉了自动安装（`[install] auto = "disable"`）：
+否则解析不到的包会被悄悄从 npm 下载，「能不能装」取决于网络而不是这台机器
+上装了什么。
 
 ## 扩展里能用到什么
 
-沙盒给一个与 pi 同名同形状的 `pi` 对象（`core/ext/prelude.mbt`）：
+宿主给一个与 pi 同名同形状的 `pi` 对象，`registerTool` / `registerCommand` /
+`on` 是真实现（注册结果回传给 pi-moon），其余宿主 API 走兜底代理：调用会被
+记进 `registry.unsupported` 并返回空操作 —— 少一个渲染钩子不该让整个扩展装不进来。
 
-| API | 沙盒里 | 说明 |
-| --- | --- | --- |
-| `registerTool(tool)` | ✅ 注册 | 名字/描述/参数 schema 落进清单；`execute` 留在沙盒里 |
-| `registerCommand(name, def)` | ✅ 注册 | 同上 |
-| `on(event, handler)` | ✅ 注册 | 钩子按 `事件 → handler 序号` 记账 |
-| `registerProvider` / `registerMcpServer` | ⚠️ 计数 | 要网络 / 子进程，沙盒给不了；只记「这个扩展要了它」 |
-| `appendEntry` / `sendMessage` / `setActiveTools` | ⚠️ 空实现 | 会话与工具集是宿主的事 |
-| 其余 `pi.*`（渲染器 / 快捷键 / flag / UI） | ⚠️ 兜底空操作 | 记进 `registry.unsupported`，装载不受影响 |
+| API | 状态 |
+| --- | --- |
+| `registerTool(tool)` | ✅ 注册（`defineTool` 是恒等，`typebox` 是真包） |
+| `registerCommand(name, def)` | ✅ 注册 |
+| `on(event, handler)` | ✅ 注册（派发见「还没接」） |
+| `registerEntryRenderer` / `registerFlag` / `registerShortcut` / UI | ⚠️ 兜底空操作，记进 `unsupported` |
+| Node API（`fs` / `child_process` / `process` …） | ✅ 可用，路径按白名单 |
+| 任意 npm 包 | ✅ 只要 pi 装机的 node_modules 里有 |
 
-模块形态：扩展源按 pi 的约定 `export default function (pi) { … }`。沙盒没有 ESM
-加载器，所以 `rewrite_exports` 把顶层 `export default` 改写成
-`module.exports.default = …`，再把源码包进一个带 `module` / `exports` 的函数里。
-`export { a }` / `export * from` 整行注掉 —— 宿主用不上具名导出，注册靠的是副作用。
+**兼容面实测**：pi 官方 `examples/extensions/` 的 70 个单文件示例 **70 个全部
+装载成功**（早前「嵌 wasm + 拒绝 Node」的方案是 53 装载 / 17 跳过）。
 
-## 与 pi 的差异（有意为之）
+## 代码地图
 
-| 事项 | pi | pi-moon |
-| --- | --- | --- |
-| 运行位置 | 同进程，jiti 直接跑 TS | wasm 沙盒（native: wasm3 宿主；js: quickjs-wasi） |
-| 编译时机 | 每次加载都 jiti 转译 | 只在启动前，之后走快照缓存 |
-| Node 依赖 | 随便用 | 一律不装：命中就跳过，记一条诊断 |
-| 隔离 | 与 pi 同权限 | 无文件系统、无网络、无子进程 |
-| 快照格式 | `serializeSnapshot` | 逐字节同格式（"QJSS" + v2 + 扩展元数据 + 线性内存） |
+```text
+core/ext/
+  ext.mbt            类型：来源、装载步骤、缓存键（FNV-1a 64）
+  discover.mbt       <agent dir>/extensions、<cwd>/.pi/extensions、--extension
+  pi_modules.mbt     找 pi 装机里的 node_modules（宿主解析扩展 import 的包）
+  prepare.mbt        启动前的计划 + 调宿主装载 + 汇总 StartupExt
+  host.mbt           宿主进程：路径准备、spawn bun、解析回传 JSON
+  host_script.mbt    宿主脚本（由 scripts/embed-host.mjs 从 host/ext_host.mjs 生成）
+  host/ext_host.mjs  宿主脚本源码：Bun.build 缓存、策略 sidecar、JSON-lines RPC
+scripts/embed-host.mjs  生成器（改完 .mjs 跑一次）
+```
 
-快照格式对齐的用处：同一份 `.snapshot` 在 pi 的 quickjs-wasi 里也能 `restore`，
-反过来也一样 —— 调试时可以直接拿 node 打开看。
+`host_script.mbt` 与 `host/ext_host.mjs` 有同步测试兜底：改了 `.mjs` 忘了重新
+生成，`moon test` 会红。
 
-## 现在到哪一步了
+## 还没接
 
-已验证（`core/ext/*_wbtest.mbt`，native 20 项 + js 3 项）：
-
-- wasm3 上跑起 pi 的 `quickjs.wasm`，eval / 异常 / quickjs 版本串；
-- 快照 → 新实例恢复 → 状态还在（`x*2 == 82` 那种跨实例验证）；
-- 发现 + 体检 + 缓存键 + 命中/未命中判定；
-- 真实编译一个扩展：快照落盘、元数据 JSON、第二次命中缓存；
-- 带 `node:fs` 的扩展按 `NodeDependency` 跳过；
-- 找不到 `quickjs.wasm` 时按 `NoCompiler` 跳过；
-- 两个后端都真跑起来：native 走 wasm3、js 走 node 的 quickjs-wasi，
-  同一套 `ExtVm` 签名两端行为一致；
-- 跨宿主互通：wasm3 拍出的快照在 node 里被 pi 的 `quickjs-wasi` 恢复，
-  注册表与 handler 函数都还在（`restore` 后 `JSON.stringify(__pi_ext_registry)` 可读）。
-
-还没接（下一步）：
-
-1. **运行期桥接**：把恢复出来的 VM 接到 pi-moon 的环上 —— `registerTool` 的工具
-   进 `core/tools` 的定义表、`execute` 通过 `host_call` 回调沙盒、`on(...)` 的钩子
-   在 `tool_call` / `turn_end` 等 action 处派发。C 侧的 `host_call` 现在是「没接住」
-   的桩，桥接时改成把 `name + argsJson` 交给 MoonBit 侧。
-2. **TS 扩展**：目前只跑纯 JS。`.ts` 需要在启动前用 node + pi 自带的 jiti 转译
-   （`NoCompiler` 就是给这条路径留的位置）。
-3. **缓存清理**：改了源码会换键，旧快照没人删。需要一个 LRU（按 mtime / 大小）。
-4. **TS 转译依赖 node + jiti**：两者都来自 pi 装机（`<node_modules>/jiti`）。
-   精简环境里没有它们时退回「原样源码」路径，`.ts` 会报错并提示需要转译。
+1. **运行期派发**：宿主脚本已经有 `--mode serve`（`call` 工具 / `emit` 事件
+   钩子 / `command` 命令），pi-moon 侧还没起常驻宿主并接进环。所以现在扩展
+   能「装载并注册」，但 `execute` 与事件钩子还不会被调用。
+2. **产物清理**：源码改了会换键，旧产物没人删（`build/` 会缓慢变大）。
+3. **沙盒强度**：JS 层白名单，不是 OS 级隔离（见上）。
 
 ## 手动试
 
 ```bash
-# 项目级扩展放这儿
 mkdir -p .pi/extensions
-cat > .pi/extensions/demo.js <<'JS'
-export default function (pi) {
-  pi.registerTool({ name: "demo_tool", description: "演示工具" });
-  pi.registerCommand("demo", { description: "演示命令" });
-  pi.on("turn_end", function () { return null; });
+cat > .pi/extensions/demo.ts <<'TS'
+import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+const tool = defineTool({
+  name: "demo_tool",
+  description: "演示工具",
+  parameters: Type.Object({ text: Type.String() }),
+  async execute(_id: string, params: { text: string }) {
+    return { content: [{ type: "text", text: params.text }] };
+  },
+});
+export default function (pi: ExtensionAPI) {
+  pi.registerTool(tool);
+  pi.on("turn_end", async () => null);
 }
-JS
+TS
 
-pi-moon -p "hi"        # 第一次：启动前编译，落快照
-pi-moon -p "hi"        # 第二次：命中缓存，不碰 JS 引擎
+pi-moon -p "hi"     # 第一次：打包 + 装载
+pi-moon -p "hi"     # 第二次：命中产物缓存
 ```
 
-诊断走 stderr，形如：
+诊断走 stderr：
 
 ```text
-[ext] 跳过扩展 "bad"：依赖 Node 专有模块 "node:fs"，不加载
 [ext] 已装载：demo
+[ext] 扩展 "x" 用了未实现的宿主 API：registerFlag
+[ext] 装载扩展 "y" 失败：…
 ```
 
-`PI_QUICKJS_WASM` 可以显式指定 wasm 路径；默认去
-`<agent dir>/install/releases/<版本>/node_modules/quickjs-wasi/quickjs.wasm` 里
-挑版本号最大的那份。
+`PI_PI_MODULES` 可以显式指定 pi 的 node_modules；默认去
+`<agent dir>/install/releases/<版本>/node_modules` 里挑版本号最大的那份。
+`PI_MOON_BUN` 可以指定 bun 可执行文件。

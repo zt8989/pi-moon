@@ -1,80 +1,50 @@
-// 启动前的准备：把「磁盘上的扩展源」变成「这次启动要恢复哪几个快照」。
+// 启动前的准备：把「磁盘上的扩展源」变成「这次启动要交给宿主编译/装载哪几个」。
 //
 // 一个扩展只可能停在三种结局：
-//   1. 缓存命中   → 启动时直接恢复快照，JS 引擎不参与；
-//   2. 缓存未命中 → 启动前编译一次（宿主跑 prelude + 扩展源，抓快照落盘）；
-//   3. 不加载     → 体检没过（Node 依赖 / 不可解析的 import / 读不出来）。
+//   1. 缓存命中   → 启动时直接把产物交给 bun，不再打包；
+//   2. 缓存未命中 → 启动前打包一次（Bun.build），产物落在缓存目录；
+//   3. 不加载     → 体检没过（Node 全局 / 不可解析的 import / 读不出来）。
 //
-// 这里的代码全在「启动前」这一侧，唯一的运行期输入是已有的缓存文件。
+// 这里的代码全在「启动前」这一侧，唯一的运行期输入是已有的产物文件。
 
 ///|
-/// 预置脚本版本。改了 prelude 里的 JS 就必须加一 —— 缓存键包含它，
-/// 否则老快照会被继续用，宿主调一个已经不存在的函数。
-pub let prelude_version : String = "pi-moon-ext/2"
+/// 预置脚本版本。宿主脚本改了要加一 —— 缓存键包含它。
+pub let prelude_version : String = "pi-moon-ext/3"
 
 ///|
-/// 沙盒版本：`quickjs.wasm` 的发布版本。快照不跨版本，所以进缓存键。
-pub let sandbox_version : String = "quickjs-wasi/3.6.2"
+/// 沙盒版本（宿主运行时的大版本）。产物不跨版本混用。
+pub let sandbox_version : String = "bun-1"
+
+///|
+/// 宿主流程的版本串（进缓存键）：宿主脚本 + 沙盒版本一起变。
+pub fn host_cache_version() -> String {
+  host_version + "+" + sandbox_version
+}
 
 ///|
 /// 对一个扩展源做体检 + 缓存判定。
 ///
-/// 读文件失败、import 体检不过都收敛成 `Skip`；只有「能装且缺缓存」才给
-/// `Compile` —— 调用方据此决定要不要在启动前拉起编译器。
+/// 读文件失败、体检不过都收敛成 `Skip`；只有「能装」才继续。
+/// 缓存命中与否由宿主自己的 build 目录判断（`load` 回传 built 标记），
+/// 这里只负责算键与路径。
 pub async fn plan_source(
   source : ExtSource,
   agent_dir : String,
-  transpiler~ : Transpiler? = None,
 ) -> ExtEntry {
-  // 先读源码、算缓存键：命中就到此为止 —— 不转译、不体检，启动路径上
-  // 只剩一次 read + 一次 stat。
+  // 这里只读源码算缓存键：能不能装交给宿主 —— 它跑在 bun 里，Node API
+  // 全部可用（路径按白名单卡），模块解析失败会在装载时带着 bun 的诊断回来。
   let raw = @sys.read_text(source.path) catch {
     error => return { source, step: Skip(reason=Unreadable(error.to_string())) }
   }
-  let key = cache_key(
-    raw,
-    prelude_version~,
-    sandbox_version=sandbox_version + "+" + transpiler_version,
-  )
+  let key = cache_key(raw, prelude_version~, sandbox_version=host_cache_version())
   let path = ext_cache_path(agent_dir, key)
   let cached = @sys.exists(path) catch { _ => false }
-  if cached {
-    return { source, step: Cached(cache_key=key, path~) }
+  let step = if cached {
+    Cached(cache_key=key, path~)
+  } else {
+    Compile(cache_key=key, path~, source=raw)
   }
-  // 未命中：先转译（TS / ESM → CJS），再在**将要执行的代码**上做体检。
-  // 没有工具链时退回原样源码：纯 JS 扩展照旧能装，TS 会在 eval 时报
-  // SyntaxError 并带上「需要转译」的提示。
-  let code = match transpiler {
-    Some(transpiler) => transpile_or_none(transpiler, source.path)
-    None => None
-  }
-  let (code, is_cjs) = match code {
-    Some(cjs) => (cjs, true)
-    None => (raw, false)
-  }
-  // Node 全局先查：`process.env` 这类没有 import，光看说明符会漏过去，
-  // 结果是「装上了，一调 handler 就 ReferenceError」。
-  match first_node_global(code) {
-    Some(name) => return { source, step: Skip(reason=NodeDependency(name)) }
-    None => ()
-  }
-  match first_unsupported_import(code) {
-    Some((kind, spec)) =>
-      match kind {
-        SpecifierKind::NodeBuiltin =>
-          return { source, step: Skip(reason=NodeDependency(spec)) }
-        _ => return { source, step: Skip(reason=UnresolvedImport(spec)) }
-      }
-    _ => ()
-  }
-  { source, step: Compile(cache_key=key, path~, source=code, cjs=is_cjs) }
-}
-
-///|
-/// 转译失败就当没转译（保留原样源码那条路），原因留给调用方的诊断。
-async fn transpile_or_none(transpiler : Transpiler, path : String) -> String? {
-  let result = try transpile(transpiler, path) catch { _ => return None }
-  Some(result)
+  { source, step }
 }
 
 ///|
@@ -83,21 +53,11 @@ pub async fn plan(
   cwd : String,
   agent_dir : String,
   explicit~ : Array[String] = [],
-  transpiler? : Transpiler? = None,
 ) -> ExtPlan {
   let (sources, diagnostics) = discover(cwd, agent_dir, explicit~)
-  // 工具链只探一次：每个扩展都 spawn 一次 `node --version` 太贵。
-  let transpiler = match transpiler {
-    Some(transpiler) => Some(transpiler)
-    None =>
-      match load_quickjs_wasm(agent_dir) {
-        Some((wasm_path, _)) => find_transpiler(quickjs_package_dir(wasm_path))
-        None => None
-      }
-  }
   let entries : Array[ExtEntry] = []
   for source in sources {
-    let entry = plan_source(source, agent_dir, transpiler~)
+    let entry = plan_source(source, agent_dir)
     match entry.step {
       Skip(reason~) =>
         diagnostics.push(
@@ -111,10 +71,10 @@ pub async fn plan(
 }
 
 ///|
-/// 启动前的一次性准备：发现 → 体检 → 编译缺缓存的 → 汇总。
+/// 启动前的一次性准备：发现 → 体检 → 交给 bun 宿主装载 → 汇总。
 ///
-/// 这是 `cmd/pi-moon` 唯一需要调的入口。返回的名字与注册清单供横幅与运行期
-/// 桥接使用；诊断直接打到 stderr（与 `[config]` / `[skills]` 同一风格）。
+/// 这是 `cmd/pi-moon` 唯一需要调的入口。宿主负责打包（只在缓存未命中时）
+/// 与装载，回传注册的工具 / 命令 / 事件钩子。
 pub(all) struct StartupExt {
   /// 装载成功的扩展名（顺序即发现顺序）。
   names : Array[String]
@@ -127,8 +87,10 @@ pub(all) struct StartupExt {
   /// 扩展挂了钩子的事件名。
   events : Array[String]
   diagnostics : Array[String]
-  /// 每个已就绪扩展的快照路径（运行期恢复用）。
-  snapshots : Array[(String, String)]
+  /// 每个已就绪扩展的宿主产物路径（运行期复用）。
+  artifacts : Array[(String, String)]
+  /// 宿主是否可用（false 时扩展整体关闭）。
+  available : Bool
 }
 
 ///|
@@ -138,31 +100,117 @@ pub async fn prepare_at_startup(
   explicit~ : Array[String] = [],
 ) -> StartupExt {
   let planned = plan(cwd, agent_dir, explicit~)
-  let (compiled, final_plan) = compile_plan(planned, agent_dir)
+  let diagnostics = planned.diagnostics.copy()
   let names : Array[String] = []
   let labels : Array[String] = []
   let tools : Array[String] = []
   let commands : Array[String] = []
   let events : Array[String] = []
-  let snapshots : Array[(String, String)] = []
-  for entry in compiled {
-    names.push(entry.name)
-    labels.push(entry.label)
-    snapshots.push((entry.name, entry.snapshot_path))
-    for tool in entry.tools {
+  let artifacts : Array[(String, String)] = []
+  let ready = planned.loaded()
+  if ready.is_empty() {
+    return {
+      names,
+      labels,
+      tools,
+      commands,
+      events,
+      diagnostics,
+      artifacts,
+      available: true,
+    }
+  }
+  // 宿主需要 pi 的 node_modules 才能解析扩展 import 的包。
+  let modules = match resolve_pi_modules(agent_dir) {
+    Some(path) => path
+    None => ""
+  }
+  if modules.is_empty() {
+    diagnostics.push("跳过全部扩展：找不到 pi 的 node_modules（宿主无法解析 pi 的包）")
+    return {
+      names,
+      labels,
+      tools,
+      commands,
+      events,
+      diagnostics,
+      artifacts,
+      available: false,
+    }
+  }
+  let paths = prepare_host_paths(cwd, agent_dir, modules) catch {
+    error => {
+      diagnostics.push(error.to_string())
+      return {
+        names,
+        labels,
+        tools,
+        commands,
+        events,
+        diagnostics,
+        artifacts,
+        available: false,
+      }
+    }
+  }
+  if paths.bun_missing() {
+    diagnostics.push(NoBun.to_string())
+    return {
+      names,
+      labels,
+      tools,
+      commands,
+      events,
+      diagnostics,
+      artifacts,
+      available: false,
+    }
+  }
+  for entry in ready {
+    let key = match entry.step {
+      Cached(cache_key~, ..) => cache_key
+      Compile(cache_key~, ..) => cache_key
+      Skip(..) => continue
+    }
+    let loaded = try load_extension(paths, entry.source, key) catch {
+      error => {
+        diagnostics.push("装载扩展 \"" + entry.source.name + "\" 失败：" + error.to_string())
+        continue
+      }
+    }
+    names.push(entry.source.name)
+    labels.push(ext_label(entry.source))
+    artifacts.push((entry.source.name, paths.root + "/build/" + key + ".mjs"))
+    for tool in loaded.tools {
       if !tools.contains(tool) {
         tools.push(tool)
       }
     }
-    for command in entry.commands {
+    for command in loaded.commands {
       if !commands.contains(command) {
         commands.push(command)
       }
     }
-    for event in entry.events {
+    for event in loaded.events {
       if !events.contains(event) {
         events.push(event)
       }
+    }
+    if !loaded.unsupported.is_empty() {
+      diagnostics.push(
+        "扩展 \"" +
+        entry.source.name +
+        "\" 用了未实现的宿主 API：" +
+        loaded.unsupported.join(", "),
+      )
+    }
+    for denied in loaded.denied {
+      diagnostics.push("扩展 \"" + entry.source.name + "\" 被沙盒拦下：" + denied)
+    }
+    if !loaded.built {
+      diagnostics.push(
+        "扩展 \"" + entry.source.name + "\" 命中产物缓存（" + loaded.ms.to_string() + "ms）",
+      )
     }
   }
   {
@@ -171,7 +219,8 @@ pub async fn prepare_at_startup(
     tools,
     commands,
     events,
-    diagnostics: final_plan.diagnostics,
-    snapshots,
+    diagnostics,
+    artifacts,
+    available: true,
   }
 }

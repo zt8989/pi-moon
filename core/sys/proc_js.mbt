@@ -21,12 +21,13 @@ extern "js" fn js_pipe_new() -> JsPipe =
 ///|
 extern "js" fn js_spawn(
   pipe : JsPipe,
+  stdin_slot : JsPipe,
   program : String,
   args : Array[String],
   extra_env : String,
   cwd : String,
 ) -> String =
-  #| (pipe, program, args, extra_env, cwd) => {
+  #| (pipe, stdinSlot, program, args, extra_env, cwd) => {
   #|   try {
   #|     const { spawn } = require('node:child_process')
   #|     const env = Object.assign({}, process.env,
@@ -34,9 +35,10 @@ extern "js" fn js_spawn(
   #|     const child = spawn(program, args, {
   #|       cwd: cwd && cwd.length > 0 ? cwd : process.cwd(),
   #|       env,
-  #|       stdio: ['ignore', 'pipe', 'pipe'],
+  #|       stdio: ['pipe', 'pipe', 'pipe'],
   #|     })
   #|     pipe.child = child
+  #|     if (stdinSlot) { stdinSlot.child = child }
   #|     const push = (chunk) => {
   #|       const w = pipe.waiters.shift()
   #|       if (w) { w.resolve(chunk) } else { pipe.queue.push(chunk) }
@@ -111,7 +113,7 @@ extern "js" fn js_capture(
   #|     const child = spawn(program, args, {
   #|       cwd: cwd && cwd.length > 0 ? cwd : process.cwd(),
   #|       env,
-  #|       stdio: ['ignore', 'pipe', 'pipe'],
+  #|       stdio: ['pipe', 'pipe', 'pipe'],
   #|     })
   #|     const out_chunks = []
   #|     const err_chunks = []
@@ -209,12 +211,48 @@ pub fn Process::cancel(self : Process) -> Unit {
 }
 
 ///|
+/// 子进程的 stdin。js 侧没有真正的 fd：写的是 node 的 `child.stdin`。
+pub(all) struct InputPipe {
+  pipe : JsPipe
+}
+
+///|
+pub async fn write_to_process() -> InputPipe raise SysError {
+  { pipe: js_pipe_new() }
+}
+
+///|
+extern "js" fn js_write_stdin(pipe : JsPipe, data : String) -> String =
+  #| (pipe, data) => {
+  #|   try {
+  #|     if (!pipe.child || !pipe.child.stdin) { return 'stdin 不可用' }
+  #|     pipe.child.stdin.write(data)
+  #|     return ''
+  #|   } catch (e) { return String((e && e.message) || e) }
+  #| }
+
+///|
+pub async fn InputPipe::write(self : InputPipe, data : String) -> Unit raise SysError {
+  let error = js_write_stdin(self.pipe, data)
+  if !error.is_empty() {
+    raise SysError(error)
+  }
+}
+
+///|
+pub fn InputPipe::close(self : InputPipe) -> Unit {
+  let _ = self
+  ()
+}
+
+///|
 pub async fn[X] spawn(
   group : @async.TaskGroup[X],
   program : String,
   args : Array[String],
   extra_env? : Map[String, String] = Map([]),
   pipe? : OutputPipe,
+  stdin? : InputPipe,
   cwd? : String = ".",
 ) -> Process raise SysError {
   let _ = group
@@ -222,7 +260,13 @@ pub async fn[X] spawn(
     Some(pipe) => pipe
     None => { pipe: js_pipe_new() }
   }
-  let error = js_spawn(pipe.pipe, program, args, env_json(extra_env), cwd)
+  // js 侧 stdout/stderr 走一根队列，stdin 写的是同一个 child 的 stdin：
+  // 把 child 也挂到 stdin 的槽上，`InputPipe::write` 才有东西可写。
+  let stdin_slot = match stdin {
+    Some(stdin) => stdin.pipe
+    None => js_pipe_new()
+  }
+  let error = js_spawn(pipe.pipe, stdin_slot, program, args, env_json(extra_env), cwd)
   if !error.is_empty() {
     raise SysError(error)
   }

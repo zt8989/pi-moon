@@ -61,59 +61,6 @@ test "stem_of / parent_dir" {
 }
 
 ///|
-test "import_specifiers：静态、动态、require、多行" {
-  let source =
-    #|import fs from "node:fs";
-    #|import { a, b } from './local.js'
-    #|export { c } from "pkg"
-    #|const d = await import("dyn-pkg")
-    #|const e = require("cjs-pkg")
-    #|import "side-effect"
-  let specs = import_specifiers(source)
-  assert_eq(
-    specs,
-    ["node:fs", "./local.js", "pkg", "dyn-pkg", "cjs-pkg", "side-effect"],
-  )
-}
-
-///|
-test "import_specifiers：注释与字符串里的 import 不算" {
-  let source =
-    #|// import evil from "node:fs"
-    #|/* require("node:child_process") */
-    #|const text = "import x from 'node:net'"
-    #|const value = 1
-  assert_eq(import_specifiers(source), [])
-}
-
-///|
-test "classify_specifier：内建、前缀、相对、裸包" {
-  assert_eq(classify_specifier("node:fs"), NodeBuiltin)
-  assert_eq(classify_specifier("fs"), NodeBuiltin)
-  assert_eq(classify_specifier("child_process"), NodeBuiltin)
-  assert_eq(classify_specifier("fs/promises"), Package)
-  assert_eq(classify_specifier("./util.js"), Relative)
-  assert_eq(classify_specifier("../up.js"), Relative)
-  assert_eq(classify_specifier("/abs.js"), Relative)
-  assert_eq(classify_specifier("lodash"), Package)
-  assert_eq(classify_specifier(""), Allowed)
-}
-
-///|
-test "first_unsupported_import：只报第一个坏说明符" {
-  assert_eq(first_unsupported_import("const a = 1"), None)
-  assert_eq(
-    first_unsupported_import("import fs from \"node:fs\"; import os from \"os\""),
-    Some((NodeBuiltin, "node:fs")),
-  )
-  // 相对的坏说明符同样拦下来：沙盒里没有模块加载器。
-  assert_eq(
-    first_unsupported_import("import x from \"./x.js\""),
-    Some((Relative, "./x.js")),
-  )
-}
-
-///|
 async test "discover：用户级 + 项目级 + 目录式扩展，同名先到先得" {
   let root = make_dir("discover")
   let agent = root + "/agent"
@@ -141,7 +88,7 @@ async test "discover：用户级 + 项目级 + 目录式扩展，同名先到先
 }
 
 ///|
-async test "plan：命中缓存 / 需要编译 / 因 Node 依赖跳过" {
+async test "plan：未命中要打包（Node API 不再预处理拒绝）" {
   let root = make_dir("plan")
   let agent = root + "/agent"
   put(agent + "/extensions/good.ts", "const a = 1")
@@ -157,11 +104,12 @@ async test "plan：命中缓存 / 需要编译 / 因 Node 依赖跳过" {
     }
     other => fail("期望 Compile，实际 " + other.to_string())
   }
+  // `import "node:fs"` 不再被预处理拒绝：宿主跑在 bun 里，Node API 可用，
+  // 读取范围由产物里的策略模块按白名单卡。
   match native.step {
-    Skip(reason~) => assert_eq(reason, NodeDependency("node:fs"))
-    other => fail("期望 Skip，实际 " + other.to_string())
+    Compile(..) | Cached(..) => ()
+    other => fail("期望继续装载，实际 " + other.to_string())
   }
-  assert_true(planned.diagnostics.any(line => line.contains("node:fs")))
 }
 
 ///|
@@ -182,39 +130,3 @@ async test "plan：缓存文件存在时走 Cached，不再编译" {
   }
 }
 
-///|
-test "first_node_global：认引用、放过属性与声明" {
-  assert_eq(first_node_global("const x = process.env.HOME"), Some("process"))
-  assert_eq(first_node_global("Buffer.from('a')"), Some("Buffer"))
-  assert_eq(first_node_global("console.log(__dirname)"), Some("__dirname"))
-  // 属性访问不是全局。
-  assert_eq(first_node_global("foo.process.env"), None)
-  // 本地声明不是全局。
-  assert_eq(first_node_global("const process = 1"), None)
-  assert_eq(first_node_global("let Buffer = { from() {} }"), None)
-  // 只是出现在字符串里不算。
-  assert_eq(first_node_global("const s = 'process.env'"), None)
-  // 沙盒包装脚本自己的 module/exports 不在名单里。
-  assert_eq(first_node_global("module.exports.x = 1"), None)
-}
-
-///|
-async test "plan：用 process.env 的扩展按 NodeDependency 跳过" {
-  let root = make_dir("node-global")
-  let agent = root + "/agent"
-  // 语法上是合法 JS（这正是不查全局时会被放进去的那种）。
-  put(
-    agent + "/extensions/prefill.js",
-    #|export default function (pi) {
-    #|  pi.on("session_start", () => {
-    #|    if (process.env.HOME) return;
-    #|  });
-    #|}
-  )
-  let planned = plan(root + "/project", agent)
-  let entry = planned.entries[0]
-  match entry.step {
-    Skip(reason~) => assert_eq(reason, NodeDependency("process"))
-    other => fail("期望按 process 跳过，实际 " + other.to_string())
-  }
-}

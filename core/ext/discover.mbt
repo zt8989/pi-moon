@@ -52,6 +52,18 @@ pub fn parent_dir(path : String) -> String {
 }
 
 ///|
+/// 横幅标签：pi 显示的是「装了什么」—— 单文件带后缀（`demo.js`），
+/// 目录式扩展是目录名（`demo`）。
+pub fn ext_label(source : ExtSource) -> String {
+  let file_name = base_name(source.path)
+  if is_source_file(file_name) {
+    file_name
+  } else {
+    base_name(source.dir)
+  }
+}
+
+///|
 /// 判断一个文件是不是扩展源文件。
 pub fn is_source_file(name : String) -> Bool {
   source_suffixes.any(suffix => name.has_suffix(suffix))

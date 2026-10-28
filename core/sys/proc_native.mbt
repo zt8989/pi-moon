@@ -33,6 +33,34 @@ pub fn OutputPipe::close(self : OutputPipe) -> Unit {
 }
 
 ///|
+/// 子进程的 stdin：`reader` 交给 `spawn`，`writer` 留给宿主写。
+/// 与 `OutputPipe` 对称 —— 「一根管道，两端各一半」。
+pub(all) struct InputPipe {
+  reader : @pipe.PipeRead
+  writer : @pipe.PipeWrite
+}
+
+///|
+pub async fn write_to_process() -> InputPipe raise SysError {
+  let (reader, writer) = @pipe.pipe() catch {
+    err => raise SysError(err.to_string())
+  }
+  { reader, writer }
+}
+
+///|
+pub async fn InputPipe::write(self : InputPipe, data : String) -> Unit raise SysError {
+  self.writer.write(data) catch {
+    err => raise SysError(err.to_string())
+  }
+}
+
+///|
+pub fn InputPipe::close(self : InputPipe) -> Unit {
+  self.writer.close()
+}
+
+///|
 pub(all) struct Process {
   inner : @process.Process
 }
@@ -49,6 +77,7 @@ pub async fn[X] spawn(
   args : Array[String],
   extra_env? : Map[String, String] = Map([]),
   pipe? : OutputPipe,
+  stdin? : InputPipe,
   cwd? : String = ".",
 ) -> Process raise SysError {
   let process = @process.spawn(
@@ -56,6 +85,7 @@ pub async fn[X] spawn(
     program,
     args,
     extra_env~,
+    stdin?=stdin.map(fn(pipe) { pipe.reader }),
     stdout?=pipe.map(fn(pipe) { pipe.writer }),
     stderr?=pipe.map(fn(pipe) { pipe.writer }),
     cwd~,
