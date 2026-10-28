@@ -84,7 +84,11 @@ fn take_result(handle : Int64) -> String {
 
 ///|
 /// 开工：实例化 + `_initialize` + `qjs_init`。
-pub fn ExtVm::new(wasm : Bytes) -> ExtVm raise VmError {
+///
+/// `host` 只有 js 后端用（quickjs-wasi 的包目录）—— native 自己就带着 wasm3，
+/// 不需要外面再给一个 JS 引擎。
+pub async fn ExtVm::new(wasm : Bytes, host? : String = "") -> ExtVm raise VmError {
+  let _ = host
   let handle = pim_ext_vm_new(wasm, wasm.length())
   if handle == 0L {
     raise VmInit(take_global_error())
@@ -136,7 +140,8 @@ pub fn ExtVm::snapshot(self : ExtVm) -> Bytes raise VmError {
 
 ///|
 /// 从快照恢复一个 VM。
-pub fn ExtVm::restore(wasm : Bytes, snapshot : Bytes) -> ExtVm raise VmError {
+pub async fn ExtVm::restore(wasm : Bytes, snapshot : Bytes, host? : String = "") -> ExtVm raise VmError {
+  let _ = host
   let handle = pim_ext_vm_restore(wasm, wasm.length(), snapshot, snapshot.length())
   if handle == 0L {
     raise VmInit(take_global_error())

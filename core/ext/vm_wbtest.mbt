@@ -3,7 +3,9 @@
 // 找不到 wasm（没装 pi / 测试机干净）时整组跳过 —— 这是环境缺失，不是回归。
 
 ///|
-async fn quickjs_bytes() -> Bytes? {
+/// 找到 pi 装机里的 quickjs.wasm：返回 (wasm 路径, 字节)。
+/// 路径要留着 —— js 后端得拿它的包目录去 `import()` quickjs-wasi。
+async fn quickjs_files() -> (String, Bytes)? {
   let env = @env.get_env_vars()
   let agent_dir = match env.get("PI_CODING_AGENT_DIR") {
     Some(dir) if !dir.is_empty() => dir
@@ -15,18 +17,16 @@ async fn quickjs_bytes() -> Bytes? {
       home + "/.pi/agent"
     }
   }
-  match load_quickjs_wasm(agent_dir) {
-    Some((_, bytes)) => Some(bytes)
-    None => None
-  }
+  load_quickjs_wasm(agent_dir)
 }
 
 ///|
 async test "sandbox：eval 一个表达式" {
-  match quickjs_bytes() {
+  match quickjs_files() {
     None => return
-    Some(wasm) => {
-      let vm = ExtVm::new(wasm) catch { error => fail(error.to_string()) }
+    Some((wasm_path, wasm)) => {
+      let host = quickjs_package_dir(wasm_path)
+      let vm = ExtVm::new(wasm, host~) catch { error => fail(error.to_string()) }
       defer vm.free()
       let result = vm.eval("1 + 2") catch { error => fail(error.to_string()) }
       assert_eq(result, "3")
@@ -47,10 +47,11 @@ fn eval_error(vm : ExtVm, code : String) -> VmError? {
 
 ///|
 async test "sandbox：语法错误与 JS 异常都变成 VmError" {
-  match quickjs_bytes() {
+  match quickjs_files() {
     None => return
-    Some(wasm) => {
-      let vm = ExtVm::new(wasm) catch { error => fail(error.to_string()) }
+    Some((wasm_path, wasm)) => {
+      let host = quickjs_package_dir(wasm_path)
+      let vm = ExtVm::new(wasm, host~) catch { error => fail(error.to_string()) }
       defer vm.free()
       match eval_error(vm, "this is not js") {
         Some(VmEval(message)) => assert_true(message.length() > 0)
@@ -71,10 +72,11 @@ async test "sandbox：语法错误与 JS 异常都变成 VmError" {
 
 ///|
 async test "sandbox：快照恢复后状态还在" {
-  match quickjs_bytes() {
+  match quickjs_files() {
     None => return
-    Some(wasm) => {
-      let vm = ExtVm::new(wasm) catch { error => fail(error.to_string()) }
+    Some((wasm_path, wasm)) => {
+      let host = quickjs_package_dir(wasm_path)
+      let vm = ExtVm::new(wasm, host~) catch { error => fail(error.to_string()) }
       let prelude = vm.eval(
         "globalThis.__pi_ext_state = { ready: true, answer: 41 }; 'ok'",
       ) catch {
@@ -92,7 +94,7 @@ async test "sandbox：快照恢复后状态还在" {
         }
         None => fail("快照头解析失败")
       }
-      let restored = ExtVm::restore(wasm, snapshot) catch {
+      let restored = ExtVm::restore(wasm, snapshot, host~) catch {
         error => fail(error.to_string())
       }
       defer restored.free()

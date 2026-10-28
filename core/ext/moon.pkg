@@ -10,6 +10,7 @@
 
 import {
   "pi-moon/core/sys",
+  "moonbitlang/async/js_async",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/env",
   "moonbitlang/core/json",
@@ -29,6 +30,7 @@ import {
 options(
   targets: {
     "ext_wbtest.mbt": [ "native" ],
+    "compile_wbtest.mbt": [ "native" ],
     "vm_native.mbt": [ "native" ],
     "vm_js.mbt": [ "js" ],
   },

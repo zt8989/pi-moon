@@ -87,6 +87,13 @@ pub async fn resolve_quickjs_wasm(agent_dir : String) -> String? {
 }
 
 ///|
+/// `quickjs.wasm` 所在的包目录：js 后端要用它 `import()` quickjs-wasi
+/// （`<pkg>/dist/index.js`）。
+pub fn quickjs_package_dir(wasm_path : String) -> String {
+  parent_dir(wasm_path)
+}
+
+///|
 /// 读 wasm 字节。找不到 / 读不出来都返回 None。
 pub async fn load_quickjs_wasm(agent_dir : String) -> (String, Bytes)? {
   match resolve_quickjs_wasm(agent_dir) {

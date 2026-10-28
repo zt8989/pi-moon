@@ -167,14 +167,28 @@ pub async fn compile_extension(
   code : String,
   wasm : Bytes,
   snapshot_path : String,
+  host? : String = "",
 ) -> CompiledExt raise CompileError {
-  let vm = ExtVm::new(wasm) catch {
+  let vm = ExtVm::new(wasm, host~) catch {
     error => raise Sandbox(error.to_string())
   }
   defer vm.free()
   let script = wrap_extension(code)
   let registry = vm.eval(script, filename=source.path) catch {
-    error => raise Evaluation(error.to_string())
+    error => {
+      let reason = error.to_string()
+      // `.ts` 的语法（类型标注、interface、enum）不是 JS：沙盒只能跑转译后的
+      // 源码，而转译这一步（node + jiti）还没接。给一句人话，别只丢 SyntaxError。
+      let is_typescript = source.path.has_suffix(".ts") ||
+        source.path.has_suffix(".mts") ||
+        source.path.has_suffix(".cts")
+      if is_typescript && reason.contains("SyntaxError") {
+        raise Evaluation(
+          reason + "（.ts 需要启动前转译成 JS，这条链路还没接；纯 JS 的扩展不受影响）",
+        )
+      }
+      raise Evaluation(reason)
+    }
   }
   let snapshot = vm.snapshot() catch {
     error => raise Sandbox(error.to_string())
@@ -236,8 +250,9 @@ async fn compile_or_error(
   code : String,
   wasm : Bytes,
   snapshot_path : String,
+  host : String,
 ) -> Result[CompiledExt, CompileError] {
-  let result = try compile_extension(source, code, wasm, snapshot_path) catch {
+  let result = try compile_extension(source, code, wasm, snapshot_path, host~) catch {
     error => return Err(error)
   }
   Ok(result)
@@ -284,8 +299,14 @@ pub async fn compile_plan(
             )
             entries.push({ source: entry.source, step: Skip(reason=NoCompiler) })
           }
-          Some((_, bytes)) =>
-            match compile_or_error(entry.source, source, bytes, path) {
+          Some((wasm_path, bytes)) =>
+            match compile_or_error(
+              entry.source,
+              source,
+              bytes,
+              path,
+              quickjs_package_dir(wasm_path),
+            ) {
               Ok(result) => {
                 compiled_done.push(result)
                 entries.push(entry)

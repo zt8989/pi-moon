@@ -25,8 +25,15 @@ pi 的 codemode 用的就是它），编译产物是一份 **VM 快照**；启�
 这三样只有在 wasm 里才是一段「可以整体拷进拷出的字节」。原生 QuickJS 的堆是
 malloc 给的地址，落盘就失效 —— 于是「编译一次、启动只 memcpy」这条路只有 wasm 走得通。
 
-宿主是 vendored 的 [wasm3](https://github.com/wasm3/wasm3)（C，MIT，无依赖），
-走 `core/ext` 的 `native-stub` 编进可执行文件。`quickjs.wasm` 的 import 面很小，
+宿主有两个后端，沙盒语义完全一样（同一份 `quickjs.wasm`、同一种快照格式）：
+
+- **native**：vendored 的 [wasm3](https://github.com/wasm3/wasm3)（C，MIT，
+  无依赖），走 `core/ext` 的 `native-stub` 编进可执行文件；
+- **js**：直接复用 pi 装机里的 `quickjs-wasi`（npm，ESM），启动时
+  `await import()` 它的 `dist/index.js`，VM 句柄是进程内 `id → VM` 表的下标。
+
+两个后端的快照可以互换：wasm3 拍出来的 `.snapshot` 能被 pi 的 `quickjs-wasi`
+`restore` 回来（含注册表与 handler 函数），反过来也一样。`quickjs.wasm` 的 import 面很小，
 一共 12 个：6 个 `env.host_*`（时钟、中断、Promise 拒绝、模块加载、宿主函数回调）
 加 6 个 WASI（`fd_write` / `clock_time_get` / `random_get` …）。这些全部在
 `core/ext/host/ext_host.c` 里实现，文件系统一律 `ENOSYS`：
@@ -41,7 +48,7 @@ core/ext/
   prelude.mbt      沙盒里的 `pi` 对象（registerTool / registerCommand / on）
   vm.mbt           宿主形状 + 快照头解析
   vm_native.mbt    wasm3 的 MoonBit FFI
-  vm_js.mbt        js 后端占位（见「已知缺口」）
+  vm_js.mbt        js 后端：node 上的 quickjs-wasi（@js_async.Promise 桥接）
   wasm_resolve.mbt 找 pi 装机里的 quickjs.wasm
   host/ext_host.c  实例化 / WASI import / 快照序列化
   host/wasm3/      vendored wasm3
@@ -52,10 +59,16 @@ core/ext/
 1. **发现**（`discover`）：`<agent dir>/extensions` 与 `<cwd>/.pi/extensions`，
    单文件 `.ts/.mts/.cts/.js/.mjs/.cjs` 或「目录 + `index.ts`/`index.js`」。
    `node_modules` 与点开头的目录不递归。
-2. **体检**（`scan`）：在**编译后**的 JS 上扫 `import` / `import()` / `require()`
-   的说明符。命中下列任一条就跳过，不装垫片：
-   - `node:*` 或 Node 内建名单里的裸名（`fs`、`child_process`、`worker_threads` …）；
-   - 相对路径（`./x.js`）与裸包名（`lodash`）—— 沙盒里没有模块加载器。
+2. **体检**（`scan`）：在**编译后**的 JS 上扫两样东西，命中任一条就跳过，
+   不装垫片：
+   - import 说明符（`import` / `import()` / `require()`）：`node:*` 与 Node
+     内建裸名（`fs`、`child_process`、`worker_threads` …）；相对路径
+     （`./x.js`）与裸包名（`lodash`）—— 沙盒里没有模块加载器；
+   - Node 专有全局：`process`、`Buffer`、`__dirname`、`__filename`、
+     `setImmediate`、`clearImmediate`。它们不出现在 import 里，光看说明符会
+     漏过去，结果是「装上了，一调 handler 就 ReferenceError」。判定看两边：
+     前一个 token 不是 `.`（那是 `foo.process`）、也不是 `const`/`let`/`var`/
+     `function`/`class`（那是本地声明）。
    在编译后扫是有意的：`import type { ExtensionAPI } from "…"` 这类纯类型导入
    编译后就不存在了，不该被误判。
 3. **缓存键**（`cache_key`）：`FNV-1a 64(prelude_version ∥ sandbox_version ∥ 源码)`。
@@ -90,7 +103,7 @@ core/ext/
 
 | 事项 | pi | pi-moon |
 | --- | --- | --- |
-| 运行位置 | 同进程，jiti 直接跑 TS | wasm 沙盒（quickjs.wasi + wasm3 宿主） |
+| 运行位置 | 同进程，jiti 直接跑 TS | wasm 沙盒（native: wasm3 宿主；js: quickjs-wasi） |
 | 编译时机 | 每次加载都 jiti 转译 | 只在启动前，之后走快照缓存 |
 | Node 依赖 | 随便用 | 一律不装：命中就跳过，记一条诊断 |
 | 隔离 | 与 pi 同权限 | 无文件系统、无网络、无子进程 |
@@ -101,14 +114,18 @@ core/ext/
 
 ## 现在到哪一步了
 
-已验证（`core/ext/*_wbtest.mbt`，18 项）：
+已验证（`core/ext/*_wbtest.mbt`，native 20 项 + js 3 项）：
 
 - wasm3 上跑起 pi 的 `quickjs.wasm`，eval / 异常 / quickjs 版本串；
 - 快照 → 新实例恢复 → 状态还在（`x*2 == 82` 那种跨实例验证）；
 - 发现 + 体检 + 缓存键 + 命中/未命中判定；
 - 真实编译一个扩展：快照落盘、元数据 JSON、第二次命中缓存；
 - 带 `node:fs` 的扩展按 `NodeDependency` 跳过；
-- 找不到 `quickjs.wasm` 时按 `NoCompiler` 跳过。
+- 找不到 `quickjs.wasm` 时按 `NoCompiler` 跳过；
+- 两个后端都真跑起来：native 走 wasm3、js 走 node 的 quickjs-wasi，
+  同一套 `ExtVm` 签名两端行为一致；
+- 跨宿主互通：wasm3 拍出的快照在 node 里被 pi 的 `quickjs-wasi` 恢复，
+  注册表与 handler 函数都还在（`restore` 后 `JSON.stringify(__pi_ext_registry)` 可读）。
 
 还没接（下一步）：
 
@@ -119,8 +136,9 @@ core/ext/
 2. **TS 扩展**：目前只跑纯 JS。`.ts` 需要在启动前用 node + pi 自带的 jiti 转译
    （`NoCompiler` 就是给这条路径留的位置）。
 3. **缓存清理**：改了源码会换键，旧快照没人删。需要一个 LRU（按 mtime / 大小）。
-4. **js 后端**：`vm_js.mbt` 是占位。node 上可以直接用 `quickjs-wasi` 包，快照格式
-   相同，接起来是一段 `import()`。
+4. **`.ts` 源码**：沙盒只能跑转译后的 JS。目前没有转译步骤，`.ts` 里出现类型
+   标注就会在 eval 时报 `SyntaxError`（错误信息里会补一句「需要启动前转译」）。
+   正好是合法 JS 语法的 `.ts` 会被照原样跑掉。
 
 ## 手动试
 

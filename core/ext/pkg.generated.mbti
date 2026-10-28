@@ -12,7 +12,7 @@ pub fn cache_key(String, prelude_version~ : String, sandbox_version~ : String) -
 
 pub fn classify_specifier(String) -> SpecifierKind
 
-pub async fn compile_extension(ExtSource, String, Bytes, String) -> CompiledExt raise CompileError
+pub async fn compile_extension(ExtSource, String, Bytes, String, host? : String) -> CompiledExt raise CompileError
 
 pub async fn compile_plan(ExtPlan, String, wasm_path? : String?) -> (Array[CompiledExt], ExtPlan)
 
@@ -27,6 +27,8 @@ pub fn ext_cache_path(String, String) -> String
 pub fn ext_label(ExtSource) -> String
 
 pub fn ext_meta_path(String, String) -> String
+
+pub fn first_node_global(String) -> String?
 
 pub fn first_unsupported_import(String) -> (SpecifierKind, String)?
 
@@ -53,6 +55,8 @@ pub async fn plan_source(ExtSource, String, compiled? : String?) -> ExtEntry
 pub let prelude_version : String
 
 pub async fn prepare_at_startup(String, String, explicit? : Array[String]) -> StartupExt
+
+pub fn quickjs_package_dir(String) -> String
 
 pub fn read_snapshot_header(Bytes) -> SnapshotHeader?
 
@@ -147,9 +151,9 @@ pub(all) struct ExtVm {
 } derive(Eq)
 pub fn ExtVm::eval(Self, String, filename? : String) -> String raise VmError
 pub fn ExtVm::free(Self) -> Unit
-pub fn ExtVm::new(Bytes) -> Self raise VmError
+pub async fn ExtVm::new(Bytes, host? : String) -> Self raise VmError
 pub fn ExtVm::quickjs_version(Self) -> String
-pub fn ExtVm::restore(Bytes, Bytes) -> Self raise VmError
+pub async fn ExtVm::restore(Bytes, Bytes, host? : String) -> Self raise VmError
 pub fn ExtVm::snapshot(Self) -> Bytes raise VmError
 
 pub(all) struct SnapshotHeader {
