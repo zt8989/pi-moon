@@ -25,7 +25,7 @@ pub fn VmError::to_string(self : VmError) -> String {
     VmInit(reason) => "沙盒初始化失败：" + reason
     VmEval(reason) => "扩展执行失败：" + reason
     VmSnapshot(reason) => "快照失败：" + reason
-    VmUnsupported => "当前后端没有沙盒实现"
+    VmUnsupported => "js 后端没有沙盒实现（扩展只能在 native 构建里装载）"
   }
 }
 

@@ -19,6 +19,21 @@ let node_builtins : Array[String] = [
 ]
 
 ///|
+/// Node 专有的全局对象。它们不出现在 import 里，但一样是「只有 Node 有」：
+/// `process.env` / `Buffer.from` 在沙盒里连引用都拿不到（ReferenceError）。
+///
+/// 只收「一眼能确定是 Node」的几个：`process`、`Buffer`、`__dirname`、
+/// `__filename`、`setImmediate`。`module` / `exports` 不收 —— 沙盒的包装脚本
+/// 自己就带这两个名字。
+let node_globals : Array[String] = [
+  "process", "Buffer", "__dirname", "__filename", "setImmediate", "clearImmediate",
+]
+
+///|
+/// JS 里不可能是「声明关键字」的词表：出现在全局名前面就说明是声明，不是引用。
+let declaration_keywords : Array[String] = ["const", "let", "var", "function", "class"]
+
+///|
 /// 一个 import / require 的说明符及其判定结果。
 pub(all) enum SpecifierKind {
   /// 沙盒里能用的：空说明符（不该出现）或 `data:`/`virtual:` 这类宿主垫的。
@@ -189,6 +204,46 @@ fn is_open_paren(token : Token) -> Bool {
     Punct(character) => character == '('
     _ => false
   }
+}
+
+///|
+/// 找第一个「当值用」的 Node 全局。
+///
+/// 判定看两边：前一个 token 不是 `.`（那是属性访问 `foo.process`）、也不是
+/// 声明关键字（`const process = …` 是本地变量）；后一个 token 是 `.`、`[`、
+/// `(` 或 `)`（`process` 单独当参数传给函数也算引用）。
+pub fn first_node_global(source : String) -> String? {
+  let tokens = lex(source)
+  for index in 0..<tokens.length() {
+    let name = match tokens[index] {
+      Ident(name) => name
+      _ => continue
+    }
+    if !node_globals.contains(name) {
+      continue
+    }
+    // 前一个 token：属性访问 / 声明都排除。
+    if index > 0 {
+      match tokens[index - 1] {
+        Punct(character) => if character == '.' { continue }
+        Ident(previous) => if declaration_keywords.contains(previous) { continue }
+        _ => ()
+      }
+    }
+    // 后一个 token：必须是「被当值用」的形状。
+    let used_as_value = if index + 1 < tokens.length() {
+      match tokens[index + 1] {
+        Punct(character) => character == '.' || character == '[' || character == '(' || character == ')' || character == ','
+        _ => false
+      }
+    } else {
+      false
+    }
+    if used_as_value {
+      return Some(name)
+    }
+  }
+  None
 }
 
 ///|

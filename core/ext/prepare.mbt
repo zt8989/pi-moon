@@ -36,6 +36,12 @@ pub async fn plan_source(
       raw
     }
   }
+  // Node 全局先查：`process.env` 这类没有 import，光看说明符会漏过去，
+  // 结果是「装上了，一调 handler 就 ReferenceError」。
+  match first_node_global(text) {
+    Some(name) => return { source, step: Skip(reason=NodeDependency(name)) }
+    None => ()
+  }
   match first_unsupported_import(text) {
     Some((kind, spec)) =>
       match kind {

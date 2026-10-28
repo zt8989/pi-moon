@@ -181,3 +181,40 @@ async test "plan：缓存文件存在时走 Cached，不再编译" {
     other => fail("缓存存在时应为 Cached，实际 " + other.to_string())
   }
 }
+
+///|
+test "first_node_global：认引用、放过属性与声明" {
+  assert_eq(first_node_global("const x = process.env.HOME"), Some("process"))
+  assert_eq(first_node_global("Buffer.from('a')"), Some("Buffer"))
+  assert_eq(first_node_global("console.log(__dirname)"), Some("__dirname"))
+  // 属性访问不是全局。
+  assert_eq(first_node_global("foo.process.env"), None)
+  // 本地声明不是全局。
+  assert_eq(first_node_global("const process = 1"), None)
+  assert_eq(first_node_global("let Buffer = { from() {} }"), None)
+  // 只是出现在字符串里不算。
+  assert_eq(first_node_global("const s = 'process.env'"), None)
+  // 沙盒包装脚本自己的 module/exports 不在名单里。
+  assert_eq(first_node_global("module.exports.x = 1"), None)
+}
+
+///|
+async test "plan：用 process.env 的扩展按 NodeDependency 跳过" {
+  let root = make_dir("node-global")
+  let agent = root + "/agent"
+  // 语法上是合法 JS（这正是不查全局时会被放进去的那种）。
+  put(
+    agent + "/extensions/prefill.js",
+    #|export default function (pi) {
+    #|  pi.on("session_start", () => {
+    #|    if (process.env.HOME) return;
+    #|  });
+    #|}
+  )
+  let planned = plan(root + "/project", agent)
+  let entry = planned.entries[0]
+  match entry.step {
+    Skip(reason~) => assert_eq(reason, NodeDependency("process"))
+    other => fail("期望按 process 跳过，实际 " + other.to_string())
+  }
+}
