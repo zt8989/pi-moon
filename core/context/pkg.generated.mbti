@@ -14,6 +14,8 @@ pub async fn expand_skill_command(String, Array[Skill], async (String) -> String
 
 pub async fn load_context_files(String, String) -> Array[ContextFile]
 
+pub async fn load_prompt_templates(String, String) -> (Array[PromptTemplate], Array[String])
+
 pub async fn load_skill_registry(String, String, home_dir? : String, extra_paths? : Array[String]) -> SkillRegistry
 
 pub fn render_project_context(Array[ContextFile]) -> String
@@ -26,6 +28,13 @@ pub fn render_skills_prompt(Array[Skill], String) -> String
 pub(all) struct ContextFile {
   path : String
   content : String
+} derive(Eq, @debug.Debug)
+
+pub(all) struct PromptTemplate {
+  name : String
+  description : String
+  path : String
+  scope : String
 } derive(Eq, @debug.Debug)
 
 pub(all) struct Skill {

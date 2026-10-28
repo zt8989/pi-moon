@@ -29,6 +29,7 @@ import {
   "moonbitlang/async",
   "moonbitlang/async/fs",
   "moonbitlang/core/encoding/utf8",
+  "moonbitlang/core/random",
 } for "wbtest"
 
 // 夹具直接落盘（@fs + 真实文件系统），只在 native 上跑。
@@ -36,5 +37,6 @@ options(
   targets: {
     "context_wbtest.mbt": [ "native" ],
     "skills_wbtest.mbt": [ "native" ],
+    "prompts_wbtest.mbt": [ "native" ],
   },
 )
