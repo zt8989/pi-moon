@@ -1,0 +1,52 @@
+// pi 扩展：发现、体检、缓存、启动前编译，以及跑扩展的沙盒宿主。
+//
+// 分工照 core/sys 的老规矩：本包只管「哪些扩展能加载、要不要重新编译、
+// 缓存在哪」，真正跑 JS 的是宿主层（wasm3 里的 quickjs + 快照）。
+//
+// 关键约束（决定了本包不存在的东西）：
+//   - 运行期不碰 Node：宿主是 wasm3 + pi 的 quickjs.wasm，见 docs/extensions.md；
+//   - 编译只发生在启动前，产物是 VM 快照，命中缓存时启动不碰 JS 引擎；
+//   - 源码里出现 Node 专属依赖的扩展直接跳过，不尝试垫片。
+
+import {
+  "pi-moon/core/sys",
+  "moonbitlang/core/encoding/utf8",
+  "moonbitlang/core/env",
+  "moonbitlang/core/json",
+}
+
+supported_targets = "js+native"
+
+warnings = "-79-67"
+
+import {
+  "moonbitlang/async",
+  "moonbitlang/async/fs",
+  "moonbitlang/core/random",
+} for "wbtest"
+
+// 发现与缓存都摸真实文件系统，测试只在 native 上跑。
+options(
+  targets: {
+    "ext_wbtest.mbt": [ "native" ],
+    "vm_native.mbt": [ "native" ],
+    "vm_js.mbt": [ "js" ],
+  },
+  "native-stub": [
+    "host/ext_host.c",
+    "host/wasm3/m3_bind.c",
+    "host/wasm3/m3_code.c",
+    "host/wasm3/m3_compile.c",
+    "host/wasm3/m3_core.c",
+    "host/wasm3/m3_deterministic.c",
+    "host/wasm3/m3_env.c",
+    "host/wasm3/m3_exec.c",
+    "host/wasm3/m3_function.c",
+    "host/wasm3/m3_info.c",
+    "host/wasm3/m3_module.c",
+    "host/wasm3/m3_parse.c",
+    "host/wasm3/m3_snapshot.c",
+    "host/wasm3/m3_validate.c",
+    "host/wasm3/m3_xxh64.c",
+  ],
+)

@@ -68,8 +68,15 @@ reducer 里没有一个 `await`、没有一个 `fetch`、也没有 while。真�
   用原值，只有 256 色时面板底色退回 16 色名字。
   一次性与管道行为不变（见 [docs/tui.md](docs/tui.md)）。
 
-**还没有**（下一步逐步接）：Web 界面、pi 扩展、TUI 的各工具专用渲染器 /
-Windows 输入法（见 [docs/tui.md](docs/tui.md) 的「与 ela 的差距」）。
+- **pi 扩展（沙盒化）**：发现 `~/.pi/agent/extensions` 与 `<cwd>/.pi/extensions`，
+  在**启动前**编译一次（pi 的 `quickjs.wasm` 跑在 vendored wasm3 上，产物是
+  VM 快照），启动时只 memcpy 恢复；依赖 Node 专有模块的扩展直接跳过，
+  缓存键 = 源码 + 预置脚本版本 + 沙盒版本。运行期不进 Node、不碰网络 / 文件系统
+  （见 [docs/extensions.md](docs/extensions.md)；运行期桥接还在接）。
+
+**还没有**（下一步逐步接）：Web 界面、扩展的运行期接线（工具 / 命令 / 事件钩子
+派发）、TUI 的各工具专用渲染器 / Windows 输入法
+（见 [docs/tui.md](docs/tui.md) 的「与 ela 的差距」）。
 
 ## 跑起来
 

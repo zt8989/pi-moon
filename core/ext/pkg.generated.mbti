@@ -1,0 +1,182 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "pi-moon/core/ext"
+
+import {
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn base_name(String) -> String
+
+pub fn cache_key(String, prelude_version~ : String, sandbox_version~ : String) -> String
+
+pub fn classify_specifier(String) -> SpecifierKind
+
+pub async fn compile_extension(ExtSource, String, Bytes, String) -> CompiledExt raise CompileError
+
+pub async fn compile_plan(ExtPlan, String, wasm_path? : String?) -> (Array[CompiledExt], ExtPlan)
+
+pub async fn discover(String, String, explicit? : Array[String]) -> (Array[ExtSource], Array[String])
+
+pub async fn discover_explicit(String) -> ExtSource?
+
+pub fn ext_cache_dir(String) -> String
+
+pub fn ext_cache_path(String, String) -> String
+
+pub fn ext_label(ExtSource) -> String
+
+pub fn ext_meta_path(String, String) -> String
+
+pub fn first_unsupported_import(String) -> (SpecifierKind, String)?
+
+pub fn fnv1a64(String) -> UInt64
+
+pub fn hex64(UInt64) -> String
+
+pub fn import_specifiers(String) -> Array[String]
+
+pub fn is_source_file(String) -> Bool
+
+pub async fn load_quickjs_wasm(String) -> (String, Bytes)?
+
+pub async fn load_registry(String) -> (Array[String], Array[String], Array[String])?
+
+pub fn parent_dir(String) -> String
+
+pub fn parse_registry(String) -> (Array[String], Array[String], Array[String])
+
+pub async fn plan(String, String, explicit? : Array[String]) -> ExtPlan
+
+pub async fn plan_source(ExtSource, String, compiled? : String?) -> ExtEntry
+
+pub let prelude_version : String
+
+pub async fn prepare_at_startup(String, String, explicit? : Array[String]) -> StartupExt
+
+pub fn read_snapshot_header(Bytes) -> SnapshotHeader?
+
+pub fn registry_json(CompiledExt) -> String
+
+pub async fn resolve_quickjs_wasm(String) -> String?
+
+pub fn rewrite_exports(String) -> String
+
+pub let sandbox_version : String
+
+pub let snapshot_header_size : Int32
+
+pub let snapshot_magic : UInt32
+
+pub let snapshot_version : Int32
+
+pub fn stem_of(String) -> String
+
+pub fn wrap_extension(String) -> String
+
+// Errors
+pub suberror CompileError {
+  Evaluation(String)
+  WriteFailed(String)
+  Sandbox(String)
+}
+pub fn CompileError::to_string(Self) -> String
+
+pub suberror VmError {
+  VmInit(String)
+  VmEval(String)
+  VmSnapshot(String)
+  VmUnsupported
+}
+pub fn VmError::to_string(Self) -> String
+
+// Types and methods
+pub(all) struct CompiledExt {
+  name : String
+  label : String
+  snapshot_path : String
+  tools : Array[String]
+  commands : Array[String]
+  events : Array[String]
+} derive(@debug.Debug)
+
+pub(all) struct ExtEntry {
+  source : ExtSource
+  step : ExtStep
+} derive(Eq, @debug.Debug)
+
+pub(all) enum ExtOrigin {
+  User
+  Project
+  Explicit
+} derive(Eq, @debug.Debug)
+pub fn ExtOrigin::to_string(Self) -> String
+
+pub(all) struct ExtPlan {
+  entries : Array[ExtEntry]
+  diagnostics : Array[String]
+} derive(@debug.Debug)
+pub fn ExtPlan::loaded(Self) -> Array[ExtEntry]
+pub fn ExtPlan::skipped(Self) -> Array[ExtEntry]
+
+pub(all) enum ExtSkip {
+  NodeDependency(String)
+  UnresolvedImport(String)
+  MissingEntry
+  Unreadable(String)
+  NoCompiler
+} derive(Eq, @debug.Debug)
+pub fn ExtSkip::to_string(Self) -> String
+
+pub(all) struct ExtSource {
+  name : String
+  path : String
+  dir : String
+  origin : ExtOrigin
+} derive(Eq, @debug.Debug)
+
+pub(all) enum ExtStep {
+  Cached(cache_key~ : String, path~ : String)
+  Compile(cache_key~ : String, path~ : String, source~ : String)
+  Skip(reason~ : ExtSkip)
+} derive(Eq, @debug.Debug)
+pub fn ExtStep::to_string(Self) -> String
+
+pub(all) struct ExtVm {
+  handle : Int64
+} derive(Eq)
+pub fn ExtVm::eval(Self, String, filename? : String) -> String raise VmError
+pub fn ExtVm::free(Self) -> Unit
+pub fn ExtVm::new(Bytes) -> Self raise VmError
+pub fn ExtVm::quickjs_version(Self) -> String
+pub fn ExtVm::restore(Bytes, Bytes) -> Self raise VmError
+pub fn ExtVm::snapshot(Self) -> Bytes raise VmError
+
+pub(all) struct SnapshotHeader {
+  memory_size : Int32
+  stack_pointer : UInt32
+  runtime_ptr : UInt32
+  context_ptr : UInt32
+  extensions : Int32
+} derive(Eq, @debug.Debug)
+
+pub(all) enum SpecifierKind {
+  Allowed
+  NodeBuiltin
+  Relative
+  Package
+} derive(Eq, @debug.Debug)
+
+pub(all) struct StartupExt {
+  names : Array[String]
+  labels : Array[String]
+  tools : Array[String]
+  commands : Array[String]
+  events : Array[String]
+  diagnostics : Array[String]
+  snapshots : Array[(String, String)]
+}
+
+// Type aliases
+
+// Traits
