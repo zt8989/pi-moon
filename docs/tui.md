@@ -218,6 +218,27 @@ provider effect 在下一个分片边界查 `ProviderHooks::should_abort`：
 - 面板只在空闲时能开（生成中按 `Ctrl+L` 会提示先中断）；Esc 关闭。
 - 选完会 flush 一次会话（`model.init` / 后续请求的模型就是新的）。
 
+## 选中与复制
+
+全屏 TUI 跑在 alternate screen 里，但**文字选中 / 复制默认就能用**：鼠标捕获默认
+关着，拖选走终端自己的选择，`Ctrl+Shift+C`（或终端的快捷键）复制照常。
+
+这里踩过一个坑：之前直接把 `init_vnode_terminal(mouse=true)` 交给 vendored tui，
+它开的是 **`\e[?1003h`（全动作）** —— 拖拽被当成鼠标事件送到 app，终端就选不中
+文字了；而且每个 mousemove 都往 stdin 里灌一条事件。现在改成：
+
+- 默认不开捕获 → 拖选 / 复制可用；
+- `Ctrl+T` 开 `\e[?1000h\e[?1006h`（只要按下 / 抬起 / 滚轮）→ 滚轮能翻页；
+- 捕获开着时想复制：`Shift` + 拖选（终端的「绕过鼠标捕获」通行做法），或再按一次
+  `Ctrl+T` 关掉；退出时一定关（不然出了程序终端还把拖选当成 app 事件）。
+
+切鼠标的转义**不就地写**，攒在 `TuiState.prelude` 里等下一帧开头发 —— 渲染循环
+一帧一次 `print_raw`，插进帧中间会把画面撕开。
+
+与 pi 的差距：pi 自己实现了拖选、搜索与滚动条，所以它可以一直开着鼠标捕获；
+pi-moon 靠终端。要做「应用内选中 + 复制」，得把最后一帧的 buffer 反向映射成字符
+（再用 `OSC 52` 或 `clip.exe` 落地），这一批没做。
+
 ## 键位
 
 | 键 | 行为 |
@@ -234,7 +255,8 @@ provider effect 在下一个分片边界查 `ProviderHooks::should_abort`：
 | `↑` / `↓` | 历史输入；面板中：移动选中 |
 | `←` / `→` / `Home` / `End` | 光标移动（按字符，不按字节） |
 | `PgUp` / `PgDn` | 翻当前页；面板中：跳 5 项 |
-| 滚轮 | 翻当前页（±3 行，SGR 鼠标，`init_vnode_terminal(mouse=true)`） |
+| `Ctrl+T` | 鼠标捕获开关（开了才能用滚轮翻页，关了才能拖选复制） |
+| 滚轮 | 翻当前页（±3 行）—— 需要先 `Ctrl+T` 打开鼠标捕获 |
 | `Ctrl+Home` / `Ctrl+End` | 到顶 / 回到底部跟随 |
 | `/model` | 模型面板（同 `Ctrl+L`） |
 | `/thinking` | 思考级别面板 |

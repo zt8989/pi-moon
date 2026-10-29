@@ -1141,3 +1141,24 @@ test "build_banner：没有扩展与 prompt 时不出现对应段" {
   )
   assert_eq(banner, ["[Skill conflicts] 重名：skill \"x\""])
 }
+
+///|
+/// 鼠标捕获：默认关（这样终端自己的拖选/复制还能用），Ctrl+T 才开。
+/// 序列一律攒在 `prelude` 里由渲染循环发送 —— 就地写会插进一帧中间。
+test "鼠标捕获默认关，切换只改状态并把序列攒进 prelude" {
+  let tui = TuiState::new()
+  assert_false(tui.mouse)
+  assert_eq(tui.prelude, "")
+  set_mouse_capture(tui, true)
+  assert_true(tui.mouse)
+  // 1000（按下/抬起/滚轮）+ 1006（SGR 坐标），不是 1003（全动作）。
+  assert_eq(tui.prelude, "\u{1b}[?1000h\u{1b}[?1006h")
+  assert_true(tui.dirty)
+  // 已经开着再开一次：不重复发序列。
+  tui.prelude = ""
+  set_mouse_capture(tui, true)
+  assert_eq(tui.prelude, "")
+  set_mouse_capture(tui, false)
+  assert_false(tui.mouse)
+  assert_eq(tui.prelude, "\u{1b}[?1006l\u{1b}[?1000l")
+}

@@ -79,6 +79,15 @@ pub(all) struct TuiState {
   mut session_id : String
   mut last_ctrl_c : Int64
   mut writer : @session.SessionWriter?
+  /// 鼠标捕获（`\e[?1000h`）开着没有。
+  ///
+  /// 开着滚轮能翻页，代价是终端拿不回拖选 —— 拖拽被当成鼠标事件送到 app。
+  /// 所以默认**关**（终端自己的选择/复制照旧能用），要滚轮就按一下 Ctrl+T。
+  mut mouse : Bool
+  /// 下一帧之前要写出去的转义（比如切换鼠标捕获）。
+  ///
+  /// 不能就地写：渲染循环一帧一次 `print_raw`，插进帧中间会把画面撕开。
+  mut prelude : String
   /// 底色：24-bit 终端用 pi 的原值，否则退回 16 色名字（见 `tui_color.mbt`）。
   mut palette : Palette
 }
@@ -150,6 +159,8 @@ pub fn TuiState::new() -> TuiState {
     session_id: "",
     last_ctrl_c: 0L,
     writer: None,
+    mouse: false,
+    prelude: "",
     palette: Palette::ansi256(),
   }
 }
@@ -171,6 +182,32 @@ pub fn wants_tui(args : CliArgs) -> Bool {
 ///|
 fn now_ms() -> Int64 {
   @sys.now()
+}
+
+///|
+/// 鼠标捕获的开关序列。用 1000（按下 / 抬起 / 滚轮）而不是 1003（全动作）：
+/// 我们只认滚轮，没必要让每个 mousemove 都往 stdin 里灌一条事件。
+/// 1006 是 SGR 坐标编码（1000 的旧坐标编码在超过 223 列时会溢出）。
+fn mouse_sequence(on : Bool) -> String {
+  if on {
+    "\u{1b}[?1000h\u{1b}[?1006h"
+  } else {
+    "\u{1b}[?1006l\u{1b}[?1000l"
+  }
+}
+
+///|
+/// 切鼠标捕获。开着滚轮能翻页，但终端就选不中文字了（拖拽变成 app 的鼠标
+/// 事件）—— 所以默认关，要复制就直接拖，要滚轮就 Ctrl+T 开一下。
+///
+/// 序列不就地写，攒在 `prelude` 里等下一帧开头发，避免插进一帧中间。
+fn set_mouse_capture(tui : TuiState, on : Bool) -> Unit {
+  if tui.mouse == on {
+    return
+  }
+  tui.mouse = on
+  tui.prelude = tui.prelude + mouse_sequence(on)
+  tui.dirty = true
 }
 
 ///|
@@ -243,7 +280,9 @@ pub async fn run_tui(
     width,
     height,
     fn(raw) { @io.print_raw(raw) },
-    mouse=true,
+    // 鼠标捕获不在那里开：它默认开的是 1003（全动作），拖选/复制就没了。
+    // 改由 `set_mouse_capture` 按需开 1000（只要滚轮），见 Ctrl+T。
+    mouse=false,
     color_mode~,
   )
   let failure = try {
@@ -257,6 +296,11 @@ pub async fn run_tui(
     err => Some(err.to_string())
   }
   cleanup()
+  // `cleanup` 只关它自己开的东西（这里传的是 `mouse=false`），鼠标是我们在
+  // Ctrl+T 里自己开的，退出时得自己关 —— 不然退出来终端还把拖选当成 app 事件。
+  if tui.mouse {
+    @io.print_raw(mouse_sequence(false))
+  }
   // 退出时再 flush 一次：最后一个回合之后状态可能还变过（压缩、工具结果）。
   // 顺序很重要：摘要还写 UTF-8，代码页要在它之后才还原。
   persist_tui(agent, tui)
@@ -445,6 +489,18 @@ fn handle_ctrl(agent : @runtime.Agent, tui : TuiState, c : Char) -> Unit {
       )
     }
     'r' => { ui_dispatch(agent, tui, @action.PageToggled) }
+    // Ctrl+T：鼠标捕获开关。默认关（终端能拖选复制），开了才能用滚轮翻页。
+    't' => {
+      set_mouse_capture(tui, !tui.mouse)
+      set_notice(
+        tui,
+        if tui.mouse {
+          "鼠标：滚轮翻页（要复制请 Shift+拖选，或 Ctrl+T 关掉捕获）"
+        } else {
+          "鼠标：可拖选复制（Ctrl+T 打开滚轮翻页）"
+        },
+      )
+    }
     // pi 的 `app.model.select`（Ctrl+L）：覆盖 composer 的面板。
     'l' =>
       if tui.busy {
@@ -762,6 +818,12 @@ async fn tui_render_loop(
       }
     } else {
       tui.last_spinner_frame = -1L
+    }
+    if !tui.prelude.is_empty() {
+      @io.print_raw(tui.prelude)
+      tui.prelude = ""
+      // 切换本身不用重画，但底栏的提示跟着变了。
+      tui.dirty = true
     }
     if tui.dirty {
       tui.dirty = false

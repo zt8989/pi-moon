@@ -61,6 +61,7 @@ reducer 里没有一个 `await`、没有一个 `fetch`、也没有 while。真�
   ela 同形：顶行页签 + 统计 / 中间页（对话或轨迹，`Ctrl+R`）/ 队列面板 + 空隙 +
   composer（工作状态嵌在上框线）+ 两行底栏；生成中 Enter 进 steer、Alt+Enter
   followUp、Ctrl+U 取回队列，Esc 中断或取回，Ctrl+C×2 退出，工具块折叠；
+  **文字默认能拖选 / 复制**（鼠标捕获默认关，Ctrl+T 才接管滚轮翻页）；
   `Ctrl+L` / `/thinking` / `/resume` 的模型、思考级别、会话面板覆盖 composer；
   assistant / user 文本走 markdown（AST 解析 + 终端渲染：标题、列表、任务列表、
   引用、表格、围栏代码、```diff 上色、行内 code/bold/link）；**界面颜色全部来自

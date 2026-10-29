@@ -245,6 +245,8 @@ pub(all) struct TuiState {
   mut session_id : String
   mut last_ctrl_c : Int64
   mut writer : @session.SessionWriter?
+  mut mouse : Bool
+  mut prelude : String
   mut palette : Palette
 }
 pub fn TuiState::new() -> Self
