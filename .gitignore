@@ -5,3 +5,9 @@ target
 .mooncakes/
 .moonagent/
 .pi/
+
+# playwright-cli 的会话日志（page-*.yml / console-*.log），工具本地产物
+.playwright-cli/
+
+# Windows 保留名：某些 `> nul` 重定向会顺手建出一个空文件，不该进仓库
+nul
