@@ -240,9 +240,13 @@ pub async fn InputPipe::write(self : InputPipe, data : String) -> Unit raise Sys
 }
 
 ///|
+/// stdin 收尾：`end()` 让宿主的读循环看到 EOF（关掉之后 `write` 不再有效）。
+extern "js" fn js_stdin_end(pipe : JsPipe) -> Unit =
+  #| (pipe) => { try { if (pipe.child && pipe.child.stdin) { pipe.child.stdin.end() } } catch (e) {} }
+
+///|
 pub fn InputPipe::close(self : InputPipe) -> Unit {
-  let _ = self
-  ()
+  js_stdin_end(self.pipe)
 }
 
 ///|
@@ -276,6 +280,47 @@ pub async fn[X] spawn(
 ///|
 pub async fn Process::wait(self : Process) -> Int {
   @js_async.Promise::wait(js_wait(self.pipe))
+}
+
+///|
+/// 常驻子进程（扩展宿主）：形状与 native 一致。
+pub(all) struct Session {
+  stdin : InputPipe
+  output : OutputPipe
+}
+
+///|
+pub async fn spawn_session(
+  program : String,
+  args : Array[String],
+  extra_env? : Map[String, String] = Map([]),
+  cwd? : String = ".",
+) -> Session raise SysError {
+  let output : OutputPipe = { pipe: js_pipe_new() }
+  let stdin : InputPipe = { pipe: js_pipe_new() }
+  let error = js_spawn(output.pipe, stdin.pipe, program, args, env_json(extra_env), cwd)
+  if !error.is_empty() {
+    raise SysError(error)
+  }
+  { stdin, output }
+}
+
+///|
+pub fn Session::close(self : Session) -> Unit {
+  self.stdin.close()
+}
+
+///|
+pub async fn Session::write(self : Session, text : String) -> Unit raise SysError {
+  self.stdin.write(text)
+}
+
+///|
+pub async fn Session::read_some(
+  self : Session,
+  max_len? : Int = 8192,
+) -> Bytes? raise SysError {
+  self.output.read_some(max_len~)
 }
 
 ///|

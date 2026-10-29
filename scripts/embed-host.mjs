@@ -11,6 +11,9 @@ import { readFileSync, writeFileSync } from "node:fs";
 const source = readFileSync("core/ext/host/ext_host.mjs", "utf8");
 const lines = source
   .split("\n")
+  // 工作树可能是 CRLF（core.autocrlf）：嵌入的正文统一成 LF，否则 `#|` 行会把
+  // `\r` 一起带进字符串，正文与磁盘上的那份对不上。
+  .map((line) => line.replace(/\r$/, ""))
   // 末尾换行会多出一个空行，去掉
   .filter((_, index, all) => !(index === all.length - 1 && all[index] === ""));
 

@@ -26,7 +26,7 @@ let usage : String = "pi-moon — Elm architecture agent core in MoonBit\n" +
   "      --show-thinking      把思考增量打到 stderr\n" +
   "  -t, --tools <list>       替换默认工具选择（逗号分隔，例如 read,grep,ls）\n" +
   "  -xt, --exclude-tools <list>  从选择里去掉几个工具（逗号分隔）\n" +
-  "      --no-tools           关闭全部内置工具\n" +
+  "      --no-tools           关闭全部工具（内置 + 扩展）\n" +
   "      --skill <path>       额外的技能文件或目录（可重复；默认扫\n" +
   "                             ~/.pi/agent/skills 与 <cwd>/.pi/skills）\n" +
   "      --show-tool-progress 把工具输出（取最后一行）实时打到 stderr\n" +
@@ -254,6 +254,7 @@ fn parse_args(argv : Array[String]) -> CliArgs raise CliError {
 fn build_system_prompt(
   cwd : String,
   tool_names : Array[String],
+  ext_tools : Array[@action.PromptToolDefinition],
   context_files : Array[@context.ContextFile],
   skills : Array[@context.Skill],
 ) -> String {
@@ -263,7 +264,7 @@ fn build_system_prompt(
     "",
     "Current working directory: " + cwd,
   ]
-  if !tool_names.is_empty() {
+  if !tool_names.is_empty() || !ext_tools.is_empty() {
     lines.push("")
     lines.push("Available tools:")
     for name in tool_names {
@@ -271,6 +272,10 @@ fn build_system_prompt(
         Some(snippet) => lines.push("- " + name + ": " + snippet)
         None => ()
       }
+    }
+    // 扩展工具没有内置的 snippet：描述来自 `registerTool` 自己。
+    for definition in ext_tools {
+      lines.push("- " + definition.name + ": " + first_line(definition.description))
     }
     let guidelines : Array[String] = []
     for name in tool_names {
@@ -308,6 +313,42 @@ fn build_system_prompt(
     lines.push(skills_prompt)
   }
   lines.join("\n")
+}
+
+///|
+/// 定义表：内置按 `names` 顺出，扩展的追加在后面（只取名字对得上的）。
+///
+/// `/tools read,bash` 这类运行期换工具也走这里 —— 否则扩展工具一换就掉。
+fn tool_definitions(
+  names : Array[String],
+  ext_tools : Array[@action.PromptToolDefinition],
+) -> Array[@action.PromptToolDefinition] {
+  let definitions = @tools.definitions_for(names)
+  for definition in ext_tools {
+    if names.contains(definition.name) {
+      definitions.push(definition)
+    }
+  }
+  definitions
+}
+
+///|
+/// 描述的首行（system prompt 里只放一行）。
+fn first_line(text : String) -> String {
+  match text.find("\n") {
+    Some(index) => text[:index].trim().to_owned()
+    None => text.trim().to_owned()
+  }
+}
+
+///|
+/// 一回合的事件载荷（字段名照 pi；内核没有的 `message` / `toolResults` 不编）。
+fn turn_payload(kind : String, turn_index : Int32) -> Json {
+  let fields : Map[String, Json] = Map([])
+  fields["type"] = Json::string(kind)
+  fields["turnIndex"] = Json::number(turn_index.to_double())
+  fields["timestamp"] = Json::number(@sys.now().to_double())
+  Json::object(fields)
 }
 
 ///|
@@ -759,14 +800,37 @@ async fn run(args : CliArgs) -> Unit {
     Some(cwd) => cwd
     None => "."
   }
-  // 扩展：沙盒化装载。编译只发生在启动前的这一处，命中缓存时连 JS 引擎
-  // 都不起（快照直接 memcpy 回去）。所以这段放在会话/prompt 之前。
+  // 扩展：发现 → 起常驻宿主（bun）。这一步同时也是一次装载，命中产物缓存时
+  // 宿主只是 import 一下已有的产物。所以这段放在会话 / prompt 之前。
   let ext_startup = @ext.prepare_at_startup(cwd, config.agent_dir)
   for diagnostic in ext_startup.diagnostics {
     eprintln("[ext] " + diagnostic)
   }
   if !ext_startup.names.is_empty() {
     eprintln("[ext] 已装载：" + ext_startup.names.join(", "))
+  }
+  // 运行期名册：`call` 工具、`emit` 事件都走它。空 = 没有能跑的扩展。
+  let ext_runtime = ext_startup.runtime
+  // 退出前把宿主收掉（关 stdin，宿主自己退）：这段要盖住所有 return、
+  // 包括后面那些 `runtime_failure` 的早退。
+  defer ext_runtime.close()
+  let ext_tools : Array[@action.PromptToolDefinition] = []
+  // 扩展工具默认开（与 pi 一致：扩展自己把工具挂上去）；`--no-tools` 与
+  // `--exclude-tools` 对它们同样生效 —— 「关工具」不该只关一半。
+  if !args.no_tools {
+    let excluded = match args.exclude_tools {
+      Some(list) => split_tool_list(list)
+      None => []
+    }
+    for definition in ext_startup.tool_definitions {
+      if !excluded.contains(definition.name) {
+        ext_tools.push({
+          name: definition.name,
+          description: definition.description,
+          parameters: definition.parameters,
+        })
+      }
+    }
   }
   // 新会话的「默认装载」：当前配置 + 当前工具选择 + 上下文文件 + 技能。
   // 恢复会话时这三份只在 fallback 里用 —— prompt 是装载时定下的，原样回来。
@@ -795,10 +859,11 @@ async fn run(args : CliArgs) -> Unit {
     system_prompt: build_system_prompt(
       cwd,
       fallback_tool_names,
+      ext_tools,
       context_files,
       skill_registry.skills,
     ),
-    tools: @tools.definitions_for(fallback_tool_names),
+    tools: tool_definitions(fallback_tool_names, ext_tools),
   }
   let fallback_model = resolved_model_spec(resolved)
   // 会话两份文件：存在就恢复，不存在就新建。
@@ -893,7 +958,22 @@ async fn run(args : CliArgs) -> Unit {
       }
     },
   }
-  let table = @provider.effect_table_with_hooks(config, options, hooks)
+  // 扩展注册的工具接进同一条工具 effect：名字归扩展就交给宿主跑，
+  // 内置工具照旧。两个事件（`tool_execution_start/end`）对所有工具都发，
+  // 与 pi 同口径 —— 扩展靠它做审计 / 提醒。
+  let external : @provider.ExternalTools? = if ext_runtime.is_empty() {
+    None
+  } else {
+    Some({
+      owns: fn(name) { ext_runtime.owns(name) },
+      run: async fn(call) { ext_runtime.call_tool(call) },
+      emit: async fn(event, payload) {
+        let parsed = @json.parse(payload) catch { _ => Json::object(Map([])) }
+        ext_runtime.emit(event, parsed)
+      },
+    })
+  }
+  let table = @provider.effect_table_with_hooks(config, options, hooks, external?)
   let agent = @runtime.Agent::new(
     initial_state(
       resolved,
@@ -907,6 +987,24 @@ async fn run(args : CliArgs) -> Unit {
   )
   bridge.agent = Some(agent)
   bridge.skills = skill_registry.skills
+  // 扩展的事件钩子：`turn_start` / `turn_end` 由环上的 action 流送出去
+  // （送达推迟到下一个 effect 边界，见 `@runtime.EventSink`）。
+  if !ext_runtime.is_empty() {
+    let turns = Ref(0)
+    agent.deliver_actions({
+      deliver: async fn(action) {
+        match action {
+          @action.TurnStart => {
+            turns.val = turns.val + 1
+            ext_runtime.emit("turn_start", turn_payload("turn_start", turns.val))
+          }
+          @action.TurnEnd =>
+            ext_runtime.emit("turn_end", turn_payload("turn_end", turns.val))
+          _ => ()
+        }
+      },
+    })
+  }
   // stdout 只留给模型回答：诊断与工具日志全走 stderr（先收集，跑完再打）。
   let notices : Array[String] = []
   agent.observe(action => {
@@ -1110,7 +1208,7 @@ async fn run(args : CliArgs) -> Unit {
         } else {
           split_tool_list(list)
         }
-        let tools = @tools.definitions_for(names)
+        let tools = tool_definitions(names, ext_tools)
         let applied : Array[String] = []
         for tool in tools {
           applied.push(tool.name)

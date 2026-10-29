@@ -30,8 +30,8 @@ core/sys/
   glob.mbt        共用实现：readdir 递归 + 段内通配
   fs_native.mbt   @fs 的薄包装
   fs_js.mbt       node:fs（同步 API）+ 错误槽
-  proc_native.mbt @process + collect_output
-  proc_js.mbt     node:child_process + promise/abort 桥
+  proc_native.mbt @process + collect_output + spawn_orphan（常驻子进程）
+  proc_js.mbt     node:child_process + promise/abort 桥 + 常驻子进程
   stdio_native.mbt @stdio
   stdio_js.mbt    process.stdout / stderr + readSync(0)
   term_native.mbt tty.c（isatty / VT / 代码页）+ exit
@@ -41,6 +41,23 @@ core/sys/
 
 `targets` 是按文件切的，所以「同名函数在两份文件里各写一遍」是刻意的：两边签名
 必须逐字一致，上层才不需要 `if target`。
+
+## 常驻子进程（`Session`）
+
+`spawn` 把子进程挂进 `TaskGroup`：任务组一结束进程就被收掉。扩展宿主不行 ——
+它必须活过整个会话（见 [extensions](extensions.md)）。所以另有一套：
+
+```moonbit
+let io = @sys.spawn_session("bun", args, cwd=root)   // stdin + 合并的输出管道
+io.write(line)
+let chunk = io.read_some()
+io.close()                                            // 关 stdin，宿主自己退
+```
+
+- native：`@process.spawn_orphan`（不挂在任务组上），stdout / stderr 并成一根
+  管道；
+- js：`child.stdin/stdout/stderr`，`close()` 走 `stdin.end()` —— 让对端的读循环
+  看到 EOF，而不是靠发信号（native 侧拿不到跨平台的 kill）。
 
 ## js 侧的四条硬约束
 

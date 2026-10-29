@@ -370,6 +370,60 @@ async fn run_agent_effect(
 }
 
 ///|
+/// 外部工具（扩展注册的工具）的接入点。
+///
+/// provider 不认识扩展：它只拿到三个回调 ——「这个名字归你吗」「跑一下」
+/// 「顺手发个事件」。具体怎么接（bun 宿主 / 行协议）是 `core/ext` 的事。
+///
+/// `emit` 对**内置工具也发**：pi 里 `tool_execution_start` / `tool_execution_end`
+/// 覆盖所有工具，扩展靠它做审计、脱敏、提醒。
+pub(all) struct ExternalTools {
+  /// 这个工具名是不是外部的。
+  owns : (String) -> Bool
+  /// 真跑一次。失败应该折成 `is_error` 的结果，而不是上抛。
+  run : async (@message.ToolCall) -> @tools.ToolOutcome
+  /// 发一个工具事件（事件名 + JSON 文本载荷）。失败不掐回合。
+  emit : async (String, String) -> Unit
+}
+
+///|
+/// 工具事件的载荷（字段名照 pi；内核没有的那些不编）。
+fn tool_event_payload(
+  kind : String,
+  call : @message.ToolCall,
+  outcome? : @tools.ToolOutcome,
+) -> String {
+  let fields : Map[String, Json] = Map([])
+  fields["type"] = Json::string(kind)
+  fields["toolCallId"] = Json::string(call.id)
+  fields["toolName"] = Json::string(call.name)
+  match outcome {
+    None =>
+      fields["args"] = @json.parse(call.arguments) catch {
+        _ => Json::object(Map([]))
+      }
+    Some(outcome) => {
+      let content : Array[Json] = []
+      for block in outcome.content {
+        match block {
+          @message.Text(text) =>
+            content.push(
+              Json::object({
+                "type": Json::string("text"),
+                "text": Json::string(text),
+              }),
+            )
+          _ => ()
+        }
+      }
+      fields["content"] = Json::array(content)
+      fields["isError"] = Json::boolean(outcome.is_error)
+    }
+  }
+  Json::object(fields).stringify()
+}
+
+///|
 /// 默认的工具执行：逐个调 `core/tools` 的实现，把 outcome 变成 `tool.result`。
 ///
 /// 每个调用都必须落一条结果（即使工具失败），否则消息序列里就留下一个没有
@@ -378,11 +432,14 @@ async fn run_agent_effect(
 ///
 /// 启用检查读 `state.prompt.tools` —— 那是 `prompt.init` 装进来、**真正声明给模型**
 /// 的那一份。关着的工具（例如默认关的 `powershell`）即使被硬调也只回「未知工具」。
+///
+/// `external?` 是扩展注册的工具：名字归它就交给它跑，内置工具照旧。
 async fn run_tools_with_hooks(
   state : @state.AgentState,
   calls : Array[@message.ToolCall],
   dispatch : @runtime.Dispatch,
   hooks : ProviderHooks,
+  external? : ExternalTools,
 ) -> Unit {
   let enabled : Array[String] = []
   for definition in state.prompt.tools {
@@ -426,14 +483,43 @@ async fn run_tools_with_hooks(
     if !state.model.thinking_level.is_empty() {
       env["PI_REASONING_LEVEL"] = state.model.thinking_level
     }
-    let outcome = @tools.execute(state.cwd, call, env~, enabled~, on_progress=async fn(
-      blocks,
-    ) {
-      (hooks.on_tool_progress)(call.name, blocks)
-      dispatch.send(
-        @action.ToolProgress({ tool_call_id: call.id, content: blocks, }),
-      )
-    })
+    // 扩展的事件钩子：开始那头必须在工具真的跑之前（钩子可能想记下将要发生的事）。
+    match external {
+      Some(runner) =>
+        (runner.emit)(
+          "tool_execution_start",
+          tool_event_payload("tool_execution_start", call),
+        )
+      None => ()
+    }
+    let outcome : @tools.ToolOutcome = match external {
+      Some(runner) if (runner.owns)(call.name) =>
+        if enabled.contains(call.name) {
+          (runner.run)(call)
+        } else {
+          {
+            content: [@message.Text("未知工具：" + call.name)],
+            is_error: true,
+          }
+        }
+      _ =>
+        @tools.execute(state.cwd, call, env~, enabled~, on_progress=async fn(
+          blocks,
+        ) {
+          (hooks.on_tool_progress)(call.name, blocks)
+          dispatch.send(
+            @action.ToolProgress({ tool_call_id: call.id, content: blocks, }),
+          )
+        })
+    }
+    match external {
+      Some(runner) =>
+        (runner.emit)(
+          "tool_execution_end",
+          tool_event_payload("tool_execution_end", call, outcome~),
+        )
+      None => ()
+    }
     dispatch.send(
       @action.ToolResult({
         tool_call_id: call.id,
@@ -757,13 +843,17 @@ pub fn effect_table(
 
 ///|
 /// 带上渲染钩子（CLI / 界面用）。
+///
+/// `external?` 把扩展注册的工具接进来：内置工具与扩展工具走同一条 effect，
+/// 于是中断、进度、ToolStart/ToolResult 的语义对两者一致。
 pub fn effect_table_with_hooks(
   config : PiConfig,
   options : ChatOptions,
   hooks : ProviderHooks,
+  external? : ExternalTools,
 ) -> @runtime.EffectTable {
   effect_table_full(config, options, hooks, async fn(state, calls, dispatch) {
-    run_tools_with_hooks(state, calls, dispatch, hooks)
+    run_tools_with_hooks(state, calls, dispatch, hooks, external?)
   })
 }
 

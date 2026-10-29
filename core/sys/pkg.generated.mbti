@@ -51,6 +51,8 @@ pub async fn run_capture(String, Array[String], cwd? : String, timeout_ms? : Int
 
 pub async fn[X] spawn(@async.TaskGroup[X], String, Array[String], extra_env? : Map[String, String], pipe? : OutputPipe, stdin? : InputPipe, cwd? : String) -> Process raise SysError
 
+pub async fn spawn_session(String, Array[String], extra_env? : Map[String, String], cwd? : String) -> Session raise SysError
+
 pub fn stdin_is_tty() -> Bool
 
 pub fn stdout_is_tty() -> Bool
@@ -108,6 +110,14 @@ pub(all) struct Process {
 }
 pub fn Process::cancel(Self) -> Unit
 pub async fn Process::wait(Self) -> Int32
+
+pub(all) struct Session {
+  stdin : InputPipe
+  output : OutputPipe
+}
+pub fn Session::close(Self) -> Unit
+pub async fn Session::read_some(Self, max_len? : Int32) -> Bytes? raise SysError
+pub async fn Session::write(Self, String) -> Unit raise SysError
 
 // Type aliases
 

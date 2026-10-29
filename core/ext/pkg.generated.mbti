@@ -3,6 +3,9 @@ package "pi-moon/core/ext"
 
 import {
   "moonbitlang/core/debug",
+  "pi-moon/core/message",
+  "pi-moon/core/sys",
+  "pi-moon/core/tools",
 }
 
 // Values
@@ -86,6 +89,40 @@ pub(all) struct ExtPlan {
 pub fn ExtPlan::loaded(Self) -> Array[ExtEntry]
 pub fn ExtPlan::skipped(Self) -> Array[ExtEntry]
 
+pub(all) struct ExtRuntime {
+  sessions : Array[ExtSession]
+}
+pub async fn ExtRuntime::call_tool(Self, @message.ToolCall) -> @tools.ToolOutcome
+pub fn ExtRuntime::close(Self) -> Unit
+pub async fn ExtRuntime::emit(Self, String, Json) -> Unit
+pub fn ExtRuntime::is_empty(Self) -> Bool
+pub fn ExtRuntime::listens(Self, String) -> Bool
+pub fn ExtRuntime::new() -> Self
+pub fn ExtRuntime::owns(Self, String) -> Bool
+pub fn ExtRuntime::push(Self, ExtSession) -> Unit
+
+pub(all) struct ExtSession {
+  name : String
+  mut tools : Array[String]
+  mut tool_definitions : Array[ExtToolDefinition]
+  mut commands : Array[String]
+  mut events : Array[String]
+  mut unsupported : Array[String]
+  mut denied : Array[String]
+  mut built : Bool
+  mut ms : Int32
+  io : @sys.Session
+  mut pending : String
+  mut noise : Array[String]
+  mut next_id : Int32
+  mut dead : Bool
+}
+pub async fn ExtSession::call(Self, @message.ToolCall) -> @tools.ToolOutcome raise HostError
+pub fn ExtSession::close(Self) -> Unit
+pub async fn ExtSession::emit(Self, String, Json) -> Unit raise HostError
+pub fn ExtSession::noise_text(Self) -> String
+pub async fn ExtSession::start(HostPaths, ExtSource, String) -> Self raise HostError
+
 pub(all) enum ExtSkip {
   NodeDependency(String)
   UnresolvedImport(String)
@@ -109,10 +146,17 @@ pub(all) enum ExtStep {
 } derive(Eq, @debug.Debug)
 pub fn ExtStep::to_string(Self) -> String
 
+pub(all) struct ExtToolDefinition {
+  name : String
+  description : String
+  parameters : String
+} derive(Eq, @debug.Debug)
+
 pub(all) struct HostLoad {
   tools : Array[String]
   commands : Array[String]
   events : Array[String]
+  tool_definitions : Array[ExtToolDefinition]
   unsupported : Array[String]
   denied : Array[String]
   child_calls : Array[String]
@@ -136,8 +180,10 @@ pub(all) struct StartupExt {
   tools : Array[String]
   commands : Array[String]
   events : Array[String]
+  tool_definitions : Array[ExtToolDefinition]
   diagnostics : Array[String]
   artifacts : Array[(String, String)]
+  runtime : ExtRuntime
   available : Bool
 }
 

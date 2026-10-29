@@ -58,10 +58,12 @@ fn agent_install_dir() -> String {
 async test "host_script_source 与 host/ext_host.mjs 同步" {
   // 生成器：node scripts/embed-host.mjs。这份测试保证嵌进二进制的副本不漂移。
   let on_disk = @sys.read_text("core/ext/host/ext_host.mjs") catch { _ => return }
-  let expected = if on_disk.has_suffix("\n") {
-    on_disk[:on_disk.length() - 1].to_owned()
+  // 工作树的换行可能是 CRLF（core.autocrlf）：只比正文，不比行尾。
+  let normalized = on_disk.replace_all(old="\r", new="")
+  let expected = if normalized.has_suffix("\n") {
+    normalized[:normalized.length() - 1].to_owned()
   } else {
-    on_disk
+    normalized
   }
   if host_script_source != expected {
     fail("host_script.mbt 与 host/ext_host.mjs 不一致，跑 node scripts/embed-host.mjs")

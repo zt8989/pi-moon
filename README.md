@@ -71,13 +71,15 @@ reducer 里没有一个 `await`、没有一个 `fetch`、也没有 while。真�
 - **pi 扩展（宿主进程）**：发现 `~/.pi/agent/extensions` 与 `<cwd>/.pi/extensions`，
   交给**独立的 bun 进程**装载（形状照 magpie）：bun 自己转译 TS、用 pi 装机的
   node_modules 解析依赖，`Bun.build` 产物按内容哈希缓存，缓存未命中才打包。
+  宿主**常驻**（`--mode serve`）：扩展注册的工具走与内置工具同一条 `run_tools`
+  effect 真被执行，`turn_start` / `turn_end` / `tool_execution_*` 钩子按行协议派发。
   Node API 可用，文件系统访问按 cwd / agent 目录 / 临时目录白名单卡。
-  pi 官方 70 个单文件示例全部装载成功（见 [docs/extensions.md](docs/extensions.md)；
-  运行期调用的派发还在接）。
+  pi 官方 70 个单文件示例全部装载成功（见 [docs/extensions.md](docs/extensions.md)）。
 
-**还没有**（下一步逐步接）：Web 界面、扩展的运行期接线（工具 / 命令 / 事件钩子
-派发）、TUI 的各工具专用渲染器 / Windows 输入法
-（见 [docs/tui.md](docs/tui.md) 的「与 ela 的差距」）。
+**还没有**（下一步逐步接）：Web 界面、扩展钩子的改写 / 阻断语义（现在只能「听见」
+不能「插手」）、扩展斜杠命令、TUI 的各工具专用渲染器 / Windows 输入法
+（见 [docs/tui.md](docs/tui.md) 的「与 ela 的差距」，以及 [docs/extensions.md](docs/extensions.md)
+的「还没接」）。
 
 ## 跑起来
 
@@ -299,4 +301,5 @@ fs（发现与渲染都不碰环）；`core/tools` 只依赖 `action` / `message
    Windows 输入法（差距清单见 [docs/tui.md](docs/tui.md)）。
 2. **Web 界面**：rabbita 与终端共用同一份 state；跨包只碰 `Agent` 的
    `state` / `send`。
-3. **pi 扩展**：`extension.event` / 扩展命令 / 生命周期。
+3. **pi 扩展**：钩子的改写 / 阻断语义（`tool_call` 改参数、`tool_result` 改输出、
+   `context` 换上下文）、扩展命令、宿主回收（超时 / kill）。

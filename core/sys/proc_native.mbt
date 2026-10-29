@@ -101,6 +101,66 @@ pub async fn Process::wait(self : Process) -> Int {
 }
 
 ///|
+/// 常驻子进程（扩展宿主）：一根 stdin、一根输出，生命周期与调用方相同。
+///
+/// 为什么不用 `spawn`：那个版本要把子进程挂进 `TaskGroup`，任务组一结束进程
+/// 就被收掉 —— 而宿主必须活过整个会话。所以这里用 `spawn_orphan`，收尾靠
+/// **关 stdin**：宿主的读循环读到 EOF 就自己退出。
+pub(all) struct Session {
+  stdin : InputPipe
+  output : OutputPipe
+}
+
+///|
+pub async fn spawn_session(
+  program : String,
+  args : Array[String],
+  extra_env? : Map[String, String] = Map([]),
+  cwd? : String = ".",
+) -> Session raise SysError {
+  let output = read_from_process() catch {
+    err => raise SysError(err.to_string())
+  }
+  let stdin = write_to_process() catch {
+    err => raise SysError(err.to_string())
+  }
+  // stdout / stderr 并到一根管道：宿主把诊断也写成协议里的 log 行（见
+  // `host/ext_host.mjs`），这里只当兜底。
+  let _ = @process.spawn_orphan(
+    program,
+    args,
+    stdin=stdin.reader,
+    stdout=output.writer,
+    stderr=output.writer,
+    extra_env~,
+    cwd~,
+    no_console_window=true,
+  ) catch {
+    err => raise SysError(err.to_string())
+  }
+  { stdin, output }
+}
+
+///|
+/// 收尾：关 stdin，宿主读到 EOF 后自己退出。
+pub fn Session::close(self : Session) -> Unit {
+  self.stdin.close()
+}
+
+///|
+pub async fn Session::write(self : Session, text : String) -> Unit raise SysError {
+  self.stdin.write(text)
+}
+
+///|
+pub async fn Session::read_some(
+  self : Session,
+  max_len? : Int = 8192,
+) -> Bytes? raise SysError {
+  self.output.read_some(max_len~)
+}
+
+///|
 async fn capture_once(
   program : String,
   args : Array[String],

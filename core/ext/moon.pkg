@@ -11,6 +11,8 @@
 
 import {
   "pi-moon/core/sys",
+  "pi-moon/core/message",
+  "pi-moon/core/tools",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/env",
   "moonbitlang/core/json",
@@ -31,5 +33,6 @@ options(
   targets: {
     "ext_wbtest.mbt": [ "native" ],
     "host_wbtest.mbt": [ "native" ],
+    "serve_wbtest.mbt": [ "native" ],
   },
 )

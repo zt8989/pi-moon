@@ -90,6 +90,12 @@ run_agent: async fn(state, dispatch) {
 通过 `ProviderHooks` 在 await 期间把增量直接写给终端 —— 前者拿 state，后者拿
 字节流，两者都不改 state。
 
+**第三类订阅者：异步事件汇**（`Agent::deliver_actions(EventSink)`）。渲染不能等
+（一帧都不能落），但扩展的事件钩子要写进程、等回执，所以它们排队，在
+**effect 边界**（`flush_deferred` 每次 `await` 之前）按 action 顺序送达。于是
+扩展看到的 `turn_start` 一定早于它那一回合的 LLM 调用，钩子报错也不影响环
+（观测者不是一环）。事件名与载荷见 [extensions](extensions.md)。
+
 ### UI 事件：界面显示也走环，但不落轨迹
 
 翻页 / 滚动 / 展开折叠 / 面板这些「界面怎么显示」也是 action（`Ui` 事件，
@@ -273,7 +279,8 @@ LLM 被调两遍，第二遍的结果覆盖第一遍，树上就是两个 `llm.r
   的流式请求；详见 [provider](provider.md)。
 - **工具**：`RunTools` 接上了八个内置工具（read / write / edit / bash /
   powershell / grep / find / ls），开关语义与 pi 的 `defaultTools` 一致；
-  详见 [tools](tools.md)。
+  扩展注册的工具走同一条 effect（名字归扩展就交给 bun 宿主跑）；
+  详见 [tools](tools.md) 与 [extensions](extensions.md)。
 - **流式工具输出**：shell 命令边跑边读，`ToolProgress` 每 100ms 回到环上，
   写进 `state.tool_progress`；超时会保留 partial 输出。
 - **会话落盘 / 恢复**：JSONL 追加写（`add` / `close` / `message` / 装载段），
@@ -289,7 +296,7 @@ LLM 被调两遍，第二遍的结果覆盖第一遍，树上就是两个 `llm.r
 
 ## 尚未接的部分（按计划的顺序）
 
-1. **扩展 / 分支 / Web 界面**：action 与迁移都未搬（刻意留在环稳定之后）。
+1. **分支 / Web 界面**：action 与迁移都未搬（刻意留在环稳定之后）。
    终端界面已经接了（见 [tui](tui.md)）：它只读 `Agent.state`，不往环里加新迁移；
    唯一的内核改动是 `ProviderHooks::should_abort`（Esc 中断）与 `Ui` 事件
    （只碰 `state.ui`，见上文）。

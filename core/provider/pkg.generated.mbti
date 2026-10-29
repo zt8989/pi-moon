@@ -7,6 +7,7 @@ import {
   "pi-moon/core/message",
   "pi-moon/core/runtime",
   "pi-moon/core/state",
+  "pi-moon/core/tools",
 }
 
 // Values
@@ -20,7 +21,7 @@ pub fn effect_table(PiConfig, ChatOptions) -> @runtime.EffectTable
 
 pub fn effect_table_full(PiConfig, ChatOptions, ProviderHooks, async (@state.AgentState, Array[@message.ToolCall], @runtime.Dispatch) -> Unit) -> @runtime.EffectTable
 
-pub fn effect_table_with_hooks(PiConfig, ChatOptions, ProviderHooks) -> @runtime.EffectTable
+pub fn effect_table_with_hooks(PiConfig, ChatOptions, ProviderHooks, external? : ExternalTools) -> @runtime.EffectTable
 
 pub fn effect_table_with_tools(PiConfig, ChatOptions, async (@state.AgentState, Array[@message.ToolCall], @runtime.Dispatch) -> Unit) -> @runtime.EffectTable
 
@@ -55,6 +56,12 @@ pub(all) struct ChatOptions {
   idle_timeout_ms : Int32
 } derive(Eq, @debug.Debug)
 pub fn ChatOptions::defaults() -> Self
+
+pub(all) struct ExternalTools {
+  owns : (String) -> Bool
+  run : async (@message.ToolCall) -> @tools.ToolOutcome
+  emit : async (String, String) -> Unit
+}
 
 pub(all) struct ModelCompat {
   thinking_format : String

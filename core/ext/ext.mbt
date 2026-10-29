@@ -31,6 +31,18 @@ pub fn ExtOrigin::to_string(self : ExtOrigin) -> String {
 }
 
 ///|
+/// 扩展注册的一个工具。
+///
+/// `parameters` 是 JSON **文本**（与内置工具的 `PromptToolDefinition` 同口径）：
+/// provider 原样塞进请求体的 `function.parameters`。宿主回传的是对象，
+/// 转换在 `parse_load` 里做一次。
+pub(all) struct ExtToolDefinition {
+  name : String
+  description : String
+  parameters : String
+} derive(Eq, Debug)
+
+///|
 /// 一个待装载的扩展：名字 + 入口文件 + 所在目录。
 ///
 /// `dir` 是 `base_dir` 语义 —— 扩展里 `read` 相对路径按它解析，目录式扩展

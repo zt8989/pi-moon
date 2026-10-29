@@ -2,16 +2,17 @@
 //
 // 形状照 magpie：主程序不嵌 JS 引擎，扩展跑在独立进程里，两边按行说 JSON。
 //
-// 这个文件只管「起进程、说话、收结果」：
-//   - 启动前：一次性 `--mode load`，构建（命中缓存则跳过）后回传注册表；
-//   - 运行期：`--mode serve` 常驻，`call` 工具、`emit` 事件钩子。
+// 这个文件只管**一次性**装载（`--mode load`）：spawn bun、拿回注册表、进程退出。
+// 产品路径走的是常驻宿主（`--mode serve`，见 `serve.mbt`）——启动那一下既是
+// 装载，也是运行期的 RPC 通道；这里留着一个一次性版本，是为了单独测「装载」
+// 这一半（不牵扯行协议）。
 //
 // 为什么不再嵌 wasm：宿主是解释器（wasm3）时同一段 JS 慢 22 倍，且要自己维护
 // WASI shim、快照序列化和 host_call 桥；换成独立 bun 进程后这些全部消失。
 
 ///|
 /// 宿主脚本版本。改 `host/ext_host.mjs` 就要加一 —— 缓存键含它。
-pub let host_version : String = "pi-moon-host/1"
+pub let host_version : String = "pi-moon-host/2"
 
 ///|
 /// 宿主进程需要的路径。全部在启动时算一次。
@@ -121,6 +122,8 @@ pub(all) struct HostLoad {
   tools : Array[String]
   commands : Array[String]
   events : Array[String]
+  /// 工具的完整定义（名字 / 描述 / 参数 schema）—— 模型要看到的那一份。
+  tool_definitions : Array[ExtToolDefinition]
   /// 扩展调了但 pi-moon 没实现的宿主 API（仅诊断）。
   unsupported : Array[String]
   /// 沙盒拦下的路径访问（仅诊断）。
@@ -201,6 +204,15 @@ pub fn parse_load(text : String) -> HostLoad raise HostError {
     Some(fields) => fields
     None => raise HostFailure("宿主输出不是对象")
   }
+  parse_fields(object)
+}
+
+///|
+/// 解析一份已经解开的装载回执。
+///
+/// 两个调用点：`--mode load` 的整份输出，与 `--mode serve` 的第一条 `ready` 行
+/// （后者只是多一个 `event` 字段，其余形状完全相同）。
+fn parse_fields(object : Map[String, Json]) -> HostLoad raise HostError {
   let ok = match object.get("ok") {
     Some(value) =>
       match value.as_bool() {
@@ -264,6 +276,48 @@ pub fn parse_load(text : String) -> HostLoad raise HostError {
       None => 0
     }
   }
+  let tool_definitions : Array[ExtToolDefinition] = []
+  match object.get("toolDefinitions") {
+    Some(value) =>
+      match value.as_array() {
+        Some(items) =>
+          for item in items {
+            let fields = match item.as_object() {
+              Some(fields) => fields
+              None => continue
+            }
+            let name = match fields.get("name") {
+              Some(value) =>
+                match value.as_string() {
+                  Some(text) => text
+                  None => continue
+                }
+              None => continue
+            }
+            let description = match fields.get("description") {
+              Some(value) =>
+                match value.as_string() {
+                  Some(text) => text
+                  None => ""
+                }
+              None => ""
+            }
+            // 宿主回传的是 schema 对象，这里转成 JSON 文本（provider 只认文本）；
+            // 没声明参数的工具（`null`）给个空对象，模型看到的 schema 才是合法的。
+            let parameters = match fields.get("parameters") {
+              Some(value) =>
+                match value.as_null() {
+                  Some(_) => "{}"
+                  None => value.stringify()
+                }
+              None => "{}"
+            }
+            tool_definitions.push({ name, description, parameters, })
+          }
+        None => ()
+      }
+    None => ()
+  }
   let flag = fn(fields : Map[String, Json], key : String) -> Bool {
     match fields.get(key) {
       Some(value) =>
@@ -278,6 +332,7 @@ pub fn parse_load(text : String) -> HostLoad raise HostError {
     tools: read_strings(registry, "tools"),
     commands: read_strings(registry, "commands"),
     events: read_strings(registry, "events"),
+    tool_definitions,
     unsupported: read_strings(registry, "unsupported"),
     denied: read_strings(policy, "denied"),
     child_calls: read_strings(policy, "childCalls"),

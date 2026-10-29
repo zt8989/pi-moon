@@ -10,7 +10,8 @@ pi-moon 用的也是同一份扩展、同一份 `@earendil-works/*` 包，但不
 pi-moon (MoonBit native)                 ext host (bun)
   发现扩展 ─┐                         ┌─ 打包（Bun.build，命中缓存则跳过）
   算缓存键 ─┼──► spawn bun ──────────►├─ 加载（bun 自己转译 TS）
-  读注册表 ◄┘   --mode load（一次性） └─ 回传 JSON：工具 / 命令 / 事件钩子
+  起常驻宿主┘   --mode serve（常驻）  ├─ 回传 JSON：工具 / 命令 / 事件钩子
+                                     └─ 读 stdin：call 工具 / emit 事件
 ```
 
 ## 为什么是宿主进程，不是嵌引擎
@@ -40,12 +41,69 @@ build for %s` 那些字符串就是它的插件宿主逻辑）。
    「目录 + `index.ts`/`index.js`」；`node_modules` 与点开头的目录不递归。
 2. **缓存键**（`ext.mbt`）：`FNV-1a64(prelude_version ∥ host_cache_version ∥ 源码)`。
    产物落在 `<agent dir>/cache/pi-moon/ext/host/build/<key>.mjs`。
-3. **装载**（`host.mbt`）：`bun <缓存>/ext_host.mjs --mode load …`，一次性进程：
-   打包（缓存未命中才跑）→ 加载 → 回传注册表 → 退出。
-4. **汇总**（`prepare.mbt`）：把工具名 / 命令名 / 事件名汇总成 `StartupExt`，
-   诊断打到 stderr（`[ext]` 前缀），横幅里出 `[Extensions]` 段。
+3. **装载**（`serve.mbt`）：`bun <缓存>/ext_host.mjs --mode serve …`。宿主打包
+   （缓存未命中才跑）→ 加载 → 把注册表（工具 / 命令 / 事件 / 工具定义）作为
+   第一条 `{"event":"ready"}` 行回传，然后**留在那里读 stdin**。
+4. **汇总**（`prepare.mbt`）：注册表汇总成 `StartupExt`（工具名 / 命令名 / 事件名 /
+   工具定义 + 运行期名册 `ExtRuntime`），诊断打到 stderr（`[ext]` 前缀），横幅
+   里出 `[Extensions]` 段。什么都没注的会话当场收掉（不白占一个 bun 进程）。
 
 单个扩展失败只留一条诊断，不影响别的扩展，也不挡启动。
+**没有单独的一次性装载步骤**：启动这一下就是装载，宿主随后直接进读循环。
+
+## 运行期：`call` 与 `emit`
+
+一个扩展一个常驻宿主进程。两侧说的话都是一行 JSON：
+
+```jsonc
+// 调工具
+{"op":"call","id":3,"tool":"demo_tool","toolCallId":"call_7","args":{"text":"hi"}}
+{"ok":true,"id":3,"result":{"content":[{"type":"text","text":"hi"}]}}
+
+// 派事件（回执里的 results 目前丢弃：钩子是订阅式的）
+{"op":"emit","id":4,"event":"turn_end","payload":{"type":"turn_end","turnIndex":1}}
+{"ok":true,"id":4,"results":[null]}
+```
+
+三条约束：
+
+- **一次只有一条在途请求**：调用点是 effect 里的 `await`，本来就没有并发；
+  `id` 只做自检（对不上说明上一轮的响应有剩，抖掉继续等）。
+- **`stdout` 是协议通道**：宿主把 `console.*` 与自己的诊断都写成
+  `{"event":"log"}` 行；万一张上还有非 JSON 行（扩展直接 `process.stdout.write`、
+  bun 自己报错），读的一侧跳过并留作诊断，而不是把会话判死。
+- **宿主报 `{"event":"fatal"}` 或提前退出**：当前调用拿到明确错误，会话标死；
+  之后的调用立刻失败，不再写一个已经没人的管道。
+
+### 工具
+
+路由在 `run_tools` effect 里（`core/provider/effect.mbt` 的 `ExternalTools`）：
+
+- 名字归扩展 → 宿主跑 `execute`，返回值折成内核的内容块（`text` → `Text`，
+  `image` 的 `data`/`mimeType` → data URL），`isError` 决定 `is_error`；
+- 名字不归扩展 → `@tools.execute`，八个内置工具照旧。
+
+扩展工具的**启用检查**读 `state.prompt.tools`，与内置工具同一口径：没声明给
+模型的工具即使被硬调也只会拿到「未知工具」。
+
+### 事件
+
+`on(event, handler)` 注册的钩子由两侧分别派发：
+
+| 事件 | 谁派发 | 载荷（字段名照 pi，内核没有的不编） |
+| --- | --- | --- |
+| `turn_start` | 环上的 action 流（`@runtime.EventSink`） | `{type, turnIndex, timestamp}` |
+| `turn_end` | 同上 | `{type, turnIndex, timestamp}` |
+| `tool_execution_start` | `run_tools` effect，**工具真的跑之前** | `{type, toolCallId, toolName, args}` |
+| `tool_execution_end` | 同上，工具跑完 | `{type, toolCallId, toolName, content, isError}` |
+
+`tool_execution_*` **对所有工具都发**（内置的也发）—— pi 就是这个口径，扩展靠它
+做审计、脱敏、提醒。`turn_*` 走异步事件汇：归约是同步纯函数，事件在**下一个
+effect 边界**按 action 顺序送达（于是 `turn_start` 一定早于它那一回合的 LLM 调用）。
+
+只发给**挂了这个钩子**的会话：没挂的扩展不该为一次空派发付一次往返。
+钩子抛错只影响它自己那一格（宿主逐条 try/catch，回执的 `results` 里带
+`{error}`），传输错也不掐回合；会话变死之后下一次调用才会报错。
 
 ## 文件系统白名单
 
@@ -77,9 +135,9 @@ build for %s` 那些字符串就是它的插件宿主逻辑）。
    import 找不到包 —— 表现为「同样的命令在 shell 里手动跑却正常」。所以构建时
    标 external，构建后按 `modulesDir` 解析成 `file://` 绝对 URL 写回产物。
 
-另外 `bunfig.toml` 里关掉了自动安装（`[install] auto = "disable"`）：
-否则解析不到的包会被悄悄从 npm 下载，「能不能装」取决于网络而不是这台机器
-上装了什么。
+另外 `bunfig.toml` 里关掉了自动安装（`[install] auto = "disable"`）：否则解析
+不到的包会被悄悄从 npm 下载，「能不能装」取决于网络而不是这台机器上装了
+什么。
 
 ## 扩展里能用到什么
 
@@ -89,9 +147,9 @@ build for %s` 那些字符串就是它的插件宿主逻辑）。
 
 | API | 状态 |
 | --- | --- |
-| `registerTool(tool)` | ✅ 注册（`defineTool` 是恒等，`typebox` 是真包） |
-| `registerCommand(name, def)` | ✅ 注册 |
-| `on(event, handler)` | ✅ 注册（派发见「还没接」） |
+| `registerTool(tool)` | ✅ 注册 + **执行**（`defineTool` 是恒等，`typebox` 是真包） |
+| `registerCommand(name, def)` | ✅ 注册（`/name` 入口还没接，见「还没接」） |
+| `on(event, handler)` | ✅ 注册 + **派发**（订阅式：不阻断、不改写） |
 | `registerEntryRenderer` / `registerFlag` / `registerShortcut` / UI | ⚠️ 兜底空操作，记进 `unsupported` |
 | Node API（`fs` / `child_process` / `process` …） | ✅ 可用，路径按白名单 |
 | 任意 npm 包 | ✅ 只要 pi 装机的 node_modules 里有 |
@@ -103,26 +161,40 @@ build for %s` 那些字符串就是它的插件宿主逻辑）。
 
 ```text
 core/ext/
-  ext.mbt            类型：来源、装载步骤、缓存键（FNV-1a 64）
+  ext.mbt            类型：来源、装载步骤、缓存键（FNV-1a 64）、工具定义
   discover.mbt       <agent dir>/extensions、<cwd>/.pi/extensions、--extension
   pi_modules.mbt     找 pi 装机里的 node_modules（宿主解析扩展 import 的包）
-  prepare.mbt        启动前的计划 + 调宿主装载 + 汇总 StartupExt
-  host.mbt           宿主进程：路径准备、spawn bun、解析回传 JSON
+  prepare.mbt        启动前的计划 + 起常驻宿主 + 汇总 StartupExt
+  host.mbt           宿主一次性装载（`--mode load`）：spawn bun、解析回传 JSON
+  serve.mbt          常驻宿主（`--mode serve`）：行协议、call / emit、ExtRuntime
   host_script.mbt    宿主脚本（由 scripts/embed-host.mjs 从 host/ext_host.mjs 生成）
   host/ext_host.mjs  宿主脚本源码：Bun.build 缓存、策略 sidecar、JSON-lines RPC
 scripts/embed-host.mjs  生成器（改完 .mjs 跑一次）
 ```
 
 `host_script.mbt` 与 `host/ext_host.mjs` 有同步测试兜底：改了 `.mjs` 忘了重新
-生成，`moon test` 会红。
+生成，`moon test` 会红。`--mode load` 仍然保留（`host_wbtest.mbt` 用它单测
+「装载」这一半），产品路径走的是 `--mode serve`。
+
+`serve_wbtest.mbt` 有两类测试：真起 bun + 真扩展（缺 bun 时整组跳过），以及一个
+**node 写的假宿主** —— 协议层（跨块拼行、跳过 `log` 噪音、`id` 自检、`fatal`）
+与 bun 无关，不该因为「这台机器没装 bun」而完全没有覆盖。
 
 ## 还没接
 
-1. **运行期派发**：宿主脚本已经有 `--mode serve`（`call` 工具 / `emit` 事件
-   钩子 / `command` 命令），pi-moon 侧还没起常驻宿主并接进环。所以现在扩展
-   能「装载并注册」，但 `execute` 与事件钩子还不会被调用。
-2. **产物清理**：源码改了会换键，旧产物没人删（`build/` 会缓慢变大）。
-3. **沙盒强度**：JS 层白名单，不是 OS 级隔离（见上）。
+1. **钩子的改写 / 阻断语义**：pi 的 `tool_call` 能改参数甚至拦下调用，
+   `tool_result` 能改输出、`context` 能换上下文。这里只做到**通知**（发了事件、
+   收了回执就丢），改不了任何东西。要用这些语义得先决定「改谁的状态」——
+   那是 reducer 的活，不是事件钩子的活。
+2. **斜杠命令**：`registerCommand` 注册了，但 REPL / TUI 还没有 `/name` 入口。
+3. **扩展工具的进度流**：`ToolProgress` 只有内置 shell 有；扩展工具的中间输出
+   目前只能等最终结果。
+4. **宿主日志**：扩展的 `console.*` 走协议 `log` 行收进会话诊断（保留最近几条），
+   只有传输失败时才会被带出来 —— 想边跑边看，现在得靠扩展自己写文件。
+5. **宿主回收**：没有 kill 通道（native 侧只拿到 pid，不跨平台发信号）。收尾靠
+   关 stdin 让宿主自己退；扩展卡死在 `execute` 里时，这一次调用会一直等下去。
+6. **产物清理**：源码改了会换键，旧产物没人删（`build/` 会缓慢变大）。
+7. **沙盒强度**：JS 层白名单，不是 OS 级隔离（见上）。
 
 ## 手动试
 
@@ -136,17 +208,21 @@ const tool = defineTool({
   description: "演示工具",
   parameters: Type.Object({ text: Type.String() }),
   async execute(_id: string, params: { text: string }) {
-    return { content: [{ type: "text", text: params.text }] };
+    return { content: [{ type: "text", text: "扩展现身：" + params.text }] };
   },
 });
 export default function (pi: ExtensionAPI) {
   pi.registerTool(tool);
-  pi.on("turn_end", async () => null);
+  pi.on("turn_end", async (event) => {
+    // 钩子跑在宿主进程里：console.log 会以 log 行回到 pi-moon。
+    console.log("[demo] turn_end turnIndex=" + String((event as any).turnIndex));
+    return null;
+  });
 }
 TS
 
-pi-moon -p "hi"     # 第一次：打包 + 装载
-pi-moon -p "hi"     # 第二次：命中产物缓存
+pi-moon -p "hi"                                  # 第一次：打包 + 装载
+pi-moon -p "用 demo_tool 说你好"                  # 第二次：命中产物缓存，工具真被执行
 ```
 
 诊断走 stderr：

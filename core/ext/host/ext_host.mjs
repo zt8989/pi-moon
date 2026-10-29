@@ -19,6 +19,27 @@ import { existsSync, mkdirSync, symlinkSync, lstatSync, rmSync, readFileSync, wr
 import { pathToFileURL } from "node:url";
 import { dirname, join, resolve, sep } from "node:path";
 import { isBuiltin } from "node:module";
+import { format } from "node:util";
+
+//------------------------------------------------------------------------------------------------------------------------------
+//  stdout 是协议通道
+//------------------------------------------------------------------------------------------------------------------------------
+//
+// serve 模式下 stdout 每一行都是 RPC（请求 / 响应 / log），所以**任何**非协议
+// 写入都是污染源：扩展里一句 console.log 就能把一行的开头咬掉。stderr 这边也
+// 不能用 —— 两侧共用一根管道，没人读的那一半会把管子读满而把宿主卡死。
+// 所以：console.* 与宿主自己的诊断统一写成 `{"event":"log"}` 行，由 pi-moon
+// 转到 stderr 的 `[ext]` 诊断里。
+
+function writeLog(level, text) {
+  process.stdout.write(
+    JSON.stringify({ event: "log", level, text: String(text) }) + "\n",
+  );
+}
+
+for (const level of ["log", "info", "warn", "error", "debug", "trace"]) {
+  console[level] = (...args) => writeLog(level, args.map((arg) => (typeof arg === "string" ? arg : format(arg))).join(" "));
+}
 
 //------------------------------------------------------------------------------------------------------------------------------
 //  参数
@@ -52,7 +73,7 @@ const sourceName = flag("name", "extension");
 const outputPath = flag("out", "") ? resolve(flag("out", "")) : "";
 
 if (!hostRoot || !modulesDir || !extensionPath || !cacheKey) {
-  process.stderr.write("pi-moon 扩展宿主：缺少 --root / --modules / --path / --key\n");
+  writeLog("error", "pi-moon 扩展宿主：缺少 --root / --modules / --path / --key");
   process.exit(2);
 }
 
@@ -104,7 +125,7 @@ function prepareHostRoot() {
       symlinkSync(modulesDir, linkPath, "dir");
     } catch (error) {
       // 没有符号链接也能跑 —— 只是 pi 自己的包会解析不到，装载时再报。
-      process.stderr.write("[ext-host] node_modules 链接失败：" + String(error.message || error) + "\n");
+      writeLog("warn", "[ext-host] node_modules 链接失败：" + String(error.message || error));
     }
   }
 }

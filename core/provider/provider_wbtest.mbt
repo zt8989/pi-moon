@@ -602,3 +602,88 @@ async test "read_sse_line_or_abort 无中断时正常读行" {
 }
 
 ///|
+
+// ─── 外部工具（扩展注册的工具）────────────────────────────────────────────────
+
+///|
+/// 外部工具的路由：名字归扩展就交给它跑，内置工具照旧走 `@tools.execute`；
+/// 两个事件（start / end）对所有工具都发。
+async test "外部工具：按名字路由，事件两头都发，内置工具不受影响" {
+  let base = @state.create_initial_state({
+    system_prompt: "",
+    provider_name: "fake",
+    model_id: "fake-1",
+    thinking_level: "off",
+    tool_names: ["ext_echo"],
+    max_turns: None,
+    max_llm_attempts: 2,
+    llm_timeout_ms: 120000L,
+    session_id: "s-ext",
+    cwd: ".",
+    trace: None,
+  })
+  let (state, _) = @loop.reduce(
+    base,
+    @action.PromptInit({
+      system_prompt: "",
+      tools: [
+        {
+          name: "ext_echo",
+          description: "扩展的工具",
+          parameters: "{\"type\":\"object\",\"properties\":{}}",
+        },
+        @tools.builtin_tool_definition("read").unwrap(),
+      ],
+    }),
+    0L,
+  )
+  let events : Array[String] = []
+  let ran : Array[String] = []
+  let external : ExternalTools = {
+    owns: fn(name) { name == "ext_echo" },
+    run: async fn(call) {
+      ran.push(call.name)
+      {
+        content: [@message.Text("扩展收到：" + call.arguments)],
+        is_error: false,
+      }
+    },
+    emit: async fn(event, payload) {
+      events.push(event + " " + payload)
+    },
+  }
+  let actions : Array[@action.AgentAction] = []
+  let dispatch : @runtime.Dispatch = { emit: action => actions.push(action), }
+  run_tools_with_hooks(
+    state,
+    [
+      { id: "e1", name: "ext_echo", arguments: "{\"text\":\"hi\"}" },
+      { id: "r1", name: "read", arguments: "{\"path\":\"missing-file\"}" },
+    ],
+    dispatch,
+    noop_hooks(),
+    external~,
+  )
+  assert_eq(ran, ["ext_echo"])
+  assert_eq(events.length(), 4)
+  assert_true(events[0].has_prefix("tool_execution_start"))
+  assert_true(events[0].contains("\"toolCallId\":\"e1\""))
+  assert_true(events[1].has_prefix("tool_execution_end"))
+  assert_true(events[1].contains("扩展收到"))
+  // 内置工具也发事件（pi 的口径），但执行仍走内置实现。
+  assert_true(events[2].has_prefix("tool_execution_start"))
+  assert_true(events[2].contains("\"toolCallId\":\"r1\""))
+  assert_true(events[3].has_prefix("tool_execution_end"))
+  let results : Array[String] = []
+  for action in actions {
+    match action {
+      @action.ToolResult(result) => {
+        results.push(@message.contents_text(result.content))
+      }
+      _ => ()
+    }
+  }
+  assert_eq(results.length(), 2)
+  assert_eq(results[0], "扩展收到：{\"text\":\"hi\"}")
+  assert_true(results[1].contains("missing-file"))
+}

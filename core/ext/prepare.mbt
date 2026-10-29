@@ -1,11 +1,13 @@
-// 启动前的准备：把「磁盘上的扩展源」变成「这次启动要交给宿主编译/装载哪几个」。
+// 启动前的准备：把「磁盘上的扩展源」变成「这次启动要交给 bun 宿主哪几个」。
 //
 // 一个扩展只可能停在三种结局：
 //   1. 缓存命中   → 启动时直接把产物交给 bun，不再打包；
 //   2. 缓存未命中 → 启动前打包一次（Bun.build），产物落在缓存目录；
-//   3. 不加载     → 体检没过（Node 全局 / 不可解析的 import / 读不出来）。
+//   3. 不加载     → 读不出来（权限 / 不存在 / 是目录却没有入口）。
 //
-// 这里的代码全在「启动前」这一侧，唯一的运行期输入是已有的产物文件。
+// 装载本身就是起了**常驻**宿主（`--mode serve`）：宿主装完扩展回传注册表，
+// 然后留在那里等运行期的 `call` / `emit`。所以这里既是「启动前」，也是
+// 「运行期的名册」——`StartupExt.runtime` 就是那一份。
 
 ///|
 /// 预置脚本版本。宿主脚本改了要加一 —— 缓存键包含它。
@@ -24,8 +26,8 @@ pub fn host_cache_version() -> String {
 ///|
 /// 对一个扩展源做体检 + 缓存判定。
 ///
-/// 读文件失败、体检不过都收敛成 `Skip`；只有「能装」才继续。
-/// 缓存命中与否由宿主自己的 build 目录判断（`load` 回传 built 标记），
+/// 读文件失败收敛成 `Skip`；只有「能装」才继续。
+/// 缓存命中与否由宿主自己的 build 目录判断（`ready` 回传 built 标记），
 /// 这里只负责算键与路径。
 pub async fn plan_source(
   source : ExtSource,
@@ -71,10 +73,11 @@ pub async fn plan(
 }
 
 ///|
-/// 启动前的一次性准备：发现 → 体检 → 交给 bun 宿主装载 → 汇总。
+/// 启动前的一次性准备：发现 → 体检 → 起常驻宿主（bun）→ 汇总。
 ///
-/// 这是 `cmd/pi-moon` 唯一需要调的入口。宿主负责打包（只在缓存未命中时）
-/// 与装载，回传注册的工具 / 命令 / 事件钩子。
+/// 这是 `cmd/pi-moon` 唯一需要调的入口。宿主负责打包（只在缓存未命中时）、
+/// 装载，然后**留在那里**等运行期的 `call` / `emit`（见 `serve.mbt`）。
+/// 启动这一下同时就是装载，所以不再额外跑一遍一次性宿主。
 pub(all) struct StartupExt {
   /// 装载成功的扩展名（顺序即发现顺序）。
   names : Array[String]
@@ -86,11 +89,31 @@ pub(all) struct StartupExt {
   commands : Array[String]
   /// 扩展挂了钩子的事件名。
   events : Array[String]
+  /// 扩展工具的完整定义（模型要看到的那一份）。
+  tool_definitions : Array[ExtToolDefinition]
   diagnostics : Array[String]
-  /// 每个已就绪扩展的宿主产物路径（运行期复用）。
+  /// 每个已就绪扩展的宿主产物路径（诊断用）。
   artifacts : Array[(String, String)]
+  /// 运行期名册：`call` 工具、`emit` 事件。
+  runtime : ExtRuntime
   /// 宿主是否可用（false 时扩展整体关闭）。
   available : Bool
+}
+
+///|
+fn empty_startup(diagnostics : Array[String], available : Bool) -> StartupExt {
+  {
+    names: [],
+    labels: [],
+    tools: [],
+    commands: [],
+    events: [],
+    tool_definitions: [],
+    diagnostics,
+    artifacts: [],
+    runtime: ExtRuntime::new(),
+    available,
+  }
 }
 
 ///|
@@ -101,24 +124,9 @@ pub async fn prepare_at_startup(
 ) -> StartupExt {
   let planned = plan(cwd, agent_dir, explicit~)
   let diagnostics = planned.diagnostics.copy()
-  let names : Array[String] = []
-  let labels : Array[String] = []
-  let tools : Array[String] = []
-  let commands : Array[String] = []
-  let events : Array[String] = []
-  let artifacts : Array[(String, String)] = []
   let ready = planned.loaded()
   if ready.is_empty() {
-    return {
-      names,
-      labels,
-      tools,
-      commands,
-      events,
-      diagnostics,
-      artifacts,
-      available: true,
-    }
+    return empty_startup(diagnostics, true)
   }
   // 宿主需要 pi 的 node_modules 才能解析扩展 import 的包。
   let modules = match resolve_pi_modules(agent_dir) {
@@ -127,90 +135,84 @@ pub async fn prepare_at_startup(
   }
   if modules.is_empty() {
     diagnostics.push("跳过全部扩展：找不到 pi 的 node_modules（宿主无法解析 pi 的包）")
-    return {
-      names,
-      labels,
-      tools,
-      commands,
-      events,
-      diagnostics,
-      artifacts,
-      available: false,
-    }
+    return empty_startup(diagnostics, false)
   }
   let paths = prepare_host_paths(cwd, agent_dir, modules) catch {
     error => {
       diagnostics.push(error.to_string())
-      return {
-        names,
-        labels,
-        tools,
-        commands,
-        events,
-        diagnostics,
-        artifacts,
-        available: false,
-      }
+      return empty_startup(diagnostics, false)
     }
   }
   if paths.bun_missing() {
     diagnostics.push(NoBun.to_string())
-    return {
-      names,
-      labels,
-      tools,
-      commands,
-      events,
-      diagnostics,
-      artifacts,
-      available: false,
-    }
+    return empty_startup(diagnostics, false)
   }
+  let names : Array[String] = []
+  let labels : Array[String] = []
+  let tools : Array[String] = []
+  let commands : Array[String] = []
+  let events : Array[String] = []
+  let tool_definitions : Array[ExtToolDefinition] = []
+  let artifacts : Array[(String, String)] = []
+  let runtime = ExtRuntime::new()
   for entry in ready {
     let key = match entry.step {
       Cached(cache_key~, ..) => cache_key
       Compile(cache_key~, ..) => cache_key
       Skip(..) => continue
     }
-    let loaded = try load_extension(paths, entry.source, key) catch {
+    let session = try ExtSession::start(paths, entry.source, key) catch {
       error => {
         diagnostics.push("装载扩展 \"" + entry.source.name + "\" 失败：" + error.to_string())
         continue
       }
     }
+    // 注了工具或事件的会话要活到会话结束（`call` / `emit` 都走它）；
+    // 只注了命令的（`/name` 还没有执行入口）现在就收掉，别白占一个 bun 进程。
+    let needed = !session.tools.is_empty() || !session.events.is_empty()
     names.push(entry.source.name)
     labels.push(ext_label(entry.source))
     artifacts.push((entry.source.name, paths.root + "/build/" + key + ".mjs"))
-    for tool in loaded.tools {
+    for tool in session.tools {
       if !tools.contains(tool) {
         tools.push(tool)
       }
     }
-    for command in loaded.commands {
+    for definition in session.tool_definitions {
+      if !tool_definitions.any(fn(existing) { existing.name == definition.name }) {
+        tool_definitions.push(definition)
+      }
+    }
+    for command in session.commands {
       if !commands.contains(command) {
         commands.push(command)
       }
     }
-    for event in loaded.events {
+    for event in session.events {
       if !events.contains(event) {
         events.push(event)
       }
     }
-    if !loaded.unsupported.is_empty() {
+    if !session.unsupported.is_empty() {
       diagnostics.push(
         "扩展 \"" +
         entry.source.name +
         "\" 用了未实现的宿主 API：" +
-        loaded.unsupported.join(", "),
+        session.unsupported.join(", "),
       )
     }
-    for denied in loaded.denied {
+    for denied in session.denied {
       diagnostics.push("扩展 \"" + entry.source.name + "\" 被沙盒拦下：" + denied)
     }
-    if !loaded.built {
+    if !session.built {
       diagnostics.push(
-        "扩展 \"" + entry.source.name + "\" 命中产物缓存（" + loaded.ms.to_string() + "ms）",
+        "扩展 \"" + entry.source.name + "\" 命中产物缓存（" + session.ms.to_string() + "ms）",
       )
+    }
+    if needed {
+      runtime.push(session)
+    } else {
+      session.close()
     }
   }
   {
@@ -219,8 +221,10 @@ pub async fn prepare_at_startup(
     tools,
     commands,
     events,
+    tool_definitions,
     diagnostics,
     artifacts,
+    runtime,
     available: true,
   }
 }

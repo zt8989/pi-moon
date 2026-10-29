@@ -27,7 +27,10 @@ pub(all) struct Agent {
   mut budget : Int32
   mut processed : Int32
   mut observer : ((@action.AgentAction) -> Unit)?
+  mut sink : EventSink?
+  events : Array[@action.AgentAction]
 }
+pub fn Agent::deliver_actions(Self, EventSink) -> Unit
 pub fn Agent::dispatch_ui(Self, @action.AgentAction) -> Unit raise
 pub fn Agent::enqueue(Self, @action.AgentAction) -> Unit
 pub fn Agent::new(@state.AgentState, EffectTable, () -> Int64) -> Self
@@ -46,6 +49,10 @@ pub(all) struct EffectTable {
   run_agent : async (@state.AgentState, Dispatch) -> Unit
   run_tools : async (@state.AgentState, Array[@message.ToolCall], Dispatch) -> Unit
   run_compact : async (@state.AgentState, Dispatch) -> Unit
+}
+
+pub(all) struct EventSink {
+  deliver : async (@action.AgentAction) -> Unit
 }
 
 // Type aliases

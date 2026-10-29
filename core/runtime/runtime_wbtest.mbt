@@ -517,3 +517,63 @@ async test "dispatch_ui 同步归约 UI 事件：不排队、不耗预算、obse
   agent.dispatch_ui(@action.Ui(@action.ExpandToggled))
   assert_true(agent.state.ui.expanded)
 }
+
+// ─── 异步事件汇（扩展的 turn_* 钩子走这条路） ────────────────────────────────
+
+///|
+async test "事件汇：按 action 顺序送达，turn_start 早于它那一回合的 LLM 调用" {
+  let order = Ref("")
+  let table : EffectTable = {
+    run_agent: async fn(_state, dispatch) {
+      order.val = order.val + "|agent"
+      dispatch.send(@action.LlmStarted)
+      dispatch.send(
+        @action.LlmDone({
+          message: {
+            content: [@message.Text("好了")],
+            stop_reason: "stop",
+            error_message: None,
+            usage: None,
+            timestamp: 0L,
+          },
+          node_id: None,
+        }),
+      )
+    },
+    run_tools: async fn(_state, _calls, _dispatch) { () },
+    run_compact: async fn(_, _) { () },
+  }
+  let agent = seed_agent(table)
+  agent.deliver_actions({
+    deliver: async fn(action) {
+      match action {
+        @action.TurnStart => order.val = order.val + "|turn_start"
+        @action.TurnEnd => order.val = order.val + "|turn_end"
+        _ => ()
+      }
+    },
+  })
+  agent.send(@action.UserMessage({ text: "跑一轮", content: [], }))
+  assert_eq(order.val, "|turn_start|agent|turn_end")
+  assert_eq(agent.state.phase, @common.Idle)
+}
+
+///|
+async test "事件汇：钩子抛错不影响环，也不吞掉后续事件" {
+  let seen = Ref(0)
+  let agent = seed_agent(tool_agent_table())
+  agent.deliver_actions({
+    deliver: async fn(action) {
+      match action {
+        @action.TurnStart => raise Failure::Failure("钩子炸了")
+        _ => ()
+      }
+      seen.val = seen.val + 1
+    },
+  })
+  agent.send(@action.UserMessage({ text: "看看 a.txt", content: [], }))
+  // 环照常跑完（工具批次 + 最终回答），失败只落在钩子那一格。
+  assert_eq(agent.state.phase, @common.Idle)
+  assert_eq(agent.state.messages.length(), 4)
+  assert_true(seen.val > 0)
+}

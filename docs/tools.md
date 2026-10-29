@@ -20,6 +20,10 @@ reducer ──► Cmd::RunTools(calls)
 失败**不抛回环上**：每个调用都产生一条 `toolResult`（`is_error = true`），消息序列
 保持合法，模型自己决定重试还是换办法。这与 pi 的 `runToolCall` 同口径。
 
+扩展注册的工具（`pi.registerTool`）走**同一条 effect**：名字归扩展就交给扩展
+宿主跑，内置工具照旧（见 [extensions](extensions.md)）。两者对中断、`ToolStart` /
+`ToolResult` 的语义完全一致 —— 区别只在于扩展工具没有 `ToolProgress` 流。
+
 ## 工具清单
 
 名字、描述、参数 schema 与 pi 的 `BUILTIN_TOOL_NAMES` 一致：

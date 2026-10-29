@@ -65,6 +65,19 @@ pub fn noop_effect_table() -> EffectTable {
 }
 
 ///|
+/// 异步事件汇：每条被归约的 action 在**异步边界**上交给它一次。
+///
+/// 为什么不是直接在归约里送达：归约是同步纯函数（流式回调里也要能调），而
+/// 事件的目标（比如扩展宿主的行协议）要写进程、要等回执。所以这里只排队，
+/// 真正送达发生在 `Agent::run` 的下一个 await 点 —— 顺序仍然是 action 的顺序。
+///
+/// 典型用途：扩展的 `turn_start` / `turn_end` 钩子（`tool_execution_*` 不在
+/// 这里 —— 它们由工具执行那侧直接发，才能卡在工具真的跑之前 / 之后）。
+pub(all) struct EventSink {
+  deliver : async (@action.AgentAction) -> Unit
+}
+
+///|
 /// 一个装配好的环。
 ///
 /// `clock` 是注入的：reducer 不读时钟（纯函数），时间戳只在驱动者这里取一次。
@@ -83,6 +96,10 @@ pub(all) struct Agent {
   mut processed : Int32
   /// 每归约一条 action 调一次（渲染层订阅增量用）。
   mut observer : ((@action.AgentAction) -> Unit)?
+  /// 事件汇（扩展的事件钩子）。
+  mut sink : EventSink?
+  /// 已经归约、还没送达的事件（按 action 顺序）。
+  events : Array[@action.AgentAction]
 }
 
 ///|
@@ -101,6 +118,8 @@ pub fn Agent::new(
     budget: 100000,
     processed: 0,
     observer: None,
+    sink: None,
+    events: [],
   }
 }
 
@@ -111,6 +130,30 @@ pub fn Agent::new(
 /// 所以终端 / 网页都能边收边画。回调拿不到 state 的引用，只该画 / 记日志。
 pub fn Agent::observe(self : Agent, f : (@action.AgentAction) -> Unit) -> Unit {
   self.observer = Some(f)
+}
+
+///|
+/// 订阅「每归约一条 action」的**异步**版本：与 `observe` 同样的触发点，但送
+/// 达推迟到下一个 effect 边界（`flush_deferred` 里逐个 await）。
+///
+/// 两者可以共存：渲染要走同步（一帧都不能落下），扩展要走异步（要等进程）。
+pub fn Agent::deliver_actions(self : Agent, sink : EventSink) -> Unit {
+  self.sink = Some(sink)
+}
+
+///|
+/// 把排队的事件按顺序送达。送达失败不影响环 —— 钩子是观测者，不是一环。
+async fn Agent::drain_events(self : Agent) -> Unit {
+  while !self.events.is_empty() {
+    let action = self.events.remove(0)
+    match self.sink {
+      Some(sink) =>
+        (sink.deliver)(action) catch {
+          _ => ()
+        }
+      None => ()
+    }
+  }
 }
 
 ///|
@@ -152,6 +195,7 @@ pub async fn Agent::send(self : Agent, action : @action.AgentAction) -> Unit {
 /// 跑到外部队列空、且所有延迟 effect 都执行完。
 pub async fn Agent::run(self : Agent) -> Unit {
   while true {
+    self.drain_events()
     if self.head < self.queue.length() {
       let action = self.queue[self.head]
       self.head = self.head + 1
@@ -187,6 +231,10 @@ fn Agent::pump(self : Agent, action : @action.AgentAction) -> Unit raise {
     Some(observe) => observe(action)
     None => ()
   }
+  match self.sink {
+    Some(_) => self.events.push(action)
+    None => ()
+  }
   self.absorb(cmds)
 }
 
@@ -211,6 +259,9 @@ fn Agent::absorb(self : Agent, cmds : Array[@loop.Cmd]) -> Unit raise {
 /// effect 与 effect 之间没有嵌套。
 async fn Agent::flush_deferred(self : Agent) -> Unit {
   while !self.deferred.is_empty() {
+    // 先送事件再跑下一个 effect：钩子看到的顺序与 action 的顺序一致，而且
+    // `turn_start` 一定在它那一回合的 LLM 调用之前到达。
+    self.drain_events()
     let cmd = self.deferred.remove(0)
     let dispatch : Dispatch = { emit: action => self.pump(action), }
     match cmd {
