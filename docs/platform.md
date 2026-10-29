@@ -59,6 +59,21 @@ io.close()                                            // 关 stdin，宿主自�
 - js：`child.stdin/stdout/stderr`，`close()` 走 `stdin.end()` —— 让对端的读循环
   看到 EOF，而不是靠发信号（native 侧拿不到跨平台的 kill）。
 
+## 两端签名必须一致（一个必踩的坑）
+
+两边同名函数的**error 类型**也得对得上。例：js 的 `OutputPipe::read_some` 声明是
+泛型 `raise`（它要把取消错误原样传出去，不能收窄成 `SysError`），所以
+`Session::read_some` 在两端都写 `raise`；写成 `raise SysError` 会在 js 上报
+`[4118] The error type is mismatched`。
+
+而这个错**`moon test`（不带 `--target`）抓不到**：它只重编当前目标，js 那串
+数字可能来自旧计划。改过 `*_js.mbt` 或跨端共用代码后，两边的门禁都过：
+
+```bash
+moon test --target native && moon test --target js
+moon check --target js        # 只编不跑，最快
+```
+
 ## js 侧的四条硬约束
 
 1. **extern "js" 不能抛异常。** JS 异常穿过 extern 边界会打断 async 驱动器

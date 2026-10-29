@@ -116,7 +116,7 @@ pub(all) struct Session {
   output : OutputPipe
 }
 pub fn Session::close(Self) -> Unit
-pub async fn Session::read_some(Self, max_len? : Int32) -> Bytes? raise SysError
+pub async fn Session::read_some(Self, max_len? : Int32) -> Bytes?
 pub async fn Session::write(Self, String) -> Unit raise SysError
 
 // Type aliases

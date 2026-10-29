@@ -153,10 +153,13 @@ pub async fn Session::write(self : Session, text : String) -> Unit raise SysErro
 }
 
 ///|
+///|
+/// 读一块输出。错误类型与 js 侧对齐（泛型 `raise`，不是 `SysError`）：那边要
+/// 把取消错误原样传出去，所以两边签名一致才不需要 `if target`。
 pub async fn Session::read_some(
   self : Session,
   max_len? : Int = 8192,
-) -> Bytes? raise SysError {
+) -> Bytes? raise {
   self.output.read_some(max_len~)
 }
 

@@ -316,10 +316,14 @@ pub async fn Session::write(self : Session, text : String) -> Unit raise SysErro
 }
 
 ///|
+///|
+/// 读一块输出。错误类型故意留成泛型 `raise`：js 侧的 `OutputPipe::read_some`
+/// 要把取消（即 Esc 的 abort）原样传出去，而那是异步取消错误，不是 `SysError`——
+/// 在这里收窄成 `SysError` 就等于把取消变成普通错误（cancel 再也掐不断）。
 pub async fn Session::read_some(
   self : Session,
   max_len? : Int = 8192,
-) -> Bytes? raise SysError {
+) -> Bytes? raise {
   self.output.read_some(max_len~)
 }
 

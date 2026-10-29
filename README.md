@@ -118,6 +118,16 @@ node _build/js/debug/build/pi-moon/cmd/pi-moon/pi-moon.js --list-models
 node _build/js/debug/build/pi-moon/cmd/pi-moon/pi-moon.js -p "用一句话说明什么是 Elm 架构"
 moon run cmd/main --target js            # 离线演示也能跑 js
 moon test --target js                    # 同一套测试换后端（直接造临目录的夹具仍只跑 native）
+moon check --target js                   # js 侧的编译门禁（见下）
+```
+
+**`moon test` 不带 `--target` 不会完整类型检查 js 那半边**：它只重编当前目标，
+js 那串数字可能来自旧计划（实测：`core/sys` 的 js 签名写错，`moon test` 依旧绿，
+`moon test --target js` / `moon check --target js` 才报）。改过 `*_js.mbt` 或任何
+跨端共用的代码后，两边都跑：
+
+```bash
+moon test --target native && moon test --target js
 ```
 
 **两个后端，一份代码**：`core/sys` 把 native 与 js 真正不一致的四件事
