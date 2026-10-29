@@ -45,3 +45,24 @@ async test "#sys.stdin：写进子进程、能从 stdout 读回来" {
   })
   assert_true(result.contains("hello from stdin"))
 }
+
+///|
+/// 常驻子进程：`spawn_session` 的 stdin 必须一直开着（关了宿主就退出了），
+/// 输出从同一根管道读。对端还是 `cat`：写进去什么就该读回什么。
+async test "#sys.spawn_session：常驻子进程的 stdin 不会立刻 EOF" {
+  let result = @async.with_task_group(async fn(_group) {
+    let session = spawn_session("cat", [], cwd=".") catch {
+      err => return "spawn 失败：" + err.to_string()
+    }
+    session.write("hello from session\n") catch {
+      err => return "写失败：" + err.to_string()
+    }
+    let collected = StringBuilder()
+    let text = read_until_newline(session.output, collected) catch {
+      err => return "读失败：" + err.to_string()
+    }
+    session.close()
+    text
+  })
+  assert_true(result.contains("hello from session"))
+}

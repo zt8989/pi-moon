@@ -316,18 +316,17 @@ fn build_system_prompt(
 }
 
 ///|
-/// 定义表：内置按 `names` 顺出，扩展的追加在后面（只取名字对得上的）。
+/// 内置定义 + 扩展工具。
 ///
-/// `/tools read,bash` 这类运行期换工具也走这里 —— 否则扩展工具一换就掉。
-fn tool_definitions(
-  names : Array[String],
+/// 扩展工具是**常开**的（pi 里也是扩展自己把工具挂上去）：只有启动时的
+/// `--no-tools` / `--exclude-tools` 能把它们去掉；`/tools <list>` 换的是内置
+/// 那一份，扩展工具照旧在。
+fn with_ext_tools(
+  definitions : Array[@action.PromptToolDefinition],
   ext_tools : Array[@action.PromptToolDefinition],
 ) -> Array[@action.PromptToolDefinition] {
-  let definitions = @tools.definitions_for(names)
   for definition in ext_tools {
-    if names.contains(definition.name) {
-      definitions.push(definition)
-    }
+    definitions.push(definition)
   }
   definitions
 }
@@ -863,7 +862,7 @@ async fn run(args : CliArgs) -> Unit {
       context_files,
       skill_registry.skills,
     ),
-    tools: tool_definitions(fallback_tool_names, ext_tools),
+    tools: with_ext_tools(@tools.definitions_for(fallback_tool_names), ext_tools),
   }
   let fallback_model = resolved_model_spec(resolved)
   // 会话两份文件：存在就恢复，不存在就新建。
@@ -1208,7 +1207,7 @@ async fn run(args : CliArgs) -> Unit {
         } else {
           split_tool_list(list)
         }
-        let tools = tool_definitions(names, ext_tools)
+        let tools = with_ext_tools(@tools.definitions_for(names), ext_tools)
         let applied : Array[String] = []
         for tool in tools {
           applied.push(tool.name)

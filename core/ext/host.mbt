@@ -12,7 +12,7 @@
 
 ///|
 /// 宿主脚本版本。改 `host/ext_host.mjs` 就要加一 —— 缓存键含它。
-pub let host_version : String = "pi-moon-host/2"
+pub let host_version : String = "pi-moon-host/3"
 
 ///|
 /// 宿主进程需要的路径。全部在启动时算一次。
@@ -37,20 +37,53 @@ pub fn HostPaths::bun_missing(self : HostPaths) -> Bool {
 
 ///|
 /// 找一个可用的 bun。`PI_MOON_BUN` 可以显式指定。
+///
+/// 为什么要多试几个候选：Windows 上「装了 bun」常常是 npm / nvm 的 `.cmd`
+/// 垫片，而 `CreateProcess` 不认 `PATHEXT`（`.cmd` 得先过 cmd.exe），直接 spawn
+/// `bun` 会失败 —— 表现为「`bun --version` 能跑，pi-moon 却说找不到 bun」。
+/// 真 exe 在垫片同一前缀的 `node_modules/bun/bin/bun.exe` 下。
 pub async fn find_bun() -> String {
   let env = @env.get_env_vars()
   match env.get("PI_MOON_BUN") {
     Some(path) if !path.is_empty() => return path
     _ => ()
   }
-  let probe = @sys.run_capture("bun", ["--version"], timeout_ms=10000) catch {
-    _ => return ""
+  for candidate in bun_candidates(env) {
+    let probe = @sys.run_capture(candidate, ["--version"], timeout_ms=10000) catch {
+      _ => continue
+    }
+    if probe.exit_code() == 0 {
+      return candidate
+    }
   }
-  if probe.exit_code() == 0 {
-    "bun"
-  } else {
-    ""
+  ""
+}
+
+///|
+/// bun 的候选路径，按「先通用后平台特例」排。
+///
+/// 只负责列举，验证靠 `--version` —— 文件存在不等于能跑（架构不对 / 被拦）。
+fn bun_candidates(env : Map[String, String]) -> Array[String] {
+  let out : Array[String] = ["bun"]
+  if !@tools.is_windows_env(env) {
+    return out
   }
+  out.push("bun.exe")
+  match @tools.env_get(env, "USERPROFILE") {
+    Some(home) if !home.is_empty() => out.push(home + "\\.bun\\bin\\bun.exe")
+    _ => ()
+  }
+  // npm / nvm 的垫片布局：`<前缀>\bun.cmd` 旁边就是
+  // `<前缀>\node_modules\bun\bin\bun.exe`。
+  let path = @tools.env_get(env, "PATH").unwrap_or("")
+  for dir in path.split(";") {
+    let dir = dir.trim().to_owned()
+    if dir.is_empty() {
+      continue
+    }
+    out.push(dir + "\\node_modules\\bun\\bin\\bun.exe")
+  }
+  out
 }
 
 ///|

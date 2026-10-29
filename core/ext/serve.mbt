@@ -45,6 +45,10 @@ pub(all) struct ExtSession {
 let max_noise : Int = 8
 
 ///|
+/// 等宿主交出注册表的上限（毫秒）。首次装载要跑 Bun.build，实测 10s 上下。
+let start_timeout_ms : Int = 120000
+
+///|
 fn push_noise(session : ExtSession, line : String) -> Unit {
   if session.noise.length() >= max_noise {
     let _ = session.noise.remove(0)
@@ -91,6 +95,7 @@ async fn ExtSession::next_line(self : ExtSession) -> String? raise HostError {
 ///|
 /// 收一条协议消息：`log` 行进 noise，其它非 JSON 行也进 noise。
 ///
+/// `ready` 与普通响应一样「是一条消息」——装载那一下的注册表就是它送来的。
 /// 返回 `None` 表示宿主已经退出（stdin 那侧读到 EOF）。
 async fn ExtSession::next_message(
   self : ExtSession,
@@ -123,7 +128,7 @@ async fn ExtSession::next_message(
           "扩展宿主报致命错误（" + self.name + "）：" + reason,
         )
       }
-      Some("ready") => continue
+      // `ready` / `fatal` 之外的都当响应交回去（`ready` 也是响应：它就是注册表）。
       _ => break Some(fields)
     }
   } nobreak {
@@ -260,11 +265,32 @@ pub async fn ExtSession::start(
   }
   // 后面任何一步失败都把宿主收掉 —— 别留一个没人管的 bun 进程。
   errdefer session.io.close()
-  let ready = match session.next_message() {
+  // 等注册表要设上限：首次要跑 Bun.build（实测 10s 上下），但接口卡死时
+  // 不该把整个 pi-moon 一起挂在那里（与运行期 call 不同 —— 那里打断就会
+  // 丢掉一个工具结果，这里只是启动）。
+  let ready_message = @async.with_timeout(start_timeout_ms, async fn() {
+    session.next_message()
+  }) catch {
+    error =>
+      raise HostFailure(
+        "等扩展宿主注册表超时（" +
+        session.name +
+        "，" +
+        start_timeout_ms.to_string() +
+        "ms）：" +
+        error.to_string(),
+      )
+  }
+  let ready = match ready_message {
     Some(fields) => fields
     None =>
       raise HostFailure(
-        "扩展宿主没有交出注册表就退出了：" + session.name,
+        "扩展宿主没有交出注册表就退出了：" +
+        session.name +
+        (match session.noise_text() {
+          "" => ""
+          noise => "：" + noise
+        }),
       )
   }
   let loaded = parse_fields(ready)

@@ -178,3 +178,22 @@ async test "宿主装载：扩展读 cwd 之外的文件被沙盒拦下" {
   // 策略模块在装载期就把越界读挡掉了，工具名反映这次尝试的结果。
   assert_eq(loaded.tools, ["blocked"])
 }
+
+///|
+test "find_bun 候选：Windows 上把 npm/nvm 垫片旁边的真 exe 也算上" {
+  // Unix：只有 PATH 上的 `bun`。
+  assert_eq(bun_candidates(Map([])), ["bun"])
+  let env : Map[String, String] = Map([])
+  env["SystemRoot"] = "C:\\Windows"
+  env["USERPROFILE"] = "C:\\Users\\demo"
+  env["PATH"] = "C:\\Windows;C:\\tools;"
+  let candidates = bun_candidates(env)
+  assert_true(candidates[0] == "bun")
+  assert_true(candidates.contains("bun.exe"))
+  // 官方安装器
+  assert_true(candidates.contains("C:\\Users\\demo\\.bun\\bin\\bun.exe"))
+  // npm / nvm 的 `.cmd` 垫片：真 exe 在前缀的 node_modules 下
+  assert_true(candidates.contains("C:\\tools\\node_modules\\bun\\bin\\bun.exe"))
+  // 空 PATH 项不该变成 `\node_modules\...` 这种怪路径
+  assert_false(candidates.contains("\\node_modules\\bun\\bin\\bun.exe"))
+}

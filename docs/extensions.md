@@ -34,6 +34,14 @@ build for %s` 那些字符串就是它的插件宿主逻辑）。
 代价说清楚：运行期依赖 `bun` 可执行文件（找不到就整体关闭扩展，并给一条诊断）。
 `jiti` 也不再需要 —— bun 自己转译 TS。
 
+**找 bun 有个 Windows 坑**：npm / nvm 装的 bun 在 PATH 上是个 `.cmd` 垫片，而
+`CreateProcess` 不认 `PATHEXT`（`.cmd` 得先进 cmd.exe）—— 直接 spawn `bun`
+会失败，表现为「`bun --version` 明明能跑，pi-moon 却说找不到 bun」。所以
+`find_bun` 会按候选逐个试 `--version`：`bun` → `bun.exe` →
+`%USERPROFILE%\.bun\bin\bun.exe` → PATH 里每个目录下的
+`node_modules\bun\bin\bun.exe`（垫片旁边的真 exe）。`PI_MOON_BUN` 随时可以
+直接指定。
+
 ## 一次启动的时序
 
 1. **发现**（`discover.mbt`）：`<agent dir>/extensions` 与
@@ -86,6 +94,10 @@ build for %s` 那些字符串就是它的插件宿主逻辑）。
 扩展工具的**启用检查**读 `state.prompt.tools`，与内置工具同一口径：没声明给
 模型的工具即使被硬调也只会拿到「未知工具」。
 
+它们默认是**常开**的（pi 里也是扩展自己把工具挂上去）：`--no-tools` 与
+`--exclude-tools <name>` 能关掉，REPL 里的 `/tools <list>` 只换内置那一份，
+扩展工具照旧在。
+
 ### 事件
 
 `on(event, handler)` 注册的钩子由两侧分别派发：
@@ -104,6 +116,10 @@ effect 边界**按 action 顺序送达（于是 `turn_start` 一定早于它那�
 只发给**挂了这个钩子**的会话：没挂的扩展不该为一次空派发付一次往返。
 钩子抛错只影响它自己那一格（宿主逐条 try/catch，回执的 `results` 里带
 `{error}`），传输错也不掐回合；会话变死之后下一次调用才会报错。
+
+等 `ready` 有 **120s 上限**：首次要跑 `Bun.build`（实测 10s 上下），但宿主卡死
+时不该把整个 pi-moon 一起挂在那里。运行期的 `call` 故意**不**设超时 —— 打断
+一次工具执行就丢了一条 toolResult，消息序列就不合法了。
 
 ## 文件系统白名单
 
@@ -124,7 +140,7 @@ effect 边界**按 action 顺序送达（于是 `turn_start` 一定早于它那�
 （动态拼路径、`process.binding`）。真正的 OS 级隔离要平台支持，macOS 上的
 `sandbox-exec` 已经不能用（实测直接 `Abort trap: 6`）。
 
-## 产物里的两个坑（都实测踩过）
+## 产物里的几个坑（都实测踩过）
 
 1. **不能给产物加 `?v=` 查询串**。产物里的裸包 import 要按**产物路径**向上
    找 node_modules，带查询串会把 importer 变成一个找不到的路径 —— 报
@@ -134,6 +150,19 @@ effect 边界**按 action 顺序送达（于是 `turn_start` 一定早于它那�
    而 `node_modules` 符号链接是启动后才建的（缓存目录是新建的），于是运行期
    import 找不到包 —— 表现为「同样的命令在 shell 里手动跑却正常」。所以构建时
    标 external，构建后按 `modulesDir` 解析成 `file://` 绝对 URL 写回产物。
+3. **入口路径在 Windows 上是 `C:\…`**，既不以 `/` 也不以 `.` 开头。构建插件的
+   `onResolve` 如果只认这两种，就把入口当裸包 → 解析成绝对路径又标 external，
+   `Bun.build` 直接报 `entry point cannot be marked as external`（Linux / macOS
+   的入口以 `/` 开头，所以这个坑只在 Windows 上露）。现在用 `path.isAbsolute`
+   判。
+4. **裸包的解析起点不止一个**。`typebox` 这类包装在
+   `@earendil-works/pi-coding-agent/node_modules` 里（pi 自己的依赖），从
+   `node_modules` 根 resolve 不到。pi 的扩展在 pi 进程里能 import 到它，是因为
+   解析链从 pi 包开始 —— 宿主现在也把 pi 包目录当成第二个起点。
+
+`node_modules` 那层链接只是**兜底**（给运行期自己 `require` 一个包的扩展）：
+Windows 上建目录符号链接要特权（Developer Mode / 管理员），普通用户是 EPERM，
+所以那里改用 **junction**。
 
 另外 `bunfig.toml` 里关掉了自动安装（`[install] auto = "disable"`）：否则解析
 不到的包会被悄悄从 npm 下载，「能不能装」取决于网络而不是这台机器上装了

@@ -25,7 +25,7 @@ pub let host_script_source : String =
   #|
   #|import { existsSync, mkdirSync, symlinkSync, lstatSync, rmSync, readFileSync, writeFileSync } from "node:fs";
   #|import { pathToFileURL } from "node:url";
-  #|import { dirname, join, resolve, sep } from "node:path";
+  #|import { dirname, isAbsolute, join, resolve, sep } from "node:path";
   #|import { isBuiltin } from "node:module";
   #|import { format } from "node:util";
   #|
@@ -130,7 +130,14 @@ pub let host_script_source : String =
   #|      if (existsSync(linkPath)) {
   #|        rmSync(linkPath, { recursive: true, force: true });
   #|      }
-  #|      symlinkSync(modulesDir, linkPath, "dir");
+  #|      // Windows 上建目录符号链接要特权（Developer Mode 或管理员），普通用户是
+  #|      // EPERM；junction 不要。扩展的裸包 import 在构建时已经改写成绝对路径了，
+  #|      // 这一层只是给「运行期自己 require 一个包」的扩展留的后路。
+  #|      symlinkSync(
+  #|        modulesDir,
+  #|        linkPath,
+  #|        process.platform === "win32" ? "junction" : "dir",
+  #|      );
   #|    } catch (error) {
   #|      // 没有符号链接也能跑 —— 只是 pi 自己的包会解析不到，装载时再报。
   #|      writeLog("warn", "[ext-host] node_modules 链接失败：" + String(error.message || error));
@@ -284,6 +291,21 @@ pub let host_script_source : String =
   #|const readFileSyncSafe = (file) => readFileSync(file, "utf8");
   #|const writeFileSyncSafe = (file, source) => writeFileSync(file, source, "utf8");
   #|
+  #|// 哪些 specifier 交给 bun 自己解析（相对路径 / 绝对路径 / 内置模块）。
+  #|//
+  #|// 绝对路径这条为什么必须显式判：Windows 的入口路径是 `C:\...`，既不以 "/"
+  #|// 也不以 "." 开头，会被当成裸包 —— 于是 `resolveSync` 把它解析成绝对路径又标
+  #|// external，Bun.build 直接报「entry point cannot be marked as external」。
+  #|//
+  #|// 内置模块也必须留在这里解析：一旦在 onResolve 里把它们标成 external，后面的
+  #|// 策略改写（node:fs → policies/fs.mjs）就再也拦不到了。
+  #|const isOwnPath = (specifier) =>
+  #|  specifier.startsWith(".") ||
+  #|  isAbsolute(specifier) ||
+  #|  specifier.startsWith("file:") ||
+  #|  specifier.startsWith("node:") ||
+  #|  isBuiltin(specifier);
+  #|
   #|// 把产物里剩下的裸包 import 改成**绝对路径**。
   #|//
   #|// 为什么不能靠 node_modules 符号链接：bun 在进程启动时就固定了解析根，
@@ -293,6 +315,22 @@ pub let host_script_source : String =
   #|//   - 只给绝对路径不标 external —— bun 会把整个 pi CLI 内联进来
   #|//     （单个扩展 8.9MB）。
   #|// 所以：构建时 external，构建后按 modulesDir 解析成绝对路径写回产物。
+  #|// 裸包从哪里找：pi 自己的依赖不一定在 node_modules 根下。
+  #|//
+  #|// `typebox` 就是典型：它装在 `@earendil-works/pi-coding-agent/node_modules`
+  #|// 里（pi 自己的依赖），从根目录 resolve 不到。pi 的扩展在 pi 进程里能 import
+  #|// 到它，是因为解析链从 pi 包开始 —— 这里把同一个起点补回来。
+  #|function resolveBare(specifier) {
+  #|  for (const base of [modulesDir, join(modulesDir, "@earendil-works", "pi-coding-agent")]) {
+  #|    try {
+  #|      return Bun.resolveSync(specifier, base);
+  #|    } catch (error) {
+  #|      // 下一个起点
+  #|    }
+  #|  }
+  #|  return "";
+  #|}
+  #|
   #|function absolutizeBareImports(code) {
   #|  const bareImport = /(from\s*|import\s*|require\s*\(\s*|import\s*\(\s*)(["'])([^"'./][^"']*)\2/g;
   #|  return code.replace(bareImport, (whole, prefix, quote, specifier) => {
@@ -301,12 +339,11 @@ pub let host_script_source : String =
   #|    if (specifier.startsWith("node:") || isBuiltin(specifier)) {
   #|      return whole;
   #|    }
-  #|    try {
-  #|      const resolved = Bun.resolveSync(specifier, modulesDir);
-  #|      return prefix + quote + pathToFileURL(resolved).href + quote;
-  #|    } catch (error) {
+  #|    const resolved = resolveBare(specifier);
+  #|    if (!resolved) {
   #|      return whole;
   #|    }
+  #|    return prefix + quote + pathToFileURL(resolved).href + quote;
   #|  });
   #|}
   #|
@@ -409,17 +446,7 @@ pub let host_script_source : String =
   #|              return undefined;
   #|            }
   #|            const specifier = args.path;
-  #|            if (
-  #|              specifier.startsWith(".") ||
-  #|              specifier.startsWith("/") ||
-  #|              specifier.startsWith("node:") ||
-  #|              specifier.startsWith("file:")
-  #|            ) {
-  #|              return undefined;
-  #|            }
-  #|            // 内置模块交给下面的策略插件：这里放行会让 `fs` 被标成 external，
-  #|            // 策略就再也拦不到了。
-  #|            if (isBuiltin(specifier)) {
+  #|            if (isOwnPath(specifier)) {
   #|              return undefined;
   #|            }
   #|            // 解析成**绝对路径 + external**：
@@ -427,9 +454,8 @@ pub let host_script_source : String =
   #|            //     （referrer 为空时会失败，且报错信息是它自己的）；
   #|            //   - 只给绝对路径不标 external —— bun 会把整个 pi CLI 内联进来
   #|            //     （单个扩展 8.9MB）。
-  #|            try {
-  #|              return { path: Bun.resolveSync(specifier, modulesDir), external: true };
-  #|            } catch (error) {
+  #|            const resolved = resolveBare(specifier);
+  #|            if (!resolved) {
   #|              return {
   #|                errors: [
   #|                  {
@@ -441,6 +467,7 @@ pub let host_script_source : String =
   #|                ],
   #|              };
   #|            }
+  #|            return { path: resolved, external: true };
   #|          });
   #|        },
   #|      },

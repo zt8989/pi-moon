@@ -13,6 +13,7 @@ import {
   "pi-moon/core/sys",
   "pi-moon/core/message",
   "pi-moon/core/tools",
+  "moonbitlang/async",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/env",
   "moonbitlang/core/json",
