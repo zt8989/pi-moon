@@ -69,6 +69,8 @@ reducer 里没有一个 `await`、没有一个 `fetch`、也没有 while。真�
   用原值，只有 256 色时面板底色退回 16 色名字。
   一次性与管道行为不变（见 [docs/tui.md](docs/tui.md)）。
 
+- **工具块渲染器**：bash 留尾 5 行、edit 彩色 diff，每工具折叠预算不同（见 [docs/tui.md](docs/tui.md)）。
+
 - **pi 扩展（宿主进程）**：发现 `~/.pi/agent/extensions` 与 `<cwd>/.pi/extensions`，
   交给**独立的 bun 进程**装载（形状照 magpie）：bun 自己转译 TS、用 pi 装机的
   node_modules 解析依赖，`Bun.build` 产物按内容哈希缓存，缓存未命中才打包。
@@ -78,7 +80,7 @@ reducer 里没有一个 `await`、没有一个 `fetch`、也没有 while。真�
   pi 官方 70 个单文件示例全部装载成功（见 [docs/extensions.md](docs/extensions.md)）。
 
 **还没有**（下一步逐步接）：Web 界面、扩展钩子的改写 / 阻断语义（现在只能「听见」
-不能「插手」）、扩展斜杠命令、TUI 的各工具专用渲染器 / Windows 输入法
+不能「插手」）、扩展斜杠命令、TUI 的 POSIX 粘贴丢字 / 图片块占位
 （见 [docs/tui.md](docs/tui.md) 的「与 ela 的差距」，以及 [docs/extensions.md](docs/extensions.md)
 的「还没接」）。
 
@@ -308,8 +310,7 @@ fs（发现与渲染都不碰环）；`core/tools` 只依赖 `action` / `message
 
 ## 下一步（按顺序）
 
-1. **TUI 迭代**：各工具专用渲染器（bash 尾部保留、edit 彩色 diff）、
-   Windows 输入法（差距清单见 [docs/tui.md](docs/tui.md)）。
+1. **TUI 迭代**：POSIX 粘贴丢字、图片块占位渲染（差距清单见 [docs/tui.md](docs/tui.md)）。
 2. **Web 界面**：rabbita 与终端共用同一份 state；跨包只碰 `Agent` 的
    `state` / `send`。
 3. **pi 扩展**：钩子的改写 / 阻断语义（`tool_call` 改参数、`tool_result` 改输出、
