@@ -1,0 +1,23 @@
+// 行协议 RPC：与传输无关的「发一行、收一行」会话。
+//
+// 从扩展宿主（core/ext）的 stdio 实现里抽出（issue #2，prefactor）：协议的
+// 三条约束（行、一次一条在途、噪音跳过）与承载（stdio / TCP / 内存）分开。
+// 未来远程工具的 TCP 客户端插上同一个会话，不复制第二份协议。
+//
+// 错误走 `Result[.., RpcError]` 而不是 `T raise RpcError`（[0078] 在此刻意
+// 抑制）：async 调用天生携带取消错误，泛型 raise 一进具体 ambient 就坍缩成
+// 抽象的 Error 根类型，调用方再也做不了构造器模式匹配；错误按值交回，扩展
+// 宿主 / 工具宿主才能各自把措辞包回自己的错误类型。
+
+import {
+  "moonbitlang/core/encoding/utf8",
+  "moonbitlang/core/json",
+}
+
+warnings = "-78"
+
+supported_targets = "js+native"
+
+import {
+  "moonbitlang/async",
+} for "wbtest"

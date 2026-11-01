@@ -1,16 +1,11 @@
 // 常驻宿主会话：把 `--mode serve` 的 bun 进程包成「发一行、收一行」的 RPC。
 //
-// 一个会话只服务一个扩展（宿主脚本按 `--path` 装一个）。`ExtRuntime` 是本进程
-// 手里的那本名册：按工具名找会话、按事件名广播。
+// 协议本体在 core/rpc（与传输无关，issue #2 抽出）；这一层只剩：
+//   - 扩展注册表（工具 / 命令 / 事件 / 工具定义）；
+//   - `call` / `emit` 的载荷拼装与返回值折叠；
+//   - 「stdio → 字节双工」的适配，以及传输层错误 → 宿主措辞的映射。
 //
-// 三条约束（都对应一个具体的坑）：
-//   1. **协议是行**：请求 / 响应各一行 JSON，一行可能跨多个管道块，所以读的
-//      一侧必须自己攒尾巴（`pending`）。
-//   2. **stdout 只走协议**：宿主把 `console.*` 与自身诊断都写成 `{"event":"log"}`
-//      行；万一张上还有非 JSON 行（扩展直接 `process.stdout.write`、bun 自己报
-//      错），跳过并留作诊断，而不是把整个会话判死。
-//   3. **一次只有一条在途请求**：调用点是 effect 里的 `await`，本来就没有并发。
-//      所以不需要 id → 等待者的表，`id` 只做自检。
+// 协议的三条约束（行、一次一条在途、噪音跳过）见 core/rpc，这里不再重复。
 
 ///|
 /// 一个已就绪的扩展会话。
@@ -31,181 +26,72 @@ pub(all) struct ExtSession {
   mut built : Bool
   /// 宿主装载耗时（毫秒）。
   mut ms : Int
-  io : @sys.Session
-  /// 还没成行的尾巴。
-  mut pending : String
-  /// 非协议输出（`log` 行、扩展自己写的 stdout），只留最近几条做诊断。
-  mut noise : Array[String]
-  mut next_id : Int
-  mut dead : Bool
+  /// 行协议会话（传输无关；stdio 由 `start` 经 `duplex_of` 装进来）。
+  rpc : @rpc.Session
 }
 
 ///|
-/// 最多留几条噪音行 —— 诊断够用，且不会随会话变长。
-let max_noise : Int = 8
+/// stdio 会话 → 字节双工。协议会话对传输的全部要求只有读 / 写 / 关；
+/// async 调用天生的环境错误（取消等）在这里就地折成 `Err` 值。
+fn duplex_of(io : @sys.Session) -> @rpc.Duplex {
+  {
+    read: async fn(max) {
+      try Ok(io.read_some(max_len=max)) catch { e => Err(e.to_string()) }
+    },
+    write: async fn(text) {
+      try Ok(io.write(text)) catch { e => Err(e.to_string()) }
+    },
+    close: fn() { io.close() },
+  }
+}
+
+///|
+/// 传输层错误 → 宿主措辞。措辞与抽取前逐字一致。
+fn to_host_error(session : ExtSession, error : @rpc.RpcError) -> HostError {
+  match error {
+    SessionClosed => HostFailure("扩展宿主已经退出（" + session.name + "）")
+    TransportWrite(reason) =>
+      HostFailure("写扩展宿主失败（" + session.name + "）：" + reason)
+    TransportRead(reason) => HostFailure("读取扩展宿主输出失败：" + reason)
+    PeerFatal(reason) =>
+      HostFailure("扩展宿主报致命错误（" + session.name + "）：" + reason)
+    PeerClosed =>
+      HostFailure(
+        "扩展宿主提前退出（" +
+        session.name +
+        "）" +
+        (match session.rpc.noise_text() {
+          "" => ""
+          noise => "：" + noise
+        }),
+      )
+  }
+}
+
+///|
+/// 非协议输出（`log` 行、扩展自己写的 stdout），只留最近几条做诊断。
+pub fn ExtSession::noise_text(self : ExtSession) -> String {
+  self.rpc.noise_text()
+}
 
 ///|
 /// 等宿主交出注册表的上限（毫秒）。首次装载要跑 Bun.build，实测 10s 上下。
 let start_timeout_ms : Int = 120000
 
 ///|
-fn push_noise(session : ExtSession, line : String) -> Unit {
-  if session.noise.length() >= max_noise {
-    let _ = session.noise.remove(0)
-  }
-  session.noise.push(line)
-}
-
-///|
-pub fn ExtSession::noise_text(self : ExtSession) -> String {
-  self.noise.join("\n")
-}
-
-///|
-async fn ExtSession::next_line(self : ExtSession) -> String? raise HostError {
-  while true {
-    match self.pending.find("\n") {
-      Some(index) => {
-        let line = self.pending[:index].trim(chars="\r \t").to_owned()
-        self.pending = self.pending[index + 1:].to_owned()
-        break Some(line)
-      }
-      None => ()
-    }
-    let chunk = self.io.read_some(max_len=8192) catch {
-      error => {
-        self.dead = true
-        raise HostFailure(
-          "读取扩展宿主输出失败：" + error.to_string(),
-        )
-      }
-    }
-    match chunk {
-      None => {
-        self.dead = true
-        break None
-      }
-      Some(bytes) => self.pending = self.pending + @utf8.decode_lossy(bytes)
-    }
-  } nobreak {
-    None
-  }
-}
-
-///|
-/// 收一条协议消息：`log` 行进 noise，其它非 JSON 行也进 noise。
-///
-/// `ready` 与普通响应一样「是一条消息」——装载那一下的注册表就是它送来的。
-/// 返回 `None` 表示宿主已经退出（stdin 那侧读到 EOF）。
-async fn ExtSession::next_message(
-  self : ExtSession,
-) -> Map[String, Json]? raise HostError {
-  while true {
-    let line = match self.next_line() {
-      Some(line) => line
-      None => break None
-    }
-    if line.is_empty() {
-      continue
-    }
-    let parsed = @json.parse(line) catch { _ => Json::null() }
-    let fields = match parsed.as_object() {
-      Some(fields) => fields
-      None => {
-        push_noise(self, line)
-        continue
-      }
-    }
-    match field_string(fields, "event") {
-      Some("log") => {
-        push_noise(self, field_string(fields, "text").unwrap_or(line))
-        continue
-      }
-      Some("fatal") => {
-        self.dead = true
-        let reason = field_string(fields, "error").unwrap_or("未知原因")
-        raise HostFailure(
-          "扩展宿主报致命错误（" + self.name + "）：" + reason,
-        )
-      }
-      // `ready` / `fatal` 之外的都当响应交回去（`ready` 也是响应：它就是注册表）。
-      _ => break Some(fields)
-    }
-  } nobreak {
-    None
-  }
-}
-
-///|
-fn field_string(fields : Map[String, Json], key : String) -> String? {
-  match fields.get(key) {
-    Some(value) => value.as_string()
-    None => None
-  }
-}
-
-///|
-fn field_int(fields : Map[String, Json], key : String) -> Int? {
-  match fields.get(key) {
-    Some(value) =>
-      match value.as_number() {
-        Some(number) => Some(number.to_int())
-        None => None
-      }
-    None => None
-  }
-}
-
-///|
-fn field_bool(fields : Map[String, Json], key : String) -> Bool? {
-  match fields.get(key) {
-    Some(value) => value.as_bool()
-    None => None
-  }
-}
-
-///|
 /// 发一条请求并等它的响应。失败（传输错 / 宿主报错）以 `HostError` 上抛，
-/// 调用方把它折成一条工具结果。
+/// 调用方把它折成一条工具结果。协议在 `@rpc.Session::request`，这里只做措辞。
 async fn ExtSession::request(
   self : ExtSession,
   payload : Map[String, Json],
 ) -> Map[String, Json] raise HostError {
-  if self.dead {
-    raise HostFailure("扩展宿主已经退出（" + self.name + "）")
+  let outcome = self.rpc.request(payload) catch {
+    // 运行期到不了：core/rpc 的传输错误按值交回，这里只为穷尽性兜底。
+    error => raise HostFailure(error.to_string())
   }
-  let id = self.next_id
-  self.next_id = id + 1
-  payload["id"] = Json::number(id.to_double(), repr=id.to_string())
-  let line = Json::object(payload).stringify() + "\n"
-  self.io.write(line) catch {
-    error => {
-      self.dead = true
-      raise HostFailure(
-        "写扩展宿主失败（" + self.name + "）：" + error.to_string(),
-      )
-    }
-  }
-  while true {
-    let fields = match self.next_message() {
-      Some(fields) => fields
-      None =>
-        raise HostFailure(
-          "扩展宿主提前退出（" +
-          self.name +
-          "）" +
-          (match self.noise_text() {
-            "" => ""
-            noise => "：" + noise
-          }),
-        )
-    }
-    // 只有一条在途请求，id 对不上说明上次的响应用剩了 —— 抖掉继续等。
-    if field_int(fields, "id") == Some(id) {
-      break fields
-    }
-  } nobreak {
-    abort("request：循环不会无 break 地结束")
+  match outcome {
+    Ok(fields) => fields
+    Err(error) => raise to_host_error(self, error)
   }
 }
 
@@ -257,19 +143,22 @@ pub async fn ExtSession::start(
     denied: [],
     built: false,
     ms: 0,
-    io,
-    pending: "",
-    noise: [],
-    next_id: 1,
-    dead: false,
+    rpc: @rpc.Session::new(duplex_of(io)),
   }
   // 后面任何一步失败都把宿主收掉 —— 别留一个没人管的 bun 进程。
-  errdefer session.io.close()
+  errdefer session.rpc.close()
   // 等注册表要设上限：首次要跑 Bun.build（实测 10s 上下），但接口卡死时
   // 不该把整个 pi-moon 一起挂在那里（与运行期 call 不同 —— 那里打断就会
   // 丢掉一个工具结果，这里只是启动）。
   let ready_message = @async.with_timeout(start_timeout_ms, async fn() {
-    session.next_message()
+    let outcome = session.rpc.next_message() catch {
+      // 运行期到不了：core/rpc 的传输错误按值交回，这里只为穷尽性兜底。
+      error => raise HostFailure(error.to_string())
+    }
+    match outcome {
+      Ok(fields) => fields
+      Err(error) => raise to_host_error(session, error)
+    }
   }) catch {
     error =>
       raise HostFailure(
@@ -287,7 +176,7 @@ pub async fn ExtSession::start(
       raise HostFailure(
         "扩展宿主没有交出注册表就退出了：" +
         session.name +
-        (match session.noise_text() {
+        (match session.rpc.noise_text() {
           "" => ""
           noise => "：" + noise
         }),
@@ -319,7 +208,7 @@ pub async fn ExtSession::call(
   payload["toolCallId"] = Json::string(call.id)
   payload["args"] = args
   let response = self.request(payload)
-  match field_bool(response, "ok") {
+  match @rpc.field_bool(response, "ok") {
     Some(true) => ()
     _ =>
       return {
@@ -328,7 +217,7 @@ pub async fn ExtSession::call(
             "扩展工具失败（" +
             self.name +
             "）：" +
-            field_string(response, "error").unwrap_or("未知错误"),
+            @rpc.field_string(response, "error").unwrap_or("未知错误"),
           ),
         ],
         is_error: true,
@@ -386,9 +275,9 @@ fn outcome_of(result : Json) -> @tools.ToolOutcome {
   if content.is_empty() {
     content.push(@message.Text("（扩展工具没有输出）"))
   }
-  let is_error = match field_bool(fields, "isError") {
+  let is_error = match @rpc.field_bool(fields, "isError") {
     Some(flag) => flag
-    None => field_bool(fields, "is_error").unwrap_or(false)
+    None => @rpc.field_bool(fields, "is_error").unwrap_or(false)
   }
   { content, is_error, }
 }
@@ -399,14 +288,14 @@ fn content_block(block : Json) -> @message.Content? {
     Some(fields) => fields
     None => return None
   }
-  match field_string(fields, "type") {
+  match @rpc.field_string(fields, "type") {
     Some("text") =>
-      Some(@message.Text(field_string(fields, "text").unwrap_or("")))
+      Some(@message.Text(@rpc.field_string(fields, "text").unwrap_or("")))
     Some("image") =>
       // pi 的图片块是 `{data, mimeType}`；内核用 data URL 表达同一件事。
-      match field_string(fields, "data") {
+      match @rpc.field_string(fields, "data") {
         Some(data) => {
-          let mime = field_string(fields, "mimeType").unwrap_or("image/png")
+          let mime = @rpc.field_string(fields, "mimeType").unwrap_or("image/png")
           Some(@message.Image("data:" + mime + ";base64," + data))
         }
         None => None
@@ -432,7 +321,7 @@ pub async fn ExtSession::emit(
 
 ///|
 pub fn ExtSession::close(self : ExtSession) -> Unit {
-  self.io.close()
+  self.rpc.close()
 }
 
 ///|
@@ -515,7 +404,7 @@ pub async fn ExtRuntime::call_tool(
 /// 广播一个事件：只发给挂了该钩子的会话（没挂的会话不该为一次空派发付一次往返）。
 ///
 /// **钩子失败不掐回合**：pi 里同样的钩子抛错也只影响它自己。这里把传输错
-/// 吞掉，会话变 `dead` 之后下一次调用会拿到明确的「宿主已经退出」。
+/// 吞掉，会话变死之后下一次调用会拿到明确的「宿主已经退出」。
 pub async fn ExtRuntime::emit(
   self : ExtRuntime,
   event : String,

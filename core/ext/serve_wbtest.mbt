@@ -237,11 +237,7 @@ async fn fake_session(mode : String) -> ExtSession {
     denied: [],
     built: false,
     ms: 0,
-    io,
-    pending: "",
-    noise: [],
-    next_id: 1,
-    dead: false,
+    rpc: @rpc.Session::new(duplex_of(io)),
   }
 }
 
@@ -287,5 +283,5 @@ async test "协议层：宿主报 fatal 时调用拿到明确错误" {
     error => error.to_string()
   }
   assert_true(message.contains("boom-from-host"))
-  assert_true(session.dead)
+  assert_true(session.rpc.is_dead())
 }

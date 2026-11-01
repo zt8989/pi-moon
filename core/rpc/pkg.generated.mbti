@@ -1,0 +1,42 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "pi-moon/core/rpc"
+
+// Values
+pub fn field_int(Map[String, Json], String) -> Int32?
+
+pub fn field_string(Map[String, Json], String) -> String?
+
+// Errors
+pub suberror RpcError {
+  SessionClosed
+  TransportWrite(String)
+  TransportRead(String)
+  PeerFatal(String)
+  PeerClosed
+}
+pub fn RpcError::to_string(Self) -> String
+
+// Types and methods
+pub(all) struct Duplex {
+  read : async (Int32) -> Result[Bytes?, String]
+  write : async (String) -> Result[Unit, String]
+  close : () -> Unit
+}
+
+pub struct Session {
+  io : Duplex
+  mut pending : String
+  noise : Array[String]
+  mut next_id : Int32
+  mut dead : Bool
+}
+pub fn Session::close(Self) -> Unit
+pub fn Session::is_dead(Self) -> Bool
+pub fn Session::new(Duplex) -> Self
+pub async fn Session::next_message(Self) -> Result[Map[String, Json]?, RpcError]
+pub fn Session::noise_text(Self) -> String
+pub async fn Session::request(Self, Map[String, Json]) -> Result[Map[String, Json], RpcError]
+
+// Type aliases
+
+// Traits

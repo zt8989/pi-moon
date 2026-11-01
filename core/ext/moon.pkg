@@ -11,6 +11,7 @@
 
 import {
   "pi-moon/core/sys",
+  "pi-moon/core/rpc",
   "pi-moon/core/message",
   "pi-moon/core/tools",
   "moonbitlang/async",

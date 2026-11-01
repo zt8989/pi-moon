@@ -4,7 +4,7 @@ package "pi-moon/core/ext"
 import {
   "moonbitlang/core/debug",
   "pi-moon/core/message",
-  "pi-moon/core/sys",
+  "pi-moon/core/rpc",
   "pi-moon/core/tools",
 }
 
@@ -111,11 +111,7 @@ pub(all) struct ExtSession {
   mut denied : Array[String]
   mut built : Bool
   mut ms : Int32
-  io : @sys.Session
-  mut pending : String
-  mut noise : Array[String]
-  mut next_id : Int32
-  mut dead : Bool
+  rpc : @rpc.Session
 }
 pub async fn ExtSession::call(Self, @message.ToolCall) -> @tools.ToolOutcome raise HostError
 pub fn ExtSession::close(Self) -> Unit

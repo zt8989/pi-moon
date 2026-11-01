@@ -189,13 +189,18 @@ Windows 上建目录符号链接要特权（Developer Mode / 管理员），普�
 ## 代码地图
 
 ```text
+core/rpc/
+  rpc.mbt            行协议 RPC（与传输无关）：跨块攒尾巴、log 噪音、一次一条
+                     在途、id 自检、fatal 语义；传输经「字节双工」插拔（stdio /
+                     TCP / 内存均可），传输错误按值交回（issue #2 从 serve 抽出）
 core/ext/
   ext.mbt            类型：来源、装载步骤、缓存键（FNV-1a 64）、工具定义
   discover.mbt       <agent dir>/extensions、<cwd>/.pi/extensions、--extension
   pi_modules.mbt     找 pi 装机里的 node_modules（宿主解析扩展 import 的包）
   prepare.mbt        启动前的计划 + 起常驻宿主 + 汇总 StartupExt
   host.mbt           宿主一次性装载（`--mode load`）：spawn bun、解析回传 JSON
-  serve.mbt          常驻宿主（`--mode serve`）：行协议、call / emit、ExtRuntime
+  serve.mbt          常驻宿主（`--mode serve`）：注册表、call / emit、ExtRuntime；
+                     协议本体在 core/rpc，这里做 stdio 适配与错误措辞
   host_script.mbt    宿主脚本（由 scripts/embed-host.mjs 从 host/ext_host.mjs 生成）
   host/ext_host.mjs  宿主脚本源码：Bun.build 缓存、策略 sidecar、JSON-lines RPC
 scripts/embed-host.mjs  生成器（改完 .mjs 跑一次）
