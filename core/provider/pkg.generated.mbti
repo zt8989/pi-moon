@@ -21,7 +21,7 @@ pub fn effect_table(PiConfig, ChatOptions) -> @runtime.EffectTable
 
 pub fn effect_table_full(PiConfig, ChatOptions, ProviderHooks, async (@state.AgentState, Array[@message.ToolCall], @runtime.Dispatch) -> Unit) -> @runtime.EffectTable
 
-pub fn effect_table_with_hooks(PiConfig, ChatOptions, ProviderHooks, external? : ExternalTools) -> @runtime.EffectTable
+pub fn effect_table_with_hooks(PiConfig, ChatOptions, ProviderHooks, external? : ExternalTools, remote? : RemoteExecutor) -> @runtime.EffectTable
 
 pub fn effect_table_with_tools(PiConfig, ChatOptions, async (@state.AgentState, Array[@message.ToolCall], @runtime.Dispatch) -> Unit) -> @runtime.EffectTable
 
@@ -36,6 +36,8 @@ pub fn provider_env_key(String) -> String
 pub fn request_body_text(ResolvedProvider, @state.AgentState, ChatOptions) -> String
 
 pub fn resolve_agent_dir(Map[String, String]) -> String
+
+pub async fn run_tools_with_hooks(@state.AgentState, Array[@message.ToolCall], @runtime.Dispatch, ProviderHooks, external? : ExternalTools, remote? : RemoteExecutor) -> Unit
 
 // Errors
 pub(all) suberror ProviderError {
@@ -117,6 +119,11 @@ pub(all) struct ProviderHooks {
   on_tool_progress : async (String, Array[@message.Content]) -> Unit
   should_abort : () -> Bool
   on_tick : async (@runtime.Dispatch) -> Unit
+}
+
+pub(all) struct RemoteExecutor {
+  owns : (String) -> Bool
+  run : async (@message.ToolCall) -> @tools.ToolOutcome
 }
 
 pub(all) struct ResolvedProvider {

@@ -1269,3 +1269,93 @@ fn image_mime(path : String) -> String? {
     None
   }
 }
+
+///|
+/// 把 pi 的工具返回值折成内核的内容块。
+///
+/// 认的形状：`{ content: [{type:"text"|"image", …}], isError?, details? }`。
+/// `details` / 结构化输出先丢掉 —— 内核的 `Content` 只有文本、思考、图片、工具调用。
+///
+/// 内置工具不走这条路径（它们直接造 ToolOutcome）；它是给**进程外**的工具执行者
+/// 共用的 —— 扩展宿主（core/ext）与远程工具宿主（core/rtools）拿到的都是 pi
+/// 形状的 JSON，折叠口径只有这一份。
+pub fn outcome_of(result : Json) -> ToolOutcome {
+  let fields = match result.as_object() {
+    Some(fields) => fields
+    None =>
+      // 有些工具直接返回字符串；不是对象就当作一段文本。
+      return {
+        content: [
+          @message.Text(
+            match result.as_string() {
+              Some(text) => text
+              None => result.stringify()
+            },
+          ),
+        ],
+        is_error: false,
+      }
+  }
+  let content : Array[@message.Content] = []
+  match fields.get("content") {
+    Some(value) =>
+      match value.as_array() {
+        Some(blocks) =>
+          for block in blocks {
+            match content_block(block) {
+              Some(block) => content.push(block)
+              None => ()
+            }
+          }
+        None => ()
+      }
+    None => ()
+  }
+  if content.is_empty() {
+    content.push(@message.Text("（工具没有输出）"))
+  }
+  // pi 的形状是 `isError`；扩展宿主历史上还认过 snake_case，保持同口径。
+  let is_error = match fields.get("isError") {
+    Some(True) => true
+    Some(False) => false
+    _ =>
+      match fields.get("is_error") {
+        Some(True) => true
+        _ => false
+      }
+  }
+  { content, is_error, }
+}
+
+///|
+fn content_block(block : Json) -> @message.Content? {
+  let fields = match block.as_object() {
+    Some(fields) => fields
+    None => return None
+  }
+  let kind = match fields.get("type") {
+    Some(kind) if kind is String(text) => text
+    _ => ""
+  }
+  if kind == "text" {
+    let text = match fields.get("text") {
+      Some(value) if value is String(text) => text
+      _ => ""
+    }
+    Some(@message.Text(text))
+  } else if kind == "image" {
+    // pi 的图片块是 `{data, mimeType}`；内核用 data URL 表达同一件事。
+    match fields.get("data") {
+      Some(data) if data is String(data) => {
+        let mime = match fields.get("mimeType") {
+          Some(value) if value is String(mime) => mime
+          _ => "image/png"
+        }
+        Some(@message.Image("data:" + mime + ";base64," + data))
+      }
+      _ => None
+    }
+  } else {
+    None
+  }
+}

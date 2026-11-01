@@ -1,18 +1,22 @@
-// 平台层：把「文件 / 子进程 / 标准流 / 终端」这四件 native 与 js 不一致的事
-// 收成一个 API。
+// 平台层：把「文件 / 子进程 / 标准流 / 终端 / TCP 连接」这五件 native 与 js
+// 不一致的事收成一个 API。
 //
 // 只有这里的文件按目标分流：`*_native.mbt` 走 moonbitlang/async（fs / process /
-// stdio），`*_js.mbt` 走 Node 内建模块。上层（session / tools / provider /
-// context / cmd）只认这些函数名，于是同一份业务代码在两端都能编。
+// stdio / socket），`*_js.mbt` 走 Node 内建模块。上层（session / tools /
+// provider / context / cmd）只认这些函数名，于是同一份业务代码在两端都能编。
 //
 // 刻意不引 `moonbitlang/async/shell`：它的 `supported_targets` 是 native+wasm，
 // 一旦写进 import 表，js 目标连构建计划都排不出来。
+// `moonbitlang/async/socket` 没这个问题：它没声明 `supported_targets`（js 上
+// 是个空包），http 也这么引 —— 只要 js 侧的文件不引用它的符号就行。
 
 import {
   "moonbitlang/async",
   "moonbitlang/async/fs",
+  "moonbitlang/async/io",
   "moonbitlang/async/pipe",
   "moonbitlang/async/process",
+  "moonbitlang/async/socket",
   "moonbitlang/async/stdio",
   "moonbitlang/async/js_async",
   "moonbitlang/core/env",
@@ -35,5 +39,8 @@ options(
     "stdio_js.mbt": [ "js" ],
     "term_native.mbt": [ "native" ],
     "term_js.mbt": [ "js" ],
+    "tcp_native.mbt": [ "native" ],
+    "tcp_js.mbt": [ "js" ],
+    "tcp_wbtest.mbt": [ "native", "js" ],
   },
 )

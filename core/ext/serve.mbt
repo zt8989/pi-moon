@@ -224,7 +224,7 @@ pub async fn ExtSession::call(
       }
   }
   match response.get("result") {
-    Some(result) => outcome_of(result)
+    Some(result) => @tools.outcome_of(result)
     None =>
       {
         content: [
@@ -232,75 +232,6 @@ pub async fn ExtSession::call(
         ],
         is_error: true,
       }
-  }
-}
-
-///|
-/// 把 pi 的工具返回值折成内核的内容块。
-///
-/// 认的形状：`{ content: [{type:"text"|"image", …}], isError?, details? }`。
-/// `details` / 结构化输出先丢掉 —— 内核的 `Content` 只有文本、思考、图片、工具调用。
-fn outcome_of(result : Json) -> @tools.ToolOutcome {
-  let fields = match result.as_object() {
-    Some(fields) => fields
-    None =>
-      // 有些工具直接返回字符串；不是对象就当作一段文本。
-      return {
-        content: [
-          @message.Text(
-            match result.as_string() {
-              Some(text) => text
-              None => result.stringify()
-            },
-          ),
-        ],
-        is_error: false,
-      }
-  }
-  let content : Array[@message.Content] = []
-  match fields.get("content") {
-    Some(value) =>
-      match value.as_array() {
-        Some(blocks) =>
-          for block in blocks {
-            match content_block(block) {
-              Some(block) => content.push(block)
-              None => ()
-            }
-          }
-        None => ()
-      }
-    None => ()
-  }
-  if content.is_empty() {
-    content.push(@message.Text("（扩展工具没有输出）"))
-  }
-  let is_error = match @rpc.field_bool(fields, "isError") {
-    Some(flag) => flag
-    None => @rpc.field_bool(fields, "is_error").unwrap_or(false)
-  }
-  { content, is_error, }
-}
-
-///|
-fn content_block(block : Json) -> @message.Content? {
-  let fields = match block.as_object() {
-    Some(fields) => fields
-    None => return None
-  }
-  match @rpc.field_string(fields, "type") {
-    Some("text") =>
-      Some(@message.Text(@rpc.field_string(fields, "text").unwrap_or("")))
-    Some("image") =>
-      // pi 的图片块是 `{data, mimeType}`；内核用 data URL 表达同一件事。
-      match @rpc.field_string(fields, "data") {
-        Some(data) => {
-          let mime = @rpc.field_string(fields, "mimeType").unwrap_or("image/png")
-          Some(@message.Image("data:" + mime + ";base64," + data))
-        }
-        None => None
-      }
-    _ => None
   }
 }
 

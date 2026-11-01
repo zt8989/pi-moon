@@ -2,6 +2,8 @@
 package "pi-moon/core/rpc"
 
 // Values
+pub fn field_bool(Map[String, Json], String) -> Bool?
+
 pub fn field_int(Map[String, Json], String) -> Int32?
 
 pub fn field_string(Map[String, Json], String) -> String?

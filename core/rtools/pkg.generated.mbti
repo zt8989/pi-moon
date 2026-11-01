@@ -1,0 +1,39 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "pi-moon/core/rtools"
+
+import {
+  "pi-moon/core/action",
+  "pi-moon/core/message",
+  "pi-moon/core/rpc",
+  "pi-moon/core/tools",
+}
+
+// Values
+
+// Errors
+pub suberror RemoteError {
+  RemoteStartup(String)
+  RemoteFailure(String)
+}
+pub fn RemoteError::to_string(Self) -> String
+
+// Types and methods
+pub(all) struct RemoteSessionMeta {
+  session_id : String
+  provider : String
+  model : String
+}
+
+pub(all) struct RemoteTools {
+  address : String
+  rpc : @rpc.Session
+  mut definitions : Array[@action.PromptToolDefinition]
+}
+pub async fn RemoteTools::call_tool(Self, @message.ToolCall) -> @tools.ToolOutcome
+pub fn RemoteTools::close(Self) -> Unit
+pub async fn RemoteTools::connect(String, Int32, RemoteSessionMeta) -> Self raise RemoteError
+pub fn RemoteTools::owns(Self, String) -> Bool
+
+// Type aliases
+
+// Traits

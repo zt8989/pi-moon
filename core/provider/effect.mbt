@@ -387,6 +387,18 @@ pub(all) struct ExternalTools {
 }
 
 ///|
+/// 远程工具（RemoteReActAgent）的接入点：与 `ExternalTools` 同形但**没有**
+/// 事件钩子 —— `tool_execution_start / end` 对每个工具只发一次（走
+/// `external` 那侧），远程执行位置不再发第二遍。具体怎么接（TCP 行协议）
+/// 是 `core/rtools` 的事。
+pub(all) struct RemoteExecutor {
+  /// 这个工具名归远程宿主吗。
+  owns : (String) -> Bool
+  /// 真跑一次。失败折成 `is_error` 的结果，不上抛。
+  run : async (@message.ToolCall) -> @tools.ToolOutcome
+}
+
+///|
 /// 工具事件的载荷（字段名照 pi；内核没有的那些不编）。
 fn tool_event_payload(
   kind : String,
@@ -424,22 +436,31 @@ fn tool_event_payload(
 }
 
 ///|
-/// 默认的工具执行：逐个调 `core/tools` 的实现，把 outcome 变成 `tool.result`。
+/// 名册条目：路由链里「扩展 / 远程」两个进程外执行位置的统一形状。
+/// （本地不是名册 —— 它有 env / 进度语义，走 `@tools.execute`。）
+struct RouteTarget {
+  owns : (String) -> Bool
+  run : async (@message.ToolCall) -> @tools.ToolOutcome
+}
+
+///|
+/// 工具批次的执行：**路由链**「扩展名册 → 远程名册 → 本地执行」。
 ///
-/// 每个调用都必须落一条结果（即使工具失败），否则消息序列里就留下一个没有
-/// 结果的 toolCall，下一轮请求会被网关拒掉。失败也**不掐回合**：模型能看到
-/// 错误，自行决定重试还是换办法。
+/// 三个执行位置共用这一条 effect，互不知晓 —— 名册只拿到「名字归不归我」
+/// 与「跑一下」，中断 / 进度 / ToolStart / ToolResult 的语义因此对三者一致。
+/// 启用检查的口径也一致：`state.prompt.tools` 是**真正声明给模型**的那份，
+/// 没声明的名字无论落在哪个名册上，硬调都只回「未知工具」（与 pi 的
+/// `getTool()` 同口径）。
 ///
-/// 启用检查读 `state.prompt.tools` —— 那是 `prompt.init` 装进来、**真正声明给模型**
-/// 的那一份。关着的工具（例如默认关的 `powershell`）即使被硬调也只回「未知工具」。
-///
-/// `external?` 是扩展注册的工具：名字归它就交给它跑，内置工具照旧。
-async fn run_tools_with_hooks(
+/// `external?` 是扩展注册的工具；`remote?` 是远程工具宿主（RemoteReActAgent）
+/// 的注册表 —— 远程只接管它声明过的名字，其余照旧走本地 `@tools.execute`。
+pub async fn run_tools_with_hooks(
   state : @state.AgentState,
   calls : Array[@message.ToolCall],
   dispatch : @runtime.Dispatch,
   hooks : ProviderHooks,
   external? : ExternalTools,
+  remote? : RemoteExecutor,
 ) -> Unit {
   let enabled : Array[String] = []
   for definition in state.prompt.tools {
@@ -492,17 +513,35 @@ async fn run_tools_with_hooks(
         )
       None => ()
     }
-    let outcome : @tools.ToolOutcome = match external {
-      Some(runner) if (runner.owns)(call.name) =>
+    // 路由链：按名册顺序找第一个认领这个名字的执行位置；谁都不认领就本地执行。
+    let targets : Array[RouteTarget] = []
+    match external {
+      Some(runner) => targets.push({ owns: runner.owns, run: runner.run })
+      None => ()
+    }
+    match remote {
+      Some(remote) => targets.push({ owns: remote.owns, run: remote.run })
+      None => ()
+    }
+    let mut owner : RouteTarget? = None
+    for target in targets {
+      if (target.owns)(call.name) {
+        owner = Some(target)
+        break
+      }
+    }
+    let outcome : @tools.ToolOutcome = match owner {
+      Some(target) =>
+        // 启用口径对所有执行位置一致：没声明给模型的硬调只得「未知工具」。
         if enabled.contains(call.name) {
-          (runner.run)(call)
+          (target.run)(call)
         } else {
           {
             content: [@message.Text("未知工具：" + call.name)],
             is_error: true,
           }
         }
-      _ =>
+      None =>
         @tools.execute(state.cwd, call, env~, enabled~, on_progress=async fn(
           blocks,
         ) {
@@ -844,16 +883,18 @@ pub fn effect_table(
 ///|
 /// 带上渲染钩子（CLI / 界面用）。
 ///
-/// `external?` 把扩展注册的工具接进来：内置工具与扩展工具走同一条 effect，
-/// 于是中断、进度、ToolStart/ToolResult 的语义对两者一致。
+/// `external?` 把扩展注册的工具接进来，`remote?` 把远程工具宿主的注册表接
+/// 进来：三者（扩展 / 远程 / 本地）走同一条 effect，于是中断、进度、
+/// ToolStart/ToolResult 的语义对三者一致。
 pub fn effect_table_with_hooks(
   config : PiConfig,
   options : ChatOptions,
   hooks : ProviderHooks,
   external? : ExternalTools,
+  remote? : RemoteExecutor,
 ) -> @runtime.EffectTable {
   effect_table_full(config, options, hooks, async fn(state, calls, dispatch) {
-    run_tools_with_hooks(state, calls, dispatch, hooks, external?)
+    run_tools_with_hooks(state, calls, dispatch, hooks, external?, remote?)
   })
 }
 

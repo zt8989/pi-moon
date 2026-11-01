@@ -10,6 +10,7 @@ import {
   "pi-moon/core/runtime",
   "pi-moon/core/loop",
   "pi-moon/core/provider",
+  "pi-moon/core/rtools",
   "pi-moon/core/tools",
   "pi-moon/core/session",
   "pi-moon/core/sys",

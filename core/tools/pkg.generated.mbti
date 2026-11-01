@@ -50,6 +50,8 @@ pub fn is_windows_env(Map[String, String]) -> Bool
 
 pub fn normalize_segments(String) -> String
 
+pub fn outcome_of(Json) -> ToolOutcome
+
 pub fn parent_dir(String) -> String
 
 pub let pi_default_tool_names : Array[String]

@@ -27,6 +27,10 @@ let usage : String = "pi-moon — Elm architecture agent core in MoonBit\n" +
   "  -t, --tools <list>       替换默认工具选择（逗号分隔，例如 read,grep,ls）\n" +
   "  -xt, --exclude-tools <list>  从选择里去掉几个工具（逗号分隔）\n" +
   "      --no-tools           关闭全部工具（内置 + 扩展）\n" +
+  "      --remote-tools <host:port>\n" +
+  "                           远程工具宿主：注册表声明的内置工具交给它执行\n" +
+  "                           （路由链：扩展 → 远程 → 本地；等价环境变量\n" +
+  "                           PI_MOON_REMOTE_TOOLS）\n" +
   "      --skill <path>       额外的技能文件或目录（可重复；默认扫\n" +
   "                             ~/.pi/agent/skills 与 <cwd>/.pi/skills）\n" +
   "      --show-tool-progress 把工具输出（取最后一行）实时打到 stderr\n" +
@@ -71,6 +75,8 @@ struct CliArgs {
   /// `--skill` 给的额外技能文件 / 目录（可重复）。
   skill_paths : Array[String]
   mut no_tools : Bool
+  /// `--remote-tools <host:port>`：内置工具交给远程宿主执行。
+  mut remote_tools : String?
   mut show_tool_progress : Bool
   mut session : String?
   mut continue_session : Bool
@@ -98,6 +104,7 @@ fn default_args() -> CliArgs {
     exclude_tools: None,
     skill_paths: [],
     no_tools: false,
+    remote_tools: None,
     show_tool_progress: false,
     session: None,
     continue_session: false,
@@ -222,6 +229,11 @@ fn parse_args(argv : Array[String]) -> CliArgs raise CliError {
         index = next
       }
       "--no-tools" => args.no_tools = true
+      "--remote-tools" => {
+        let (value, next) = option_value(argv, index, inline, flag)
+        args.remote_tools = Some(value)
+        index = next
+      }
       "--skill" => {
         let (value, next) = option_value(argv, index, inline, flag)
         args.skill_paths.push(value)
@@ -348,6 +360,40 @@ fn turn_payload(kind : String, turn_index : Int32) -> Json {
   fields["turnIndex"] = Json::number(turn_index.to_double())
   fields["timestamp"] = Json::number(@sys.now().to_double())
   Json::object(fields)
+}
+
+///|
+/// 收掉可选的远程会话（`defer` 的助手 —— defer 不吃 match 语句）。
+fn close_remote(remote : @rtools.RemoteTools?) -> Unit {
+  match remote {
+    Some(session) => session.close()
+    None => ()
+  }
+}
+
+///|
+/// `host:port` →（host, port）。按**最后一个** `:` 拆 —— 端口一定在末尾；
+/// v1 不特判裸 IPv6 字面量（写主机名或 `127.0.0.1`）。
+fn parse_remote_address(address : String) -> Result[(String, Int), String] {
+  let cut = match address.rev_find(":") {
+    Some(cut) => cut
+    None => return Err("地址要写成 host:port：" + address)
+  }
+  if cut == 0 || cut == address.length() - 1 {
+    return Err("地址要写成 host:port：" + address)
+  }
+  let host = address[:cut].to_owned()
+  let port_text = address[cut + 1:].to_owned()
+  let parsed = @json.parse(port_text) catch { _ => Json::null() }
+  let value = match parsed {
+    Number(n, ..) => n
+    _ => return Err("端口不是数字：" + port_text)
+  }
+  let port = value.to_int()
+  if port <= 0 || port > 65535 {
+    return Err("端口超出范围：" + port_text)
+  }
+  Ok((host, port))
 }
 
 ///|
@@ -854,23 +900,113 @@ async fn run(args : CliArgs) -> Unit {
   for diagnostic in prompt_templates.1 {
     eprintln("[prompts] " + diagnostic)
   }
-  let fallback_prompt : @action.PromptInitData = {
-    system_prompt: build_system_prompt(
-      cwd,
-      fallback_tool_names,
-      ext_tools,
-      context_files,
-      skill_registry.skills,
-    ),
-    tools: with_ext_tools(@tools.definitions_for(fallback_tool_names), ext_tools),
-  }
-  let fallback_model = resolved_model_spec(resolved)
-  // 会话两份文件：存在就恢复，不存在就新建。
+  // 会话两份文件：存在就恢复，不存在就新建。（远程握手要带 session id，
+  // 所以这段提到 prompt 组装之前。）
   let paths = resolve_session_paths(config, args, cwd)
   let session_id = match paths {
     Some(paths) => paths.id
     None => "s-" + @sys.now().to_string()
   }
+  // 远程工具（RemoteReActAgent）：`--remote-tools <host:port>`（或等价环境
+  // 变量 PI_MOON_REMOTE_TOOLS）把内置工具交给远程宿主执行。启动连不上就
+  // 明确失败 —— 模型声明与真实可执行的必须一致，不静默退回本地工具。
+  let remote_address = match args.remote_tools {
+    Some(address) => Some(address)
+    None =>
+      match env.get("PI_MOON_REMOTE_TOOLS") {
+        Some(text) if !text.is_empty() => Some(text)
+        _ => None
+      }
+  }
+  let remote : @rtools.RemoteTools? = match remote_address {
+    None => None
+    Some(address) => {
+      let endpoint = match parse_remote_address(address) {
+        Ok(endpoint) => endpoint
+        Err(error) => {
+          runtime_failure("[rtools] " + error)
+          return
+        }
+      }
+      let session = @rtools.RemoteTools::connect(
+        endpoint.0,
+        endpoint.1,
+        {
+          session_id,
+          provider: resolved.provider_name,
+          model: resolved.model.id,
+        },
+      ) catch {
+        error => {
+          runtime_failure("[rtools] " + error.to_string())
+          return
+        }
+      }
+      let names : Array[String] = []
+      for definition in session.definitions {
+        names.push(definition.name)
+      }
+      eprintln(
+        "[rtools] 已连接 " +
+        session.address +
+        "（工具：" +
+        (if names.is_empty() { "无" } else { names.join(", ") }) +
+        "）",
+      )
+      Some(session)
+    }
+  }
+  // 退出前把远程会话收掉：与扩展宿主的 defer 同一盖法。
+  defer close_remote(remote)
+  // 新会话的声明清单：本地模式来自内置定义，远程模式来自宿主注册表
+  // （`--no-tools` / `--exclude-tools` 对两边的「关」语义一致 —— 开关的完整
+  // 语义（`-t` 替换 / settings.defaultTools / REPL `/tools`）见 #6）。
+  let base_definitions : Array[@action.PromptToolDefinition] = match remote {
+    Some(session) => {
+      let out : Array[@action.PromptToolDefinition] = []
+      if !args.no_tools {
+        let excluded = match args.exclude_tools {
+          Some(list) => split_tool_list(list)
+          None => []
+        }
+        for definition in session.definitions {
+          if !excluded.contains(definition.name) {
+            out.push(definition)
+          }
+        }
+      }
+      out
+    }
+    None => @tools.definitions_for(fallback_tool_names)
+  }
+  // 远程工具没有本地 snippet（prompt_snippet 描述的是本地执行细节）：名字与
+  // 描述照扩展工具的口径进 system prompt。注意 `with_ext_tools` 是**原地**
+  // 追加 —— 这里必须给副本，否则 ext_tools 会被推进声明清单两次。
+  let remote_extra : Array[@action.PromptToolDefinition] = match remote {
+    Some(_) => {
+      let copy : Array[@action.PromptToolDefinition] = []
+      for definition in base_definitions {
+        copy.push(definition)
+      }
+      copy
+    }
+    None => []
+  }
+  let prompt_tool_names = match remote {
+    Some(_) => []
+    None => fallback_tool_names
+  }
+  let fallback_prompt : @action.PromptInitData = {
+    system_prompt: build_system_prompt(
+      cwd,
+      prompt_tool_names,
+      with_ext_tools(remote_extra, ext_tools),
+      context_files,
+      skill_registry.skills,
+    ),
+    tools: with_ext_tools(base_definitions, ext_tools),
+  }
+  let fallback_model = resolved_model_spec(resolved)
   let loaded = match paths {
     Some(paths) =>
       @session.load_session(paths.session, session_id) catch {
@@ -957,9 +1093,10 @@ async fn run(args : CliArgs) -> Unit {
       }
     },
   }
-  // 扩展注册的工具接进同一条工具 effect：名字归扩展就交给宿主跑，
-  // 内置工具照旧。两个事件（`tool_execution_start/end`）对所有工具都发，
-  // 与 pi 同口径 —— 扩展靠它做审计 / 提醒。
+  // 扩展注册的工具接进同一条工具 effect：名字归扩展就交给宿主跑，归远程
+  // 注册表就交远程宿主跑，其余照旧本地执行（路由链见 `run_tools_with_hooks`）。
+  // 两个事件（`tool_execution_start/end`）对所有工具都发，与 pi 同口径 ——
+  // 扩展靠它做审计 / 提醒。
   let external : @provider.ExternalTools? = if ext_runtime.is_empty() {
     None
   } else {
@@ -972,7 +1109,19 @@ async fn run(args : CliArgs) -> Unit {
       },
     })
   }
-  let table = @provider.effect_table_with_hooks(config, options, hooks, external?)
+  let remote_executor : @provider.RemoteExecutor? = match remote {
+    Some(session) =>
+      Some({
+        owns: fn(name) { session.owns(name) },
+        run: async fn(call) { session.call_tool(call) },
+      })
+    None => None
+  }
+  let table = match remote_executor {
+    Some(runner) =>
+      @provider.effect_table_with_hooks(config, options, hooks, external?, remote=runner)
+    None => @provider.effect_table_with_hooks(config, options, hooks, external?)
+  }
   let agent = @runtime.Agent::new(
     initial_state(
       resolved,

@@ -24,6 +24,25 @@ reducer ──► Cmd::RunTools(calls)
 宿主跑，内置工具照旧（见 [extensions](extensions.md)）。两者对中断、`ToolStart` /
 `ToolResult` 的语义完全一致 —— 区别只在于扩展工具没有 `ToolProgress` 流。
 
+## 远程工具（RemoteReActAgent）
+
+`--remote-tools <host:port>`（等价环境变量 `PI_MOON_REMOTE_TOOLS`）进入远程模式：
+**事件环不动**，内置工具的定义与执行搬进一个独立的工具宿主进程（TCP 行协议，
+协议形状与扩展宿主一致）。路由链是「扩展名册 → 远程名册 → 本地执行」—— 三个
+执行位置共用同一条 effect，中断 / 进度 / 结果语义完全一致。
+
+- **握手**：连接上的第一条消息是宿主的 `ready` 注册表（名字 / 描述 / 参数
+  schema），它就是发给模型的工具声明；随后 pi-moon 发 `hello` 把会话元数据
+  （session id / provider / model）交给宿主注入工具环境变量。
+- **执行**：`{"op":"call"}` 一来一回，结果按 pi 形状折叠（与扩展工具共用同一份
+  `outcome_of`）；无重连、无超时 —— 失败折成 `is_error` 的结果，环照常走。
+- **启动失败**：连不上 / 握手失败直接退出（stderr `[rtools]` 前缀），不静默退回
+  本地工具 —— 模型声明与真实可执行的必须一致。
+- **信任边界（v1）**：明文 TCP，宿主默认只监听 localhost；跨机部署走 SSH 隧道
+  或可信网络。`-t` / `-xt` / `--no-tools` 与横幅的完整开关语义见 #6。
+
+实现：`core/rtools`（客户端）+ `core/sys` 的 TCP 传输；协议本体在 `core/rpc`。
+
 ## 工具清单
 
 名字、描述、参数 schema 与 pi 的 `BUILTIN_TOOL_NAMES` 一致：

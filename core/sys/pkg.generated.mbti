@@ -5,6 +5,7 @@ import {
   "moonbitlang/async",
   "moonbitlang/async/pipe",
   "moonbitlang/async/process",
+  "moonbitlang/async/socket",
   "moonbitlang/core/debug",
 }
 
@@ -56,6 +57,8 @@ pub async fn spawn_session(String, Array[String], extra_env? : Map[String, Strin
 pub fn stdin_is_tty() -> Bool
 
 pub fn stdout_is_tty() -> Bool
+
+pub async fn tcp_connect(String, Int32) -> TcpConn raise SysError
 
 pub async fn tmpdir(String) -> String raise SysError
 
@@ -118,6 +121,13 @@ pub(all) struct Session {
 pub fn Session::close(Self) -> Unit
 pub async fn Session::read_some(Self, max_len? : Int32) -> Bytes?
 pub async fn Session::write(Self, String) -> Unit raise SysError
+
+pub(all) struct TcpConn {
+  conn : @socket.Tcp
+}
+pub fn TcpConn::close(Self) -> Unit
+pub async fn TcpConn::read_some(Self, max_len? : Int32) -> Bytes?
+pub async fn TcpConn::write(Self, String) -> Unit raise SysError
 
 // Type aliases
 

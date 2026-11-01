@@ -1,0 +1,39 @@
+// 远程工具客户端（RemoteReActAgent）：连上工具宿主（TCP 行协议），把注册表
+// 变成模型声明，把每次调用变成一次 RPC 往返。
+//
+// 协议本体在 core/rpc；这一层只剩：
+//   - 「TCP 连接 → 字节双工」的适配（与扩展宿主的 stdio 适配同形）；
+//   - `ready` 注册表握手（名字 / 描述 / 参数 schema）+ `hello` 会话元数据；
+//   - `call` 载荷拼装与 pi 形状结果的折叠（与扩展宿主共用 `@tools.outcome_of`）。
+//
+// 路由（扩展名册 → 远程名册 → 本地）在 provider 的 run_tools effect 里；
+// 这里只是「远程名册」这个执行位置的实现。
+
+import {
+  "pi-moon/core/action",
+  "pi-moon/core/message",
+  "pi-moon/core/rpc",
+  "pi-moon/core/sys",
+  "pi-moon/core/tools",
+  "moonbitlang/async",
+  "moonbitlang/core/json",
+}
+
+supported_targets = "js+native"
+
+warnings = "-79-67"
+
+import {
+  "pi-moon/core/common",
+  "pi-moon/core/provider",
+  "pi-moon/core/runtime",
+  "pi-moon/core/state",
+  "moonbitlang/async/fs",
+} for "wbtest"
+
+// 假宿主要真 TCP 与 node 子进程，测试只在 native 上跑。
+options(
+  targets: {
+    "rtools_wbtest.mbt": [ "native" ],
+  },
+)
