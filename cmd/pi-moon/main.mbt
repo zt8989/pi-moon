@@ -1136,7 +1136,20 @@ async fn run(args : CliArgs) -> Unit {
     Some(session) =>
       Some({
         owns: fn(name) { session.owns(name) },
-        run: async fn(call) { session.call_tool(call) },
+        run: async fn(call) {
+          let outcome = session.call_tool(call)
+          // 故障诊断（含宿主噪音行）进 stderr：会话文件与轨迹记的是结果，
+          // 逐行诊断在这里；措辞里已带上宿主最近的噪音（console 之类）。
+          if outcome.is_error {
+            eprintln(
+              "[rtools] " +
+              call.name +
+              ": " +
+              first_line(@message.contents_text(outcome.content)),
+            )
+          }
+          outcome
+        },
       })
     None => None
   }

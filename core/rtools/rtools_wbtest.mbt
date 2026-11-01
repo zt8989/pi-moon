@@ -42,6 +42,8 @@ fn fake_host_script() -> String {
     #|    return;
     #|  }
     #|  if (MODE === "drop") {
+    #|    // 断线前留一行宿主自己的话 —— 客户端要把它当噪音收进诊断措辞。
+    #|    send(socket, { event: "log", level: "log", text: "[fake] dying" });
     #|    socket.destroy();
     #|    return;
     #|  }
@@ -790,5 +792,246 @@ async test "tools.changed：换集后执行侧立刻生效，远程吃同一套�
   assert_eq(tool_results.length(), 2)
   assert_true(tool_results[1].is_error)
   assert_true(@message.contents_text(tool_results[1].content).contains("未知工具"))
+  session.close()
+}
+
+// ─── 整环故障：连接死在会话中途 ─────────────────────────────────────────────
+//
+// 行为契约（票 #4）：当前调用折成 is_error 的 toolResult，之后调用立刻失败，
+// 环照常走到 idle，会话不判死、不重连、无超时；路由链其余部分（本地 / 扩展）
+// 照常。假 LLM 假装看到工具错误后自己收尾 —— 消息序列保持合法。
+
+///|
+/// 声明清单带一个扩展工具（故障测试里断言它不受宿主故障影响）。
+fn with_ext(
+  definitions : Array[@action.PromptToolDefinition],
+) -> Array[@action.PromptToolDefinition] {
+  definitions.push({ name: "ext_tool", description: "扩展的", parameters: "{}", })
+  definitions
+}
+
+///|
+/// 故障剧本的假 LLM：偶数轮发一批工具调用，奇数轮照着工具结果收工。
+fn failure_table(
+  batches~ : Array[Array[String]] = [[], []],
+  remote~ : @provider.RemoteExecutor,
+  external~ : @provider.ExternalTools?,
+) -> @runtime.EffectTable {
+  let round = Ref(0)
+  {
+    run_agent: async fn(_state, dispatch) {
+      dispatch.send(@action.LlmStarted)
+      let this_round = round.val
+      round.val = round.val + 1
+      if this_round % 2 == 0 {
+        let names = match batches.get(this_round / 2) {
+          Some(names) => names
+          None => []
+        }
+        let content : Array[@message.Content] = [@message.Text("调工具。")]
+        for index, name in names {
+          content.push(
+            @message.ToolCallBlock({
+              id: "f-" + this_round.to_string() + "-" + index.to_string(),
+              name,
+              arguments: if name == "read" { "{\"path\":\"fallback.txt\"}" } else { "{}" },
+            }),
+          )
+        }
+        dispatch.send(
+          @action.LlmDone({
+            message: {
+              content,
+              stop_reason: "toolUse",
+              error_message: None,
+              usage: None,
+              timestamp: 0L,
+            },
+            node_id: None,
+          }),
+        )
+      } else {
+        dispatch.send(
+          @action.LlmDone({
+            message: {
+              content: [@message.Text("收工。")],
+              stop_reason: "stop",
+              error_message: None,
+              usage: None,
+              timestamp: 0L,
+            },
+            node_id: None,
+          }),
+        )
+      }
+    },
+    run_tools: async fn(state, calls, dispatch) {
+      @provider.run_tools_with_hooks(
+        state,
+        calls,
+        dispatch,
+        @provider.noop_hooks(),
+        external?,
+        remote=remote,
+      )
+    },
+    run_compact: async fn(_, _) { () },
+  }
+}
+
+///|
+async test "整环故障：宿主报 fatal，当前调用折错误、环到 idle，下一轮立刻失败" {
+  if !rtools_node_available() {
+    return
+  }
+  let (io, session) = fake_session(mode="fatal")
+  defer io.close()
+  let remote_runner : @provider.RemoteExecutor = {
+    owns: fn(name) { session.owns(name) },
+    run: async fn(call) { session.call_tool(call) },
+  }
+  let tool_results : Array[@message.ToolResultPart] = []
+  let agent = @runtime.Agent::new(
+    @state.create_initial_state({
+      system_prompt: "故障测试",
+      provider_name: "fake",
+      model_id: "fake-1",
+      thinking_level: "off",
+      tool_names: [],
+      max_turns: None,
+      max_llm_attempts: 2,
+      llm_timeout_ms: 120000L,
+      session_id: "s-fatal",
+      cwd: ".",
+      trace: None,
+    }),
+    failure_table(
+      batches=[
+        ["fake_tool"],
+        ["fake_tool"],
+      ],
+      remote=remote_runner,
+      external=None,
+    ),
+    fn() { 0L },
+  )
+  agent.observe(action => {
+    match action {
+      @action.ToolResult(part) => tool_results.push(part)
+      _ => ()
+    }
+  })
+  agent.send(
+    @action.PromptInit({
+      system_prompt: "故障测试",
+      tools: session.definitions_for(["fake_tool"]),
+    }),
+  )
+  // 第一轮：调用正撞上宿主报 fatal —— 折成 is_error，环照常走到 idle。
+  agent.send(@action.UserMessage({ text: "第一批", content: [], }))
+  assert_eq(agent.state.phase, @common.Idle)
+  assert_eq(agent.state.messages.length(), 4)
+  assert_eq(agent.state.messages[2].role(), "toolResult")
+  assert_eq(tool_results.length(), 1)
+  assert_true(tool_results[0].is_error)
+  assert_true(@message.contents_text(tool_results[0].content).contains("boom-from-host"))
+  // 第二轮：对已死会话再调用 —— 立刻失败（不挂死、不重连），环照样 idle。
+  agent.send(@action.UserMessage({ text: "第二批", content: [], }))
+  assert_eq(agent.state.phase, @common.Idle)
+  assert_eq(tool_results.length(), 2)
+  assert_true(tool_results[1].is_error)
+  assert_true(@message.contents_text(tool_results[1].content).contains("已经退出"))
+  assert_true(session.rpc.is_dead())
+  session.close()
+}
+
+///|
+async test "整环故障：宿主断线后，远程失败而本地与扩展工具照常" {
+  if !rtools_node_available() {
+    return
+  }
+  let (io, session) = fake_session(mode="drop")
+  defer io.close()
+  let remote_runner : @provider.RemoteExecutor = {
+    owns: fn(name) { session.owns(name) },
+    run: async fn(call) { session.call_tool(call) },
+  }
+  let ext_runner : @provider.ExternalTools = {
+    owns: fn(name) { name == "ext_tool" },
+    run: async fn(call) {
+      { content: [@message.Text("EXT:" + call.name)], is_error: false, }
+    },
+    emit: async fn(_, _) { () },
+  }
+  let tool_results : Array[@message.ToolResultPart] = []
+  let agent = @runtime.Agent::new(
+    @state.create_initial_state({
+      system_prompt: "故障测试",
+      provider_name: "fake",
+      model_id: "fake-1",
+      thinking_level: "off",
+      tool_names: [],
+      max_turns: None,
+      max_llm_attempts: 2,
+      llm_timeout_ms: 120000L,
+      session_id: "s-drop",
+      cwd: "_build/rtools-e2e",
+      trace: None,
+    }),
+    failure_table(
+      batches=[
+        ["fake_tool"],
+        ["fake_tool", "read", "ext_tool"],
+      ],
+      remote=remote_runner,
+      external=Some(ext_runner),
+    ),
+    fn() { 0L },
+  )
+  agent.observe(action => {
+    match action {
+      @action.ToolResult(part) => tool_results.push(part)
+      _ => ()
+    }
+  })
+  // read 不在假宿主注册表里（宿主只报 fake_tool）——本地执行位要真的能跑，
+  // 就得像「恢复的旧会话」那样把它声明进来。
+  let declared = with_ext(session.definitions_for(["fake_tool"]))
+  declared.push({ name: "read", description: "本地的", parameters: "{}", })
+  agent.send(@action.PromptInit({ system_prompt: "故障测试", tools: declared, }))
+  // 本地 read 的证据文件：目录自建（不能指望并行的测试顺手建）。
+  @fs.mkdir("_build/rtools-e2e", recursive=true) catch { _ => () }
+  @sys.write_text("_build/rtools-e2e/fallback.txt", "本地照常") catch { _ => () }
+  // 第一轮：调用中途对端断开 —— 折成 is_error（诊断带宿主噪音行），环到 idle。
+  agent.send(@action.UserMessage({ text: "第一批", content: [], }))
+  assert_eq(agent.state.phase, @common.Idle)
+  // 消息序列合法：user / assistant(工具调用) / toolResult / assistant。
+  assert_eq(agent.state.messages.length(), 4)
+  assert_eq(agent.state.messages[2].role(), "toolResult")
+  assert_eq(tool_results.length(), 1)
+  assert_true(tool_results[0].is_error)
+  assert_true(@message.contents_text(tool_results[0].content).contains("提前退出"))
+  // 宿主断线前自己说的那行话进了诊断措辞（噪音行跟着 PeerClosed 走）。
+  assert_true(@message.contents_text(tool_results[0].content).contains("[fake] dying"))
+  // 第二轮：已死远程立刻失败，本地 read 与扩展工具照常 —— 路由链其余部分不受影响。
+  agent.send(@action.UserMessage({ text: "第二批", content: [], }))
+  assert_eq(agent.state.phase, @common.Idle)
+  // 第二轮消息：user / assistant(3 个调用) / toolResult×3 / assistant —— 序列合法。
+  assert_eq(agent.state.messages.length(), 10)
+  assert_eq(agent.state.messages[4].role(), "user")
+  assert_eq(agent.state.messages[5].role(), "assistant")
+  assert_eq(agent.state.messages[6].role(), "toolResult")
+  assert_eq(agent.state.messages[7].role(), "toolResult")
+  assert_eq(agent.state.messages[8].role(), "toolResult")
+  assert_eq(agent.state.messages[9].role(), "assistant")
+  assert_eq(tool_results.length(), 4)
+  assert_true(tool_results[1].is_error)
+  assert_true(@message.contents_text(tool_results[1].content).contains("已经退出"))
+  let local_text = @message.contents_text(tool_results[2].content)
+  // assert_eq 打头：失败时能看到 read 折回来的实际错误文本。
+  assert_eq(local_text, "本地照常")
+  assert_false(tool_results[2].is_error)
+  assert_eq(@message.contents_text(tool_results[3].content), "EXT:ext_tool")
+  assert_false(tool_results[3].is_error)
   session.close()
 }
