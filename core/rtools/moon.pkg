@@ -29,6 +29,7 @@ import {
   "pi-moon/core/runtime",
   "pi-moon/core/state",
   "moonbitlang/async/fs",
+  "moonbitlang/core/random",
 } for "wbtest"
 
 // 假宿主要真 TCP 与 node 子进程，测试只在 native 上跑。

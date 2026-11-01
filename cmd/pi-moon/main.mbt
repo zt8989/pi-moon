@@ -749,6 +749,7 @@ fn build_banner(
   extension_labels : Array[String],
   diagnostics : Array[String],
   system_prompt : String,
+  remote_banner~ : String?,
 ) -> Array[String] {
   let home = match @env.get_env_vars().get("USERPROFILE") {
     Some(home) => home
@@ -803,6 +804,16 @@ fn build_banner(
   }
   if !extension_labels.is_empty() {
     blocks.push("[Extensions] " + extension_labels.join(", "))
+  }
+  // 远程模式：来源地址 + 当次生效的远程工具清单（与 PromptInit 同源的那份）。
+  match remote_banner {
+    Some(text) => {
+      if !blocks.is_empty() {
+        blocks.push("")
+      }
+      blocks.push("[Remote tools] " + text)
+    }
+    None => ()
   }
   if !diagnostics.is_empty() {
     if !blocks.is_empty() {
@@ -958,27 +969,21 @@ async fn run(args : CliArgs) -> Unit {
   }
   // 退出前把远程会话收掉：与扩展宿主的 defer 同一盖法。
   defer close_remote(remote)
-  // 新会话的声明清单：本地模式来自内置定义，远程模式来自宿主注册表
-  // （`--no-tools` / `--exclude-tools` 对两边的「关」语义一致 —— 开关的完整
-  // 语义（`-t` 替换 / settings.defaultTools / REPL `/tools`）见 #6）。
-  let base_definitions : Array[@action.PromptToolDefinition] = match remote {
-    Some(session) => {
-      let out : Array[@action.PromptToolDefinition] = []
-      if !args.no_tools {
-        let excluded = match args.exclude_tools {
-          Some(list) => split_tool_list(list)
-          None => []
-        }
-        for definition in session.definitions {
-          if !excluded.contains(definition.name) {
-            out.push(definition)
-          }
-        }
-      }
-      out
+  // `/tools` 换集与启动选择共用的声明源：选择规则、差额记账（tools.changed）
+  // 与启用检查全部复用现有机制，唯一的变化是查哪张表 —— 本地内置注册表 /
+  // 远程宿主注册表。
+  let tool_lookup : (Array[String]) -> Array[@action.PromptToolDefinition] =
+    match remote {
+      Some(session) => fn(names) { session.definitions_for(names) }
+      None => fn(names) { @tools.definitions_for(names) }
     }
-    None => @tools.definitions_for(fallback_tool_names)
-  }
+  // 新会话的声明清单：选择规则（`-t` 替换 / settings.defaultTools 的 +/- /
+  // `--no-tools` / `--exclude-tools`）两种模式共用同一份（`selected_tools`，
+  // 即上面的 `fallback_tool_names`），只换**声明来源**（见 `tool_lookup`；
+  // 查表口径与本地逐条一致，见 `RemoteTools::definitions_for`）。
+  let base_definitions : Array[@action.PromptToolDefinition] = tool_lookup(
+    fallback_tool_names,
+  )
   // 远程工具没有本地 snippet（prompt_snippet 描述的是本地执行细节）：名字与
   // 描述照扩展工具的口径进 system prompt。注意 `with_ext_tools` 是**原地**
   // 追加 —— 这里必须给副本，否则 ext_tools 会被推进声明清单两次。
@@ -1044,6 +1049,24 @@ async fn run(args : CliArgs) -> Unit {
   let active_tool_names : Array[String] = []
   for tool in current_tools {
     active_tool_names.push(tool.name)
+  }
+  // `[Remote tools]` 横幅段：地址 + **当前声明**里归远程注册表的那部分 ——
+  // 恢复的会话以恢复的声明为准，不是启动选择（新会话两者相同）。
+  let remote_banner : String? = match remote {
+    Some(session) => {
+      let names : Array[String] = []
+      for tool in current_tools {
+        if session.owns(tool.name) {
+          names.push(tool.name)
+        }
+      }
+      Some(
+        session.address +
+        " · " +
+        (if names.is_empty() { "无" } else { names.join(", ") }),
+      )
+    }
+    None => None
   }
   // 界面状态要在 hooks **之前**建：Esc 的中断标志就住在它里面。
   let tui_mode = wants_tui(args)
@@ -1265,6 +1288,7 @@ async fn run(args : CliArgs) -> Unit {
           ext_startup.labels,
           skill_registry.diagnostics,
           prompt_data.system_prompt,
+          remote_banner=remote_banner,
         )
         run_tui(
           agent,
@@ -1280,6 +1304,7 @@ async fn run(args : CliArgs) -> Unit {
             None => ""
           },
           skill_registry.skills,
+          tool_lookup,
         )
         return
       }
@@ -1356,7 +1381,7 @@ async fn run(args : CliArgs) -> Unit {
         } else {
           split_tool_list(list)
         }
-        let tools = with_ext_tools(@tools.definitions_for(names), ext_tools)
+        let tools = with_ext_tools(tool_lookup(names), ext_tools)
         let applied : Array[String] = []
         for tool in tools {
           applied.push(tool.name)

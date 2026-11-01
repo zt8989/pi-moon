@@ -32,6 +32,7 @@ pub(all) struct RemoteTools {
 pub async fn RemoteTools::call_tool(Self, @message.ToolCall) -> @tools.ToolOutcome
 pub fn RemoteTools::close(Self) -> Unit
 pub async fn RemoteTools::connect(String, Int32, RemoteSessionMeta) -> Self raise RemoteError
+pub fn RemoteTools::definitions_for(Self, Array[String]) -> Array[@action.PromptToolDefinition]
 pub fn RemoteTools::owns(Self, String) -> Bool
 
 // Type aliases

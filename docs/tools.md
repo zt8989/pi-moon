@@ -32,14 +32,21 @@ reducer ──► Cmd::RunTools(calls)
 执行位置共用同一条 effect，中断 / 进度 / 结果语义完全一致。
 
 - **握手**：连接上的第一条消息是宿主的 `ready` 注册表（名字 / 描述 / 参数
-  schema），它就是发给模型的工具声明；随后 pi-moon 发 `hello` 把会话元数据
-  （session id / provider / model）交给宿主注入工具环境变量。
+  schema）；pi-moon 随后发 `hello` 把会话元数据（session id / provider /
+  model）交给宿主注入工具环境变量。
+- **开关与本地同口径**：`-t` / settings `defaultTools`（替换 / `+name` /
+  `-name`）/ `--no-tools` / `--exclude-tools` / REPL `/tools <list>`（`none`
+  全关）作用于**同一份选择规则**，只换声明来源 —— 本地查内置注册表，远程查
+  宿主注册表（输出按注册表顺序、未知名字忽略）。`/tools` 换集走同一条
+  `tools.changed`：下一次请求只带差额声明，执行侧立刻生效（未声明的名字硬调
+  得「未知工具」）；会话落盘格式不变，恢复后声明状态接得上。
 - **执行**：`{"op":"call"}` 一来一回，结果按 pi 形状折叠（与扩展工具共用同一份
   `outcome_of`）；无重连、无超时 —— 失败折成 `is_error` 的结果，环照常走。
-- **启动失败**：连不上 / 握手失败直接退出（stderr `[rtools]` 前缀），不静默退回
-  本地工具 —— 模型声明与真实可执行的必须一致。
+- **启动**：连不上 / 握手失败直接退出（stderr `[rtools]` 前缀），不静默退回
+  本地工具 —— 模型声明与真实可执行的必须一致。TUI 启动横幅出 `[Remote tools]`
+  段：来源地址 + 当次生效的远程工具清单。
 - **信任边界（v1）**：明文 TCP，宿主默认只监听 localhost；跨机部署走 SSH 隧道
-  或可信网络。`-t` / `-xt` / `--no-tools` 与横幅的完整开关语义见 #6。
+  或可信网络。
 
 实现：`core/rtools`（客户端）+ `core/sys` 的 TCP 传输；协议本体在 `core/rpc`。
 

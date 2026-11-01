@@ -103,11 +103,18 @@ fn fake_host_script() -> String {
 
 ///|
 /// 起假宿主，等它报出端口。端口文件放 `_build/` 下（tools_wbtest 同款），
-/// 文件名带时间戳 —— 读到旧文件等于连一个已经死掉的服务。
-/// 交回（进程、端口、元数据文件路径）—— 元数据路径由这里生成，测试原样去读。
+/// 文件名带时间戳**与随机分量** —— 只有时间戳的话，两个测试进程同一毫秒
+/// 起同模式的宿主会拿到同一个文件，借到对方的连接，宿主一退调用就被掐断
+/// （跨包并行时真闪失败过）。交回（进程、端口、元数据文件路径）—— 元数据
+/// 路径由这里生成，测试原样去读。
 async fn fake_host(mode~ : String = "ok") -> (@sys.Session, Int, String) {
   let dir = "_build/rtools-e2e"
-  let stamp = @sys.now().to_string() + "-" + mode
+  let random = @random.Rand::Rand()
+  let stamp = mode +
+    "-" +
+    @sys.now().to_string() +
+    "-" +
+    random.int(limit=1000000000).to_string()
   let port_file = dir + "/port-" + stamp
   let meta_file = dir + "/meta-" + stamp
   let io = @sys.spawn_session(
@@ -617,4 +624,171 @@ async test "整环：send(用户消息) → 工具经 RPC 执行 → tool.batch.
   // 批次收口恰好一次。
   assert_eq(batch_done.val, 1)
   remote.close()
+}
+
+// ─── 开关语义：注册表查表与本地 definitions_for 同口径 ──────────────────────
+//
+// 选择规则（-t 替换 / defaultTools 的 +/- / none 全关）在 resolve_tool_selection，
+// 已有本地口径测试；这层只钉「拿名字清单查远程注册表」的口径 —— 必须与
+// @tools.definitions_for 逐条一致，/tools 与启动选择才能只换声明源。
+
+///|
+fn definition_names(definitions : Array[@action.PromptToolDefinition]) -> Array[String] {
+  let out : Array[String] = []
+  for definition in definitions {
+    out.push(definition.name)
+  }
+  out
+}
+
+///|
+/// 不联网的注册表会话：字段是 pub(all)，直接手造 —— 选择规则与 RPC 无关，
+/// 不值得为此起 node。
+fn registry_session() -> RemoteTools {
+  let dead : @rpc.Duplex = {
+    read: async fn(_max) { Ok(None) },
+    write: async fn(_text) { Ok(()) },
+    close: fn() { () },
+  }
+  {
+    address: "registry:test",
+    rpc: @rpc.Session::new(dead),
+    definitions: [
+      { name: "read", description: "读", parameters: "{}", },
+      { name: "bash", description: "跑", parameters: "{}", },
+      { name: "grep", description: "搜", parameters: "{}", },
+    ],
+  }
+}
+
+///|
+test "definitions_for：注册表顺序 / 未知忽略 / none 全关 / 前缀按未知" {
+  let registry = registry_session()
+  // 替换：只留选中的，顺序跟注册表走（与本地 definitions_for 一致）。
+  assert_eq(
+    definition_names(registry.definitions_for(["grep", "read"])),
+    ["read", "grep"],
+  )
+  // 未知名字忽略。
+  assert_eq(
+    definition_names(registry.definitions_for(["bash", "nope"])),
+    ["bash"],
+  )
+  // none 全关。
+  assert_eq(registry.definitions_for([]).length(), 0)
+  // +/- 前缀不在这层处理（那是 resolve_tool_selection 的事）：带前缀的名字
+  // 按未知处理 —— 与本地 definitions_for 行为一致。
+  assert_eq(registry.definitions_for(["+read"]).length(), 0)
+  assert_eq(registry.definitions_for(["-bash"]).length(), 0)
+}
+
+///|
+async test "tools.changed：换集后执行侧立刻生效，远程吃同一套启用检查" {
+  if !rtools_node_available() {
+    return
+  }
+  let (io, session) = fake_session()
+  defer io.close()
+  // 假 LLM：第 0 / 2 轮发工具调用，第 1 / 3 轮收工 —— 两批之间换一次集。
+  let round = Ref(0)
+  let tool_results : Array[@message.ToolResultPart] = []
+  let remote_runner : @provider.RemoteExecutor = {
+    owns: fn(name) { session.owns(name) },
+    run: async fn(call) { session.call_tool(call) },
+  }
+  let agent = @runtime.Agent::new(
+    @state.create_initial_state({
+      system_prompt: "换集测试",
+      provider_name: "fake",
+      model_id: "fake-1",
+      thinking_level: "off",
+      tool_names: [],
+      max_turns: None,
+      max_llm_attempts: 2,
+      llm_timeout_ms: 120000L,
+      session_id: "s-switch",
+      cwd: ".",
+      trace: None,
+    }),
+    {
+      run_agent: async fn(_state, dispatch) {
+        dispatch.send(@action.LlmStarted)
+        let this_round = round.val
+        round.val = round.val + 1
+        if this_round % 2 == 0 {
+          dispatch.send(
+            @action.LlmDone({
+              message: {
+                content: [
+                  @message.Text("调。"),
+                  @message.ToolCallBlock({
+                    id: "call-" + this_round.to_string(),
+                    name: "fake_tool",
+                    arguments: "{\"text\":\"第" + this_round.to_string() + "批\"}",
+                  }),
+                ],
+                stop_reason: "toolUse",
+                error_message: None,
+                usage: None,
+                timestamp: 0L,
+              },
+              node_id: None,
+            }),
+          )
+        } else {
+          dispatch.send(
+            @action.LlmDone({
+              message: {
+                content: [@message.Text("收工。")],
+                stop_reason: "stop",
+                error_message: None,
+                usage: None,
+                timestamp: 0L,
+              },
+              node_id: None,
+            }),
+          )
+        }
+      },
+      run_tools: async fn(state, calls, dispatch) {
+        @provider.run_tools_with_hooks(
+          state,
+          calls,
+          dispatch,
+          @provider.noop_hooks(),
+          remote=remote_runner,
+        )
+      },
+      run_compact: async fn(_, _) { () },
+    },
+    fn() { 0L },
+  )
+  agent.observe(action => {
+    match action {
+      @action.ToolResult(part) => tool_results.push(part)
+      _ => ()
+    }
+  })
+  // 声明来自注册表（经 definitions_for 的选择口径）。
+  agent.send(
+    @action.PromptInit({
+      system_prompt: "换集测试",
+      tools: session.definitions_for(["fake_tool"]),
+    }),
+  )
+  agent.send(@action.UserMessage({ text: "第一批", content: [], }))
+  assert_eq(tool_results.length(), 1)
+  // assert_eq 而不是 assert_false：失败时能看到宿主折回来的实际错误文本。
+  assert_eq(@message.contents_text(tool_results[0].content), "echo:第0批")
+  assert_false(tool_results[0].is_error)
+  // REPL /tools none 的等价动作：当前声明清空 —— 注册表还拥有这个名字，
+  // 但没声明给模型，硬调只得「未知工具」。
+  agent.send(@action.ToolsChanged([]))
+  assert_eq(agent.state.prompt.tools.length(), 0)
+  agent.send(@action.UserMessage({ text: "第二批", content: [], }))
+  // 收工轮不产生 ToolResult：两批各一条，第二条是「未知工具」。
+  assert_eq(tool_results.length(), 2)
+  assert_true(tool_results[1].is_error)
+  assert_true(@message.contents_text(tool_results[1].content).contains("未知工具"))
+  session.close()
 }

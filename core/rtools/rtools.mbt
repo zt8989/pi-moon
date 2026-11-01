@@ -252,6 +252,23 @@ pub fn RemoteTools::owns(self : RemoteTools, tool_name : String) -> Bool {
 }
 
 ///|
+/// 按名字清单从注册表里挑定义 —— 与 `@tools.definitions_for` 同一口径：
+/// 输出按**注册表顺序**，选择里多出的未知名字忽略，重复的名字不产生重复
+/// 定义。/tools 与启动选择都走这里，开关规则才能「只换声明源」。
+pub fn RemoteTools::definitions_for(
+  self : RemoteTools,
+  names : Array[String],
+) -> Array[@action.PromptToolDefinition] {
+  let out : Array[@action.PromptToolDefinition] = []
+  for definition in self.definitions {
+    if names.contains(definition.name) {
+      out.push(definition)
+    }
+  }
+  out
+}
+
+///|
 /// 调一次远程工具。失败折成 `is_error` 的结果 —— 与内置 / 扩展工具同口径：
 /// 每个 toolCall 都必须落一条结果，否则下一轮请求就是非法消息序列。
 pub async fn RemoteTools::call_tool(

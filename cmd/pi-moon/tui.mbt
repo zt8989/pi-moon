@@ -261,6 +261,7 @@ pub async fn run_tui(
   session_path : String,
   session_id : String,
   skills : Array[@context.Skill],
+  tool_lookup : (Array[String]) -> Array[@action.PromptToolDefinition],
 ) -> Unit {
   let (width, height) = @io.get_terminal_size()
   tui.width = width
@@ -289,7 +290,7 @@ pub async fn run_tui(
     @async.with_task_group(async fn(group) {
       group.spawn_bg(async fn() { tui_render_loop(app, tui, agent) })
       group.spawn_bg(async fn() { tui_key_loop(agent, tui) })
-      tui_driver(agent, tui, config, compact_enabled, skills)
+      tui_driver(agent, tui, config, compact_enabled, skills, tool_lookup)
     })
     None
   } catch {
@@ -622,6 +623,7 @@ async fn tui_driver(
   config : @provider.PiConfig,
   compact_enabled : Bool,
   skills : Array[@context.Skill],
+  tool_lookup : (Array[String]) -> Array[@action.PromptToolDefinition],
 ) -> Unit {
   while !tui.quit {
     if tui.take_back {
@@ -677,7 +679,9 @@ async fn tui_driver(
         persist_tui(agent, tui)
       }
       Tools(names) => {
-        let definitions = @tools.definitions_for(names)
+        // 声明源由装配决定（本地内置注册表 / 远程宿主注册表）；选择与差额
+        // 记账（tools.changed）全部复用。
+        let definitions = tool_lookup(names)
         agent.send(@action.ToolsChanged(definitions)) catch {
           err => set_notice(tui, "error: " + err.to_string())
         }

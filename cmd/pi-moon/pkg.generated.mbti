@@ -79,7 +79,7 @@ pub fn render_editor(String, Int32, Int32) -> String
 
 pub fn rule(Int32) -> String
 
-pub async fn run_tui(@runtime.Agent, TuiState, @provider.PiConfig, Bool, String, String, Array[@context.Skill]) -> Unit
+pub async fn run_tui(@runtime.Agent, TuiState, @provider.PiConfig, Bool, String, String, Array[@context.Skill], (Array[String]) -> Array[@action.PromptToolDefinition]) -> Unit
 
 pub fn shorten_home(String, String) -> String
 

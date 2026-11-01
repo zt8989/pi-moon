@@ -1112,6 +1112,7 @@ test "build_banner：四段顺序、字典序、段间空行（pi 的启动画�
     [],
     "<project_context path=\"/tmp/proj/AGENTS.md\">" +
     "<name>aaa</name><name>zzz</name>",
+    remote_banner=None,
   )
   // 段顺序照 pi：Context → Skills → Prompts → Extensions，段间一个空行。
   assert_eq(
@@ -1129,6 +1130,21 @@ test "build_banner：四段顺序、字典序、段间空行（pi 的启动画�
 }
 
 ///|
+test "build_banner：远程模式出 [Remote tools] 段（地址 + 生效清单）" {
+  let banner = build_banner(
+    "/tmp/proj",
+    [],
+    [],
+    [],
+    [],
+    [],
+    "",
+    remote_banner=Some("127.0.0.1:8787 · read, bash"),
+  )
+  assert_eq(banner, ["[Remote tools] 127.0.0.1:8787 · read, bash"])
+}
+
+///|
 test "build_banner：没有扩展与 prompt 时不出现对应段" {
   let banner = build_banner(
     "/tmp/proj",
@@ -1138,6 +1154,7 @@ test "build_banner：没有扩展与 prompt 时不出现对应段" {
     [],
     ["重名：skill \"x\""],
     "",
+    remote_banner=None,
   )
   assert_eq(banner, ["[Skill conflicts] 重名：skill \"x\""])
 }

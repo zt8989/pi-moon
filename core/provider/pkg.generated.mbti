@@ -138,6 +138,8 @@ pub(all) struct ResolvedProvider {
 pub fn ResolvedProvider::describe(Self) -> String
 pub fn ResolvedProvider::endpoint_settings(Self, String) -> Settings
 
+type RouteTarget
+
 pub(all) struct Settings {
   mut api_key : String
   mut base_url : String
