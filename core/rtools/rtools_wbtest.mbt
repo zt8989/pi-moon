@@ -1035,3 +1035,251 @@ async test "整环故障：宿主断线后，远程失败而本地与扩展工�
   assert_false(tool_results[3].is_error)
   session.close()
 }
+
+// ─── 真工具宿主：bun + pi 的 TS 工具 ────────────────────────────────────────
+//
+// 缺 bun 或缺 pi 装机时整组跳过（环境缺失，不是回归）。本机验证用环境变量：
+//   PI_MOON_BUN=<bun.exe>  PI_PI_MODULES=<含 @earendil-works/pi-coding-agent
+//   的 node_modules>
+
+///|
+async test "tool_host_script_source 与 host/tool_host.mjs 同步" {
+  // 生成器：node scripts/embed-host.mjs。这份测试保证嵌进二进制的副本不漂移。
+  let on_disk = @sys.read_text("core/rtools/host/tool_host.mjs") catch { _ => return }
+  let normalized = on_disk.replace_all(old="\r", new="")
+  let expected = if normalized.has_suffix("\n") {
+    normalized[:normalized.length() - 1].to_owned()
+  } else {
+    normalized
+  }
+  if tool_host_script_source != expected {
+    fail("tool_host_script.mbt 与 host/tool_host.mjs 不一致，跑 node scripts/embed-host.mjs")
+  }
+}
+
+///|
+/// 准备真宿主路径：bun 与 pi 装机缺一个就返回 None（调用方整组跳过）。
+///
+/// cwd 与缓存目录都放仓库内 `_build/`：这台机器上 async/fs 的 mkdir 一出
+/// 仓库目录就被拒（%TEMP% 的 mkdtemp 同病），而缓存的落点本来就该可配 ——
+/// `prepare_tool_host_paths` 收 `agent_dir~` 正是为此。
+async fn real_host_paths() -> (ToolHostPaths, String)? {
+  let random = @random.Rand::Rand()
+  let suffix = random.int(limit=1000000000).to_string()
+  let cwd = "_build/tool-host-e2e-" + suffix
+  let cache_dir = "_build/tool-host-cache-" + suffix
+  @fs.mkdir(cwd, recursive=true) catch { _ => () }
+  match prepare_tool_host_paths(cwd~, agent_dir=cache_dir) {
+    Some(paths) => Some((paths, cwd))
+    None => None
+  }
+}
+
+///|
+async fn start_real_host(paths : ToolHostPaths) -> ToolHostProcess {
+  let random = @random.Rand::Rand()
+  let port_file = "_build/tool-host-e2e/port-" +
+    @sys.now().to_string() +
+    "-" +
+    random.int(limit=1000000000).to_string()
+  @fs.mkdir("_build/tool-host-e2e", recursive=true) catch { _ => () }
+  ToolHostProcess::start(paths, port_file~) catch { error => fail(error.to_string()) }
+}
+
+///|
+/// 注册表名字排序（与内置八件套比对用）。逐 code unit 比 —— 这个工具链的
+/// `String::compare` 不对称（cmd/main.mbt 的 text_less 同款）。
+fn sorted_names(names : Array[String]) -> Array[String] {
+  fn less(a : String, b : String) -> Bool {
+    let la = a.length()
+    let lb = b.length()
+    let shared = if la < lb { la } else { lb }
+    for index in 0..<shared {
+      let ca = a[index]
+      let cb = b[index]
+      if ca != cb {
+        return ca < cb
+      }
+    }
+    la < lb
+  }
+  let out = names.copy()
+  let n = out.length()
+  for i in 0..<n {
+    for j in 0..<(n - 1 - i) {
+      if less(out[j + 1], out[j]) {
+        let t = out[j]
+        out[j] = out[j + 1]
+        out[j + 1] = t
+      }
+    }
+  }
+  out
+}
+
+///|
+test "真宿主的注册表名字与内置八件套一致（离线比对口径）" {
+  // 内置表的顺序与内容来自 core/tools；真宿主组在缺 bun 时跳过，
+  // 名单对齐这一层不依赖 bun —— 在这里钉住。
+  assert_eq(sorted_names(builtin_names_copy()).join(","), "bash,edit,find,grep,ls,powershell,read,write")
+}
+
+///|
+fn builtin_names_copy() -> Array[String] {
+  // @tools.builtin_tool_names 是 pub let（数组本体不可变语义上允许复制）。
+  let out : Array[String] = []
+  for name in @tools.builtin_tool_names {
+    out.push(name)
+  }
+  out
+}
+
+///|
+async test "真宿主：注册表=八件套，read 与 bash 真执行，PI_* 在宿主侧可见" {
+  let (paths, cwd) = match real_host_paths() {
+    Some(pair) => pair
+    None => return
+  }
+  let host = start_real_host(paths)
+  defer host.stop()
+  let session = RemoteTools::connect(
+    "127.0.0.1",
+    host.port,
+    { session_id: "s-real", provider: "prov", model: "mod" },
+  ) catch { error => fail(error.to_string()) }
+  // 注册表 = 内置八件套：名字集合一致，描述非空，schema 是合法 JSON 对象。
+  let registry_names : Array[String] = []
+  for definition in session.definitions {
+    registry_names.push(definition.name)
+    assert_false(definition.description.is_empty())
+    let schema = @json.parse(definition.parameters) catch { _ => abort("坏 schema：" + definition.name) }
+    assert_false(schema is Null)
+  }
+  assert_eq(
+    sorted_names(registry_names).join(","),
+    sorted_names(builtin_names_copy()).join(","),
+  )
+  assert_eq(registry_names.length(), 8)
+  // read 真执行：宿主 cwd 下写一个文件，read 按相对路径读回来。
+  @sys.write_text(cwd + "/hello.txt", "宿主读到了") catch { error => fail(error.to_string()) }
+  let read = session.call_tool({
+    id: "r1",
+    name: "read",
+    arguments: "{\"path\":\"hello.txt\"}",
+  })
+  assert_false(read.is_error)
+  assert_true(@message.contents_text(read.content).contains("宿主读到了"))
+  session.close()
+}
+
+///|
+async test "真宿主：两条并发连接独立，断一条宿主继续服务" {
+  let (paths, cwd) = match real_host_paths() {
+    Some(pair) => pair
+    None => return
+  }
+  let host = start_real_host(paths)
+  defer host.stop()
+  @sys.write_text(cwd + "/shared.txt", "第二连接也读得到") catch { error => fail(error.to_string()) }
+  let first = RemoteTools::connect(
+    "127.0.0.1",
+    host.port,
+    { session_id: "conn-a", provider: "p", model: "m" },
+  ) catch { error => fail(error.to_string()) }
+  let second = RemoteTools::connect(
+    "127.0.0.1",
+    host.port,
+    { session_id: "conn-b", provider: "p", model: "m" },
+  ) catch { error => fail(error.to_string()) }
+  // 两条连接各自独立完成调用（read 不依赖进程孵化，所有环境都能跑）。
+  let a = first.call_tool({ id: "a1", name: "read", arguments: "{\"path\":\"shared.txt\"}" })
+  assert_false(a.is_error)
+  assert_true(@message.contents_text(a.content).contains("第二连接也读得到"))
+  let b = second.call_tool({ id: "b1", name: "read", arguments: "{\"path\":\"shared.txt\"}" })
+  assert_false(b.is_error)
+  // PI_* 不串话：各自 hello 的 session id 只在自己的连接里可见（有可用
+  // shell 才跑 —— 本机 cygwin 病时这条退 powershell，都没有就跳过）。
+  match usable_shell_tool(first) {
+    Some((tool, command)) => {
+      let ea = first.call_tool({
+        id: "a2",
+        name: tool,
+        arguments: "{\"command\":\"" + command + "\"}",
+      })
+      assert_true(@message.contents_text(ea.content).contains("conn-a"))
+      let eb = second.call_tool({
+        id: "b2",
+        name: tool,
+        arguments: "{\"command\":\"" + command + "\"}",
+      })
+      assert_true(@message.contents_text(eb.content).contains("conn-b"))
+      assert_false(@message.contents_text(eb.content).contains("conn-a"))
+    }
+    None => println("skip: 没有可用的进程孵化 shell，PI_* 隔离断言略过")
+  }
+  // 断开第一条：宿主继续服务第二条（单连接断开不退宿主）。
+  first.close()
+  let after = second.call_tool({ id: "b3", name: "read", arguments: "{\"path\":\"shared.txt\"}" })
+  assert_false(after.is_error)
+  assert_true(@message.contents_text(after.content).contains("第二连接也读得到"))
+  second.close()
+}
+
+///|
+/// 找一个**能真的孵化进程**的 shell 工具：先探 bash；本机 cygwin 病（0xC0000022）
+/// 时退 powershell。两个都不可用就返回 None（测试跳过）。
+async fn usable_shell_tool(
+  session : RemoteTools,
+) -> (String, String)? {
+  let bash_probe = session.call_tool({
+    id: "probe-bash",
+    name: "bash",
+    arguments: "{\"command\":\"echo shell-ok\"}",
+  })
+  if !bash_probe.is_error &&
+    @message.contents_text(bash_probe.content).contains("shell-ok") {
+    return Some(("bash", "echo id=$PI_SESSION_ID"))
+  }
+  let ps_probe = session.call_tool({
+    id: "probe-ps",
+    name: "powershell",
+    arguments: "{\"command\":\"Write-Output shell-ok\"}",
+  })
+  if !ps_probe.is_error &&
+    @message.contents_text(ps_probe.content).contains("shell-ok") {
+    // PS 命令不带引号 —— 走 JSON 字符串拼参数时省一层转义。
+    return Some(("powershell", "Write-Output id=$env:PI_SESSION_ID"))
+  }
+  None
+}
+
+///|
+async test "真宿主：PI_* 会话元数据在宿主侧的进程执行里可见" {
+  let (paths, cwd) = match real_host_paths() {
+    Some(pair) => pair
+    None => return
+  }
+  let host = start_real_host(paths)
+  defer host.stop()
+  let session = RemoteTools::connect(
+    "127.0.0.1",
+    host.port,
+    { session_id: "s-real", provider: "prov-x", model: "mod-x" },
+  ) catch { error => fail(error.to_string()) }
+  let (tool, command) = match usable_shell_tool(session) {
+    Some(pair) => pair
+    None => {
+      println("skip: 没有可用的进程孵化 shell（bash / powershell 都不可用）")
+      session.close()
+      return
+    }
+  }
+  let call = session.call_tool({
+    id: "env-1",
+    name: tool,
+    arguments: "{\"command\":\"" + command + "\"}",
+  })
+  assert_false(call.is_error)
+  assert_true(@message.contents_text(call.content).contains("id=s-real"))
+  session.close()
+}

@@ -5,10 +5,14 @@ import {
   "pi-moon/core/action",
   "pi-moon/core/message",
   "pi-moon/core/rpc",
+  "pi-moon/core/sys",
   "pi-moon/core/tools",
 }
 
 // Values
+pub async fn prepare_tool_host_paths(cwd~ : String, agent_dir? : String, modules? : String) -> ToolHostPaths?
+
+pub let tool_host_script_source : String
 
 // Errors
 pub suberror RemoteError {
@@ -34,6 +38,22 @@ pub fn RemoteTools::close(Self) -> Unit
 pub async fn RemoteTools::connect(String, Int32, RemoteSessionMeta) -> Self raise RemoteError
 pub fn RemoteTools::definitions_for(Self, Array[String]) -> Array[@action.PromptToolDefinition]
 pub fn RemoteTools::owns(Self, String) -> Bool
+
+pub(all) struct ToolHostPaths {
+  bun : String
+  script : String
+  root : String
+  cwd : String
+  modules : String
+}
+
+pub(all) struct ToolHostProcess {
+  session : @sys.Session
+  mut port : Int32
+  mut diagnostics : String
+}
+pub async fn ToolHostProcess::start(ToolHostPaths, port_file~ : String, port? : Int32) -> Self raise RemoteError
+pub fn ToolHostProcess::stop(Self) -> Unit
 
 // Type aliases
 

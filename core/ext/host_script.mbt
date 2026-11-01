@@ -1,6 +1,6 @@
 // 由 scripts/embed-host.mjs 从 host/ext_host.mjs 生成，不要手改。
 //
-// 改宿主脚本的流程：改 host/ext_host.mjs → 跑 `node scripts/embed-host.mjs`
+// 改宿主脚本的流程：改 core/ext/host/ext_host.mjs → 跑 `node scripts/embed-host.mjs`
 // → 提交两份。moon test 里有同步测试兜底。
 
 ///|

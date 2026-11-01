@@ -48,10 +48,23 @@ reducer ──► Cmd::RunTools(calls)
 - **启动**：连不上 / 握手失败直接退出（stderr `[rtools]` 前缀），不静默退回
   本地工具 —— 模型声明与真实可执行的必须一致。TUI 启动横幅出 `[Remote tools]`
   段：来源地址 + 当次生效的远程工具清单。
+- **宿主部署**：常驻守护进程，bun 直接启动，不依赖 pi-moon 进程——
+
+  ```bash
+  bun core/rtools/host/tool_host.mjs --port 8787 --cwd <宿主工作区> \
+    --modules <pi 的 node_modules>
+  ```
+
+  `--modules` 可用环境变量 `PI_PI_MODULES` 指定（pi-moon 侧与扩展宿主同一条
+  解析逻辑：env 优先，再扫 pi 装机取版本号最大的那份）；手脚机器只需要 bun
+  和 pi 装机，**不需要任何模型密钥**。v1 只绑 127.0.0.1；`--managed` 供
+  pi-moon 拉起时使用（父进程关 stdin 宿主即退）。
 - **信任边界（v1）**：明文 TCP，宿主默认只监听 localhost；跨机部署走 SSH 隧道
   或可信网络。
 
-实现：`core/rtools`（客户端）+ `core/sys` 的 TCP 传输；协议本体在 `core/rpc`。
+实现：`core/rtools`（客户端 + 宿主拉起层）、宿主脚本 `core/rtools/host/tool_host.mjs`
+（经 `scripts/embed-host.mjs` 嵌进二进制，供测试与便利拉起）+ `core/sys` 的 TCP
+传输；协议本体在 `core/rpc`。
 
 ## 工具清单
 

@@ -88,7 +88,7 @@ fn bun_candidates(env : Map[String, String]) -> Array[String] {
 
 ///|
 /// 相对路径转绝对：宿主进程的工作目录是缓存目录，参数里带相对路径会解错。
-fn absolute(path : String) -> String {
+pub fn absolute(path : String) -> String {
   if path.is_empty() || path.has_prefix("/") || path[1:].has_prefix(":") {
     return path
   }
