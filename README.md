@@ -79,6 +79,13 @@ reducer 里没有一个 `await`、没有一个 `fetch`、也没有 while。真�
   Node API 可用，文件系统访问按 cwd / agent 目录 / 临时目录白名单卡。
   pi 官方 70 个单文件示例全部装载成功（见 [docs/extensions.md](docs/extensions.md)）。
 
+- **远程工具（RemoteReActAgent）**：`--remote-tools <host:port>` 把**内置工具的
+  执行**搬进一个独立的工具宿主守护进程（bun + pi 装机，TCP 行协议，与扩展宿主
+  同一套协议心智）。事件环不动 —— 模型声明来自宿主注册表，工具调用经 RPC 在
+  宿主侧按它自己的 cwd 真执行，开关全家桶（`-t` / `defaultTools` / `--no-tools` /
+  `/tools`）与本地同口径，失败折成 `is_error` 结果、环照常走。手脚机器只需要
+  bun 和 pi 装机，**不需要任何模型密钥**（见 [docs/remote-tools.md](docs/remote-tools.md)）。
+
 **还没有**（下一步逐步接）：Web 界面、扩展钩子的改写 / 阻断语义（现在只能「听见」
 不能「插手」）、扩展斜杠命令、TUI 的 POSIX 粘贴丢字 / 图片块占位
 （见 [docs/tui.md](docs/tui.md) 的「与 ela 的差距」，以及 [docs/extensions.md](docs/extensions.md)
@@ -111,6 +118,10 @@ moon run cmd/pi-moon -- -c -p "我刚才让你记住什么？"
 moon run cmd/pi-moon -- -i -s logs/today.jsonl  # -i 与不带参数同义（TUI）
 moon run cmd/pi-moon -- -i        # TUI 里 /tools 换工具；/compact 压缩上下文
 moon run cmd/pi-moon -- --no-session -p "..."
+
+# 远程工具：内置工具交给工具宿主执行（手脚机器只需 bun + pi 装机，无模型密钥）
+bun core/rtools/host/tool_host.mjs --port 8787 --cwd <宿主工作区>
+moon run cmd/pi-moon -- --remote-tools 127.0.0.1:8787 -p "读 README.md 的前 3 行"
 
 # 离线演示：假 provider / 假工具，看两棵轨迹树
 moon run cmd/main
