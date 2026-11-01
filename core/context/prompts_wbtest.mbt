@@ -80,3 +80,38 @@ async test "load_prompt_templates：目录不存在时静默为空" {
   assert_eq(templates.length(), 0)
   assert_eq(diagnostics.length(), 0)
 }
+
+///|
+async test "load_prompt_templates：包目录并入，本地赢同名" {
+  let root = prompts_root()
+  let agent = root + "/pkg-agent"
+  let cwd = root + "/pkg-project"
+  let pkg_prompts = root + "/pkg-dirs/prompts"
+  put_file(agent + "/prompts/council.md", "本地 council")
+  put_file(pkg_prompts + "/council.md", "包 council")
+  put_file(
+    pkg_prompts + "/review-loop.md",
+    "---\ndescription: 循环审查\n---\n正文",
+  )
+  let (templates, diagnostics) = load_prompt_templates(
+    cwd,
+    agent,
+    package_dirs=[pkg_prompts],
+  )
+  let names : Array[String] = []
+  for template in templates {
+    names.push(template.name)
+  }
+  assert_eq(names.join(","), "council,review-loop")
+  for template in templates {
+    if template.name == "council" {
+      assert_eq(template.scope, "user")
+      assert_true(template.path.contains("pkg-agent"))
+    }
+    if template.name == "review-loop" {
+      assert_eq(template.scope, "package")
+      assert_eq(template.description, "循环审查")
+    }
+  }
+  assert_true(diagnostics.any(fn(d) { d.contains("重名") && d.contains("council") }))
+}

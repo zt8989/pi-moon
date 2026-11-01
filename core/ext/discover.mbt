@@ -52,14 +52,62 @@ pub fn parent_dir(path : String) -> String {
 }
 
 ///|
+/// 目录式扩展的入口：`dir` 下第一个存在的 index.ts / index.js。
+async fn dir_entry(dir : String) -> String? {
+  for entry in entry_names {
+    let candidate = dir + "/" + entry
+    let exists = @sys.exists(candidate) catch { _ => false }
+    if exists {
+      return Some(candidate)
+    }
+  }
+  None
+}
+
+///|
 /// 横幅标签：pi 显示的是「装了什么」—— 单文件带后缀（`demo.js`），
-/// 目录式扩展是目录名（`demo`）。
+/// 目录式扩展是目录名（`demo`）。包来源再加包名前缀，与 pi 的横幅同形：
+/// 入口在包根的（`./index.ts`）只剩包名，目录式是 `包名:目录`
+/// （`pi-subagents:bundle`），子目录里的源文件是 `包名:相对路径`
+/// （`pi-background-tasks:dist/extensions/x.js`）。
 pub fn ext_label(source : ExtSource) -> String {
   let file_name = base_name(source.path)
-  if is_source_file(file_name) {
-    file_name
+  match source.origin {
+    Package(package, pkg_root) => {
+      let rel = if entry_names.contains(file_name) {
+        relative_to(source.dir, pkg_root)
+      } else {
+        relative_to(source.path, pkg_root)
+      }
+      if rel.is_empty() {
+        package
+      } else {
+        package + ":" + rel
+      }
+    }
+    _ =>
+      // 本地来源：单文件带后缀（`demo.js`）；目录式（入口是 index.*）用
+      // 目录名 —— 与 docs 的横幅口径一致，也和包来源的 `包名:目录` 对齐。
+      if is_source_file(file_name) && !entry_names.contains(file_name) {
+        file_name
+      } else {
+        base_name(source.dir)
+      }
+  }
+}
+
+///|
+/// path 剥掉 root 前缀后的剩余部分（包来源的标签用）。path 不在 root 之下
+/// 时给空串 —— 调用方折回包名。
+fn relative_to(path : String, root : String) -> String {
+  if root.is_empty() {
+    return ""
+  }
+  let prefix = root + "/"
+  if path.has_prefix(prefix) {
+    path[prefix.length():].to_owned()
   } else {
-    base_name(source.dir)
+    ""
   }
 }
 
@@ -86,13 +134,15 @@ async fn discover_in_dir(dir : String, origin : ExtOrigin) -> Array[ExtSource] {
       out.push({ name: stem_of(path), path, dir, origin })
     } else {
       // 目录式扩展：有入口才算。
-      for entry in entry_names {
-        let candidate = path + "/" + entry
-        let exists = @sys.exists(candidate) catch { _ => false }
-        if exists {
-          out.push({ name: stem_of(candidate), path: candidate, dir: path, origin })
-          break
-        }
+      match dir_entry(path) {
+        Some(candidate) =>
+          out.push({
+            name: stem_of(candidate),
+            path: candidate,
+            dir: path,
+            origin,
+          })
+        None => ()
       }
     }
   }
@@ -104,41 +154,109 @@ async fn discover_in_dir(dir : String, origin : ExtOrigin) -> Array[ExtSource] {
 pub async fn discover_explicit(path : String) -> ExtSource? {
   let kind = @sys.kind(path) catch { _ => return None }
   if kind == @sys.Directory {
-    for entry in entry_names {
-      let candidate = path + "/" + entry
-      let exists = @sys.exists(candidate) catch { _ => false }
-      if exists {
+    match dir_entry(path) {
+      Some(candidate) =>
         return Some({
           name: stem_of(candidate),
           path: candidate,
           dir: path,
           origin: Explicit,
         })
-      }
+      None => return None
     }
-    return None
   }
-  Some({ name: stem_of(path), path, dir: parent_dir(path), origin: Explicit })
+  Some({
+    name: stem_of(path),
+    path,
+    dir: parent_dir(path),
+    origin: Explicit,
+  })
 }
 
 ///|
-/// 一次发现：显式路径优先（同名时覆盖），然后用户级，最后项目级。
+/// 包来源诊断的统一措辞。
+fn package_warning(pkg : PackageExtension, reason : String) -> String {
+  "警告：包 " + pkg.package + " 声明的扩展 " + pkg.entry + reason
+}
+
+///|
+/// 一个包声明的扩展入口 → 待装载的扩展。入口是目录时按目录式解析
+/// （有 index.ts / index.js 才算）；入口文件不是可装载的源文件时给诊断。
+/// 返回 None = 放弃（诊断已记）。
+async fn discover_package_extension(
+  pkg : PackageExtension,
+  diagnostics : Array[String],
+) -> ExtSource? {
+  let abs = pkg.dir + "/" + pkg.entry
+  let kind = @sys.kind(abs) catch {
+    _ => {
+      diagnostics.push(package_warning(pkg, " 在磁盘上不存在，跳过"))
+      return None
+    }
+  }
+  if kind == @sys.Directory {
+    match dir_entry(abs) {
+      Some(candidate) =>
+        return Some({
+          name: stem_of(candidate),
+          path: candidate,
+          dir: abs,
+          origin: Package(pkg.package, pkg.dir),
+        })
+      None => {
+        diagnostics.push(package_warning(pkg, " 缺少入口文件（index.ts / index.js），跳过"))
+        return None
+      }
+    }
+  }
+  if is_source_file(base_name(abs)) {
+    Some({
+      name: stem_of(abs),
+      path: abs,
+      dir: parent_dir(abs),
+      origin: Package(pkg.package, pkg.dir),
+    })
+  } else {
+    diagnostics.push(package_warning(pkg, " 不是可装载的源文件，跳过"))
+    None
+  }
+}
+
+///|
+/// 一次发现：显式路径优先（同名时覆盖），然后用户级、项目级、最后包声明
+/// 的（本地赢重名 —— 与技能/模板的装载顺序同口径）。
 ///
 /// 同名只留第一个：沙盒里同名扩展注册的是同一套 API，冲突时不能「都装载」。
 pub async fn discover(
   cwd : String,
   agent_dir : String,
   explicit~ : Array[String] = [],
+  packages~ : Array[PackageExtension] = [],
 ) -> (Array[ExtSource], Array[String]) {
   let diagnostics : Array[String] = []
   let sources : Array[ExtSource] = []
   let seen : Map[String, String] = Map([])
-  for path in explicit {
-    match discover_explicit(path) {
-      Some(source) => {
+  // 同名只留第一个（含诊断）：显式、本地、包三个来源共用这一条路。
+  let try_register = fn(source : ExtSource) {
+    match seen.get(source.name) {
+      Some(winner) =>
+        diagnostics.push(
+          "重名：扩展 \"" +
+          source.name +
+          "\" 已被 " +
+          winner +
+          " 占用，忽略 " +
+          source.path,
+        )
+      None => {
         seen.set(source.name, source.path)
         sources.push(source)
       }
+    }
+  }
+  for path in explicit {
+    match discover_explicit(path) {
+      Some(source) => try_register(source)
       None => diagnostics.push("警告：--extension " + path + " 不是扩展（缺入口文件）")
     }
   }
@@ -149,21 +267,14 @@ pub async fn discover(
   for dir_origin in dirs {
     let (dir, origin) = dir_origin
     for source in discover_in_dir(dir, origin) {
-      match seen.get(source.name) {
-        Some(winner) =>
-          diagnostics.push(
-            "重名：扩展 \"" +
-            source.name +
-            "\" 已被 " +
-            winner +
-            " 占用，忽略 " +
-            source.path,
-          )
-        None => {
-          seen.set(source.name, source.path)
-          sources.push(source)
-        }
-      }
+      try_register(source)
+    }
+  }
+  // 包声明的扩展：manifest 说什么装什么，重名规则同上（本地赢）。
+  for pkg in packages {
+    match discover_package_extension(pkg, diagnostics) {
+      Some(source) => try_register(source)
+      None => ()
     }
   }
   (sources, diagnostics)

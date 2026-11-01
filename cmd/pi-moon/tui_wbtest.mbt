@@ -1130,6 +1130,56 @@ test "build_banner：四段顺序、字典序、段间空行（pi 的启动画�
 }
 
 ///|
+test "build_banner：技能全名册——不在 prompt 里的（含 disable-model-invocation）也列，无标注" {
+  let skills : Array[@context.Skill] = [
+    {
+      name: "tdd",
+      description: "普通技能",
+      file_path: "/s/tdd/SKILL.md",
+      base_dir: "/s/tdd",
+      disable_model_invocation: false,
+      scope: "user",
+    },
+    {
+      name: "to-spec",
+      description: "工作流技能，作者声明别让模型自己想起来",
+      file_path: "/s/to-spec/SKILL.md",
+      base_dir: "/s/to-spec",
+      disable_model_invocation: true,
+      scope: "user",
+    },
+  ]
+  // system prompt 里只有 tdd（available_skills 排除了 disable 的那个）。
+  let banner = build_banner(
+    "/tmp/proj",
+    [],
+    skills,
+    [],
+    [],
+    [],
+    "<available_skills><skill><name>tdd</name></skill></available_skills>",
+    remote_banner=None,
+  )
+  assert_eq(banner, ["[Skills] tdd, to-spec", ""])
+}
+
+///|
+test "build_banner：--no-tools（prompt 无技能段）时照列全名册，无 * 标注" {
+  let skills : Array[@context.Skill] = [
+    {
+      name: "demo",
+      description: "",
+      file_path: "/s/demo/SKILL.md",
+      base_dir: "/s/demo",
+      disable_model_invocation: false,
+      scope: "user",
+    },
+  ]
+  let banner = build_banner("/tmp/proj", [], skills, [], [], [], "", remote_banner=None)
+  assert_eq(banner, ["[Skills] demo", ""])
+}
+
+///|
 test "build_banner：远程模式出 [Remote tools] 段（地址 + 生效清单）" {
   let banner = build_banner(
     "/tmp/proj",

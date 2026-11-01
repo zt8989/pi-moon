@@ -780,15 +780,13 @@ fn build_banner(
     blocks.push("[Context] " + labels.join(", "))
     blocks.push("")
   }
+  // 技能照 pi 列**全名册**（含 `disable-model-invocation` 的）——「装了什么」
+  // 就报什么；进没进 prompt 是另一回事（prompt 清单本来就不含带那个开关的，
+  // 见 render_skills_prompt）。不按 system prompt 反查过滤，也不做标注：
+  // 恢复旧会话时横幅报当前装载名册，与 pi 同口径。
   let names : Array[String] = []
   for skill in skills {
-    if system_prompt.contains("<name>" + skill.name + "</name>") {
-      names.push(skill.name)
-    } else if !system_prompt.contains("<available_skills>") {
-      // prompt 没有技能段（比如 --no-tools 连 read 都没开）：装了也照报，
-      // 但标出来 —— 它没进这轮 prompt。
-      names.push(skill.name + "*")
-    }
+    names.push(skill.name)
   }
   if !names.is_empty() {
     blocks.push("[Skills] " + sort_text(names).join(", "))
@@ -856,9 +854,33 @@ async fn run(args : CliArgs) -> Unit {
     Some(cwd) => cwd
     None => "."
   }
+  // 包（settings.json 的 `packages`）：只消费已安装的包。一次解析，三处消费
+  // （技能 / prompt 模板 / 扩展）。诊断单独一路，坏包不挡启动。
+  let (installed, package_diagnostics) = @packages.resolve(config.agent_dir)
+  for diagnostic in package_diagnostics {
+    eprintln("[packages] " + diagnostic)
+  }
+  let package_skill_dirs : Array[String] = []
+  let package_prompt_dirs : Array[String] = []
+  let package_extensions : Array[@ext.PackageExtension] = []
+  for pkg in installed {
+    for rel in pkg.skills {
+      package_skill_dirs.push(pkg.dir + "/" + rel)
+    }
+    for rel in pkg.prompts {
+      package_prompt_dirs.push(pkg.dir + "/" + rel)
+    }
+    for rel in pkg.extensions {
+      package_extensions.push({ package: pkg.name, dir: pkg.dir, entry: rel })
+    }
+  }
   // 扩展：发现 → 起常驻宿主（bun）。这一步同时也是一次装载，命中产物缓存时
   // 宿主只是 import 一下已有的产物。所以这段放在会话 / prompt 之前。
-  let ext_startup = @ext.prepare_at_startup(cwd, config.agent_dir)
+  let ext_startup = @ext.prepare_at_startup(
+    cwd,
+    config.agent_dir,
+    packages=package_extensions,
+  )
   for diagnostic in ext_startup.diagnostics {
     eprintln("[ext] " + diagnostic)
   }
@@ -902,12 +924,17 @@ async fn run(args : CliArgs) -> Unit {
     config.agent_dir,
     home_dir=home,
     extra_paths=args.skill_paths,
+    package_dirs=package_skill_dirs,
   )
   for diagnostic in skill_registry.diagnostics {
     eprintln("[skills] " + diagnostic)
   }
   // prompt 模板（pi 的 /命令）：只进横幅与补全，展开在输入侧。
-  let prompt_templates = @context.load_prompt_templates(cwd, config.agent_dir)
+  let prompt_templates = @context.load_prompt_templates(
+    cwd,
+    config.agent_dir,
+    package_dirs=package_prompt_dirs,
+  )
   for diagnostic in prompt_templates.1 {
     eprintln("[prompts] " + diagnostic)
   }

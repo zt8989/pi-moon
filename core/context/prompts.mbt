@@ -16,15 +16,19 @@ pub(all) struct PromptTemplate {
   description : String
   /// 模板文件绝对路径。
   path : String
-  /// 来自哪一层：user（agent 目录）/ project（工作目录）。
+  /// 来自哪一层：user（agent 目录）/ project（工作目录）/ package（包）。
   scope : String
 } derive(Eq, Debug)
 
 ///|
 /// 装载 prompt 模板。目录不存在时静默返回空。
+///
+/// `package_dirs` 是包声明的模板目录（settings.json `packages` 的包），
+/// 排在本地之后 —— 本地先装载，同名时本地赢。
 pub async fn load_prompt_templates(
   cwd : String,
   agent_dir : String,
+  package_dirs? : Array[String],
 ) -> (Array[PromptTemplate], Array[String]) {
   let diagnostics : Array[String] = []
   let templates : Array[PromptTemplate] = []
@@ -33,6 +37,9 @@ pub async fn load_prompt_templates(
     (agent_dir + "/prompts", "user"),
     (cwd + "/.pi/prompts", "project"),
   ]
+  for directory in package_dirs.unwrap_or([]) {
+    dirs.push((directory, "package"))
+  }
   for dir_scope in dirs {
     let (dir, scope) = dir_scope
     let entries = @sys.readdir(dir) catch { _ => continue }

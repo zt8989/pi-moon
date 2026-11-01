@@ -250,3 +250,41 @@ async test "expand_skill_command：读失败把原因留在原地" {
   assert_true(text.has_prefix("/skill:gone"))
   assert_true(text.contains("读取失败"))
 }
+
+///|
+async test "load_skill_registry：包目录并入（scope=package），本地赢重名" {
+  let agent = make_dir("pkg-agent")
+  let pkg_skills = make_dir("pkg-skill-dirs") + "/skills"
+  put(agent + "/skills/demo/SKILL.md", skill_md(name="demo", description="本地技能"))
+  put(pkg_skills + "/demo/SKILL.md", skill_md(name="demo", description="包里的同名技能"))
+  put(pkg_skills + "/extra/SKILL.md", skill_md(description="包技能"))
+  put(
+    pkg_skills + "/to-spec/SKILL.md",
+    skill_md(description="工作流技能", extra="disable-model-invocation: true\n"),
+  )
+  let registry = load_skill_registry(
+    make_dir("pkg-cwd"),
+    agent,
+    home_dir="",
+    package_dirs=[pkg_skills],
+  )
+  let names : Array[String] = []
+  for skill in registry.skills {
+    names.push(skill.name)
+  }
+  assert_eq(names.join(","), "demo,extra,to-spec")
+  // 本地赢重名，包里的同名被忽略但记诊断。
+  assert_true(registry.diagnostics.any(fn(d) { d.contains("重名") && d.contains("demo") }))
+  for skill in registry.skills {
+    if skill.name == "demo" {
+      assert_eq(skill.scope, "user")
+    }
+    if skill.name == "extra" {
+      assert_eq(skill.scope, "package")
+    }
+    if skill.name == "to-spec" {
+      assert_true(skill.disable_model_invocation)
+      assert_eq(skill.scope, "package")
+    }
+  }
+}

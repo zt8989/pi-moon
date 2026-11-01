@@ -55,8 +55,9 @@ pub async fn plan(
   cwd : String,
   agent_dir : String,
   explicit~ : Array[String] = [],
+  packages~ : Array[PackageExtension] = [],
 ) -> ExtPlan {
-  let (sources, diagnostics) = discover(cwd, agent_dir, explicit~)
+  let (sources, diagnostics) = discover(cwd, agent_dir, explicit~, packages~)
   let entries : Array[ExtEntry] = []
   for source in sources {
     let entry = plan_source(source, agent_dir)
@@ -79,9 +80,13 @@ pub async fn plan(
 /// 装载，然后**留在那里**等运行期的 `call` / `emit`（见 `serve.mbt`）。
 /// 启动这一下同时就是装载，所以不再额外跑一遍一次性宿主。
 pub(all) struct StartupExt {
-  /// 装载成功的扩展名（顺序即发现顺序）。
+  /// 装载结果 · 扩展名（顺序即发现顺序）。**与运行期名册是两份东西**：
+  /// 宿主装载成功的扩展都进这一份 —— 包括没注册任何工具/事件、进程被
+  /// 当场收掉的（横幅报「装了什么」，收掉的原因走诊断）。装载失败的
+  /// （宿主报错）不进：它没装载，不该谎报。
   names : Array[String]
-  /// 横幅显示标签（与 names 一一对应）：文件带后缀 / 目录名。
+  /// 装载结果 · 横幅显示标签（与 names 一一对应）：文件带后缀 / 目录名 /
+  /// 包来源的 `包名:相对路径`。
   labels : Array[String]
   /// 扩展注册的工具名（全并集，去重保序）。
   tools : Array[String]
@@ -121,8 +126,9 @@ pub async fn prepare_at_startup(
   cwd : String,
   agent_dir : String,
   explicit~ : Array[String] = [],
+  packages~ : Array[PackageExtension] = [],
 ) -> StartupExt {
-  let planned = plan(cwd, agent_dir, explicit~)
+  let planned = plan(cwd, agent_dir, explicit~, packages~)
   let diagnostics = planned.diagnostics.copy()
   let ready = planned.loaded()
   if ready.is_empty() {
@@ -212,6 +218,20 @@ pub async fn prepare_at_startup(
     if needed {
       runtime.push(session)
     } else {
+      // 收掉前留一句诊断 —— 横幅照列这个扩展，得说清楚它为什么不会动。
+      if session.commands.is_empty() {
+        diagnostics.push(
+          "扩展 \"" +
+          entry.source.name +
+          "\" 没注册任何工具/命令/事件，宿主已收掉",
+        )
+      } else {
+        diagnostics.push(
+          "扩展 \"" +
+          entry.source.name +
+          "\" 只注册了斜杠命令（执行入口还没接），宿主已收掉",
+        )
+      }
       session.close()
     }
   }

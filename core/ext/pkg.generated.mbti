@@ -9,11 +9,13 @@ import {
 }
 
 // Values
+pub fn absolute(String) -> String
+
 pub fn base_name(String) -> String
 
 pub fn cache_key(String, prelude_version~ : String, sandbox_version~ : String) -> String
 
-pub async fn discover(String, String, explicit? : Array[String]) -> (Array[ExtSource], Array[String])
+pub async fn discover(String, String, explicit? : Array[String], packages? : Array[PackageExtension]) -> (Array[ExtSource], Array[String])
 
 pub async fn discover_explicit(String) -> ExtSource?
 
@@ -45,13 +47,13 @@ pub fn parent_dir(String) -> String
 
 pub fn parse_load(String) -> HostLoad raise HostError
 
-pub async fn plan(String, String, explicit? : Array[String]) -> ExtPlan
+pub async fn plan(String, String, explicit? : Array[String], packages? : Array[PackageExtension]) -> ExtPlan
 
 pub async fn plan_source(ExtSource, String) -> ExtEntry
 
 pub let prelude_version : String
 
-pub async fn prepare_at_startup(String, String, explicit? : Array[String]) -> StartupExt
+pub async fn prepare_at_startup(String, String, explicit? : Array[String], packages? : Array[PackageExtension]) -> StartupExt
 
 pub async fn prepare_host_paths(String, String, String) -> HostPaths raise HostError
 
@@ -79,6 +81,7 @@ pub(all) enum ExtOrigin {
   User
   Project
   Explicit
+  Package(String, String)
 } derive(Eq, @debug.Debug)
 pub fn ExtOrigin::to_string(Self) -> String
 
@@ -169,6 +172,12 @@ pub(all) struct HostPaths {
   agent_dir : String
 }
 pub fn HostPaths::bun_missing(Self) -> Bool
+
+pub(all) struct PackageExtension {
+  package : String
+  dir : String
+  entry : String
+} derive(Eq, @debug.Debug)
 
 pub(all) struct StartupExt {
   names : Array[String]

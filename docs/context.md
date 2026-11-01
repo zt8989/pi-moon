@@ -43,7 +43,7 @@ Project-specific instructions and guidelines:
 自动加载正文**：prompt 里只列一张「名字 + 描述 + 路径」的清单，任务对上号
 时模型自己用 read 工具去读那个文件。
 
-`load_skill_registry(cwd, agent_dir)` 扫五处，**先装载的赢**：
+`load_skill_registry(cwd, agent_dir)` 扫六处，**先装载的赢**：
 
 | 位置 | scope |
 | --- | --- |
@@ -51,7 +51,10 @@ Project-specific instructions and guidelines:
 | `<家>/.agents/skills`（Claude Code 风格的技能都在这） | `user` |
 | `<cwd>/.pi/skills` | `project` |
 | cwd 祖先链每层的 `.agents/skills`（跳过家目录那层） | `project` |
+| 包声明的技能目录（settings.json `packages` 的包，见 core/packages） | `package` |
 | `--skill` 给的文件 / 目录（可重复） | `path` |
+
+包目录排在本地之后：本地同名覆盖包技能（先装载的赢），冲突记一条诊断。
 
 发现规则照 pi 的 `loadSkillsFromDir`：
 
@@ -102,9 +105,11 @@ read 就写 `bash`（模型得有一条能读文件的路）；两个都没有�
 一个 Markdown 文件就是一个 `/命令`（pi 的 prompt-templates 同规）：文件名是
 命令名，frontmatter 的 `description`（缺省取正文第一个非空行）进横幅。
 
-- 位置：`<agent dir>/prompts/*.md`（user）与 `<cwd>/.pi/prompts/*.md`
-  （project），只扫直接的 `.md` 子文件，不递归；
-- 同名时用户级先装载的获胜，被忽略的记一条 `[prompts]` 诊断；
+- 位置：`<agent dir>/prompts/*.md`（user）、`<cwd>/.pi/prompts/*.md`
+  （project），以及包声明的模板目录（scope `package`，settings.json
+  `packages` 的包，排在本地之后 —— 同名时本地赢），只扫直接的 `.md`
+  子文件，不递归；
+- 同名时先装载的获胜，被忽略的记一条 `[prompts]` 诊断；
 - 模板的展开（`$1` / `$@` / `${1:-default}` 替换）在输入侧，装载层只负责
   发现与展示。
 
@@ -128,11 +133,16 @@ read 就写 `bash`（模型得有一条能读文件的路）；两个都没有�
 - `[Context]`：cwd 之下的相对化，其余缩 `~`；只报**真进了 prompt** 的文件
   （拿 system_prompt 文本反查 `path="…"`）—— 恢复旧会话时 prompt 是旧的，
   报磁盘上现在的清单会撒谎；
-- `[Skills]`：名字排序后逗号连排；没进 prompt 的（prompt 没有技能段）标
-  `*` —— 装了和「模型知道」是两回事；
+- `[Skills]`：**全名册** —— 技能注册表里装载的全部技能，含
+  `disable-model-invocation` 的（与 pi 的启动画面同口径，「装了什么」就报
+  什么；进没进 prompt 是另一回事，prompt 清单本来就不含带那个开关的）。
+  名字排序后逗号连排，不做标注、不按 system prompt 反查过滤；
 - `[Prompts]`：`/命令` 按名字排序，见上节；
-- `[Extensions]`：沙盒里装载成功的扩展，显示「装了什么」—— 单文件带后缀
-  （`demo.js`），目录式扩展是目录名；顺序即装载顺序，不排序（与 pi 一致）；
+- `[Extensions]`：**装载结果** —— 宿主装载成功的全部扩展（包括没注册任何
+  工具/事件、进程被当场收掉的；收掉的原因走 `[ext]` 诊断）。包来源的带
+  `包名:相对路径` 前缀（`pi-subagents:bundle`），入口在包根的只剩包名；
+  本地扩展单文件带后缀（`demo.js`），目录式扩展是目录名；顺序即装载顺序，
+  不排序（与 pi 一致）；
 - `[Skill conflicts]`：装载诊断，排在清单后。
 
 注意：横幅里的排序不用 `Array::sort_by` + `String::compare` —— 这个工具链

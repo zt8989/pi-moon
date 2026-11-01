@@ -130,3 +130,65 @@ async test "plan：缓存文件存在时走 Cached，不再编译" {
   }
 }
 
+///|
+async test "discover：包扩展解析出包名前缀标签；目录式找 index；本地赢重名" {
+  let cwd = make_dir("pkg-cwd")
+  let agent = make_dir("pkg-agent")
+  let pkg = make_dir("pkg-tree")
+  put(pkg + "/demo-pkg/bundle/index.js", "export default function () {}")
+  put(pkg + "/demo-pkg/bundle/chunk-1.js", "chunk")
+  put(pkg + "/main-pkg/index.ts", "export default function () {}")
+  put(pkg + "/file-pkg/dist/extensions/x.js", "export default function () {}")
+  put(pkg + "/dir-pkg/lib/index.js", "export default function () {}")
+  put(pkg + "/bad-pkg/logo.png", "png")
+  put(pkg + "/noentry-pkg/lib/util.js", "export {}")
+  put(agent + "/extensions/bundle/index.js", "export default function () {}")
+  let (sources, diagnostics) = discover(
+    cwd,
+    agent,
+    packages=[
+      { package: "demo-pkg", dir: pkg + "/demo-pkg", entry: "bundle/index.js" },
+      { package: "main-pkg", dir: pkg + "/main-pkg", entry: "index.ts" },
+      { package: "file-pkg", dir: pkg + "/file-pkg", entry: "dist/extensions/x.js" },
+      { package: "dir-pkg", dir: pkg + "/dir-pkg", entry: "lib" },
+      { package: "ghost-pkg", dir: pkg + "/ghost-pkg", entry: "nope.js" },
+      { package: "bad-pkg", dir: pkg + "/bad-pkg", entry: "logo.png" },
+      { package: "noentry-pkg", dir: pkg + "/noentry-pkg", entry: "lib" },
+    ],
+  )
+  let labels : Array[String] = []
+  for source in sources {
+    labels.push(ext_label(source))
+  }
+  // 本地目录式 → 目录名；demo-pkg 与本地同名被忽略；包里来的：
+  // 包根 index → 只剩包名；子目录源文件 → 全相对路径；目录式 → `包名:目录`。
+  assert_eq(
+    labels.join(","),
+    "bundle,main-pkg,file-pkg:dist/extensions/x.js,dir-pkg:lib",
+  )
+  for source in sources {
+    if ext_label(source) == "dir-pkg:lib" {
+      match source.origin {
+        Package(_, root) => assert_eq(root, pkg + "/dir-pkg")
+        _ => fail("dir-pkg:lib 应该是包来源")
+      }
+    }
+  }
+  // ghost / bad / noentry 各留一条诊断。
+  assert_true(diagnostics.any(fn(d) { d.contains("ghost-pkg") && d.contains("不存在") }))
+  assert_true(diagnostics.any(fn(d) { d.contains("bad-pkg") && d.contains("不是可装载的源文件") }))
+  assert_true(diagnostics.any(fn(d) { d.contains("noentry-pkg") && d.contains("缺少入口文件") }))
+  // 本地赢重名也记一条。
+  assert_true(diagnostics.any(fn(d) { d.contains("重名") && d.contains("bundle") }))
+}
+
+///|
+test "ext_label：包根 index 的标签只剩包名" {
+  let source : ExtSource = {
+    name: "index",
+    path: "C:/x/npm/node_modules/solo-pkg/index.ts",
+    dir: "C:/x/npm/node_modules/solo-pkg",
+    origin: Package("solo-pkg", "C:/x/npm/node_modules/solo-pkg"),
+  }
+  assert_eq(ext_label(source), "solo-pkg")
+}

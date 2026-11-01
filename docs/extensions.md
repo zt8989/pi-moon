@@ -47,14 +47,26 @@ build for %s` 那些字符串就是它的插件宿主逻辑）。
 1. **发现**（`discover.mbt`）：`<agent dir>/extensions` 与
    `<cwd>/.pi/extensions`，单文件 `.ts/.mts/.cts/.js/.mjs/.cjs` 或
    「目录 + `index.ts`/`index.js`」；`node_modules` 与点开头的目录不递归。
+   再加**包声明的扩展**（settings.json `packages` 的包，`package.json` 的
+   `"pi".extensions`，core/packages 解析后传入）—— 顺序：显式 `--extension`
+   → user → project → 包（本地赢重名）。包来源的横幅标签带包名前缀：
+   入口在包根的只剩包名（`@juicesharp/rpiv-ask-user-question`），目录式是
+   `pi-subagents:bundle`，子目录源文件是
+   `pi-background-tasks:dist/extensions/anthropic-attribution.js`。
 2. **缓存键**（`ext.mbt`）：`FNV-1a64(prelude_version ∥ host_cache_version ∥ 源码)`。
    产物落在 `<agent dir>/cache/pi-moon/ext/host/build/<key>.mjs`。
 3. **装载**（`serve.mbt`）：`bun <缓存>/ext_host.mjs --mode serve …`。宿主打包
    （缓存未命中才跑）→ 加载 → 把注册表（工具 / 命令 / 事件 / 工具定义）作为
    第一条 `{"event":"ready"}` 行回传，然后**留在那里读 stdin**。
-4. **汇总**（`prepare.mbt`）：注册表汇总成 `StartupExt`（工具名 / 命令名 / 事件名 /
-   工具定义 + 运行期名册 `ExtRuntime`），诊断打到 stderr（`[ext]` 前缀），横幅
-   里出 `[Extensions]` 段。什么都没注的会话当场收掉（不白占一个 bun 进程）。
+4. **汇总**（`prepare.mbt`）：注册表汇总成 `StartupExt`，里面是**两份东西**：
+   - **装载结果**（`names` / `labels`）：宿主装载成功的全部扩展 —— 横幅
+     `[Extensions]` 报这一份。没注册任何工具/命令/事件的扩展也在这里
+     （「装了什么」就报什么，与 pi 同口径），但宿主进程当场收掉（不白占
+     一个 bun），收掉的原因走一条 `[ext]` 诊断；装载失败的（宿主报错）不进
+     —— 它没装载，不谎报。
+   - **运行期名册**（`ExtRuntime`）：只收注册了工具/事件的会话，`call` /
+     `emit` 都走它。
+   诊断打到 stderr（`[ext]` 前缀）。
 
 单个扩展失败只留一条诊断，不影响别的扩展，也不挡启动。
 **没有单独的一次性装载步骤**：启动这一下就是装载，宿主随后直接进读循环。
@@ -185,6 +197,12 @@ Windows 上建目录符号链接要特权（Developer Mode / 管理员），普�
 
 **兼容面实测**：pi 官方 `examples/extensions/` 的 70 个单文件示例 **70 个全部
 装载成功**（早前「嵌 wasm + 拒绝 Node」的方案是 53 装载 / 17 跳过）。
+
+**真包现状**（2026-11-01 实跑）：`pi-background-tasks` 的两条扩展全功能装载
+（注册的工具全部可用）；本地 TUI 扩展（orca-* / herdr-*）装载正常。但
+`pi-subagents`、`pi-web-access`、`@juicesharp/rpiv-ask-user-question` 三个
+重包在**构建成功之后**、import 产物阶段挂在 bun 的模块解析上（bun 1.4.4，
+深 `file://` 依赖图触发解析器内部错误）—— 独立问题，见 issue #14。
 
 ## 代码地图
 

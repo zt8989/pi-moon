@@ -1,0 +1,23 @@
+// pi 的包清单：settings.json `packages` → 已安装包的资源位置。
+// 只消费（不安装）；给技能/模板装载与扩展发现供料。
+
+import {
+  "pi-moon/core/sys",
+  "moonbitlang/core/json",
+}
+
+supported_targets = "js+native"
+
+warnings = "-79-67"
+
+import {
+  "moonbitlang/async",
+  "moonbitlang/async/fs",
+} for "wbtest"
+
+// 夹具直接落盘（@fs + 真实文件系统），只在 native 上跑。
+options(
+  targets: {
+    "packages_wbtest.mbt": [ "native" ],
+  },
+)

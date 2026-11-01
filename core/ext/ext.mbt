@@ -19,6 +19,10 @@ pub(all) enum ExtOrigin {
   Project
   /// 命令行 `--extension <path>` 显式指定。
   Explicit
+  /// 包声明并已安装的扩展（settings.json `packages`）：载荷是（包名,
+  /// 包安装目录）。包根放这里而不是 ExtSource 的一个空串哨兵字段 ——
+  /// 「包来源必有包根」在类型上就成立。
+  Package(String, String)
 } derive(Eq, Debug)
 
 ///|
@@ -27,6 +31,7 @@ pub fn ExtOrigin::to_string(self : ExtOrigin) -> String {
     User => "user"
     Project => "project"
     Explicit => "explicit"
+    Package(_, _) => "package"
   }
 }
 
@@ -46,12 +51,24 @@ pub(all) struct ExtToolDefinition {
 /// 一个待装载的扩展：名字 + 入口文件 + 所在目录。
 ///
 /// `dir` 是 `base_dir` 语义 —— 扩展里 `read` 相对路径按它解析，目录式扩展
-/// 的 npm 依赖也在这个目录下找。
+/// 的 npm 依赖也在这个目录下找。包来源的包根在 `origin` 的载荷里
+/// （`ExtOrigin::Package`），横幅标签按它算相对路径。
 pub(all) struct ExtSource {
   name : String
   path : String
   dir : String
   origin : ExtOrigin
+} derive(Eq, Debug)
+
+///|
+/// 一个包声明并已安装的扩展入口（core/packages 解析出来的那份）。
+pub(all) struct PackageExtension {
+  /// 包名（横幅标签前缀）。
+  package : String
+  /// 包的安装目录（绝对路径）。
+  dir : String
+  /// manifest 声明的入口，相对包根（文件或目录，`/` 分隔）。
+  entry : String
 } derive(Eq, Debug)
 
 ///|

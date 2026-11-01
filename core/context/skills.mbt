@@ -292,7 +292,9 @@ async fn add_skill_path(
 /// 2. `<家>/.agents/skills`（agents 层 user —— Claude Code 风格的技能都在这）
 /// 3. `<cwd>/.pi/skills`（pi 层 project）
 /// 4. cwd 祖先链每层的 `.agents/skills`（离 cwd 越近越靠后）
-/// 5. `--skill` 给的额外路径（path）
+/// 5. 包声明的技能目录（scope `package`，settings.json `packages` 的包，
+///    本地赢重名 —— 用户可以本地同名覆盖包技能）
+/// 6. `--skill` 给的额外路径（path）
 ///
 /// 与 pi 的差异：祖先链的 `.agents/skills` pi 只收到 git 仓库根为止，这里
 /// 一直收到文件系统根（与本项目 AGENTS.md 祖先链的口径一致）。
@@ -301,6 +303,7 @@ pub async fn load_skill_registry(
   agent_dir : String,
   home_dir? : String,
   extra_paths? : Array[String],
+  package_dirs? : Array[String],
 ) -> SkillRegistry {
   let registry : SkillRegistry = { skills: [], diagnostics: [] }
   let taken : Map[String, String] = Map([])
@@ -376,6 +379,11 @@ pub async fn load_skill_registry(
       collect(dirs[index], "project", true)
     }
     index = index - 1
+  }
+  // 包声明的技能目录：与本地同一套发现规则，scope `package`。本地先装载
+  // 所以重名时本地赢。
+  for directory in package_dirs.unwrap_or([]) {
+    collect(directory, "package", true)
   }
   for raw_path in extra_paths.unwrap_or([]) {
     add_skill_path(raw_path, "path", registry)
