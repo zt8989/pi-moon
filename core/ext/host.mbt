@@ -12,7 +12,7 @@
 
 ///|
 /// 宿主脚本版本。改 `host/ext_host.mjs` 就要加一 —— 缓存键含它。
-pub let host_version : String = "pi-moon-host/3"
+pub let host_version : String = "pi-moon-host/4"
 
 ///|
 /// 宿主进程需要的路径。全部在启动时算一次。

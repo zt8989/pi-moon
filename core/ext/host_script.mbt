@@ -27,6 +27,7 @@ pub let host_script_source : String =
   #|import { pathToFileURL } from "node:url";
   #|import { dirname, isAbsolute, join, resolve, sep } from "node:path";
   #|import { isBuiltin } from "node:module";
+  #|import { homedir } from "node:os";
   #|import { format } from "node:util";
   #|
   #|//------------------------------------------------------------------------------------------------------------------------------
@@ -85,8 +86,17 @@ pub let host_script_source : String =
   #|  process.exit(2);
   #|}
   #|
-  #|// 允许访问的目录：工作目录、agent 目录、临时目录。写操作同样只在这些根下。
-  #|const allowedRoots = [cwd, agentDir, process.env.TMPDIR || "/tmp"]
+  #|// 允许访问的目录：工作目录、agent 目录、配置目录、临时目录。写操作同样只在这些根下。
+  #|//
+  #|// 配置目录按 XDG 语义解析（`XDG_CONFIG_HOME` 为绝对路径则用它，否则 `~/.config`）。
+  #|// pi 扩展普遍把配置放在 `<config>/<包名>/config.json`，而且**注册阶段**就会读
+  #|// （rpiv-* 系列在 registerTool 里同步读配置），保存时还要写。不放开这一根，
+  #|// 这类扩展只能「装进去但用不了」，表现是 loader 报「扩展沙盒拒绝读路径」。
+  #|const xdgConfigHome = (process.env.XDG_CONFIG_HOME || "").trim();
+  #|const configHome =
+  #|  xdgConfigHome && isAbsolute(xdgConfigHome) ? xdgConfigHome : join(homedir(), ".config");
+  #|
+  #|const allowedRoots = [cwd, agentDir, configHome, process.env.TMPDIR || "/tmp"]
   #|  .filter((root) => typeof root === "string" && root.length > 0)
   #|  .map((root) => (root.endsWith(sep) ? root : root + sep));
   #|
@@ -98,7 +108,7 @@ pub let host_script_source : String =
   #|  if (!okay) {
   #|    const kind = forWrite ? "写" : "读";
   #|    throw new Error(
-  #|      "扩展沙盒拒绝" + kind + "路径 " + absolute + "（只允许 cwd / agent 目录 / 临时目录）",
+  #|      "扩展沙盒拒绝" + kind + "路径 " + absolute + "（只允许 cwd / agent 目录 / 配置目录 / 临时目录）",
   #|    );
   #|  }
   #|  return absolute;
@@ -172,7 +182,7 @@ pub let host_script_source : String =
   #|  const okay = state.roots.some((root) => absolute === root.slice(0, -1) || absolute.startsWith(root));
   #|  if (!okay) {
   #|    const kind = forWrite ? "写" : "读";
-  #|    const message = "扩展沙盒拒绝" + kind + "路径 " + absolute + "（只允许 cwd / agent 目录 / 临时目录）";
+  #|    const message = "扩展沙盒拒绝" + kind + "路径 " + absolute + "（只允许 cwd / agent 目录 / 配置目录 / 临时目录）";
   #|    state.denied.push(message);
   #|    throw new Error(message);
   #|  }
@@ -221,7 +231,7 @@ pub let host_script_source : String =
   #|  const okay = state.roots.some((root) => absolute === root.slice(0, -1) || absolute.startsWith(root));
   #|  if (!okay) {
   #|    const kind = forWrite ? "写" : "读";
-  #|    const message = "扩展沙盒拒绝" + kind + "路径 " + absolute + "（只允许 cwd / agent 目录 / 临时目录）";
+  #|    const message = "扩展沙盒拒绝" + kind + "路径 " + absolute + "（只允许 cwd / agent 目录 / 配置目录 / 临时目录）";
   #|    state.denied.push(message);
   #|    throw new Error(message);
   #|  }

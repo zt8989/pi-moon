@@ -8,7 +8,7 @@
 //   - 位置照 pi 的 `loadExtensions`：`<agent dir>/extensions` 与
 //     `<cwd>/.pi/extensions`，单文件或「目录 + index.ts/index.js」；
 //   - 与 pi 的差异：pi 在本进程里 jiti 加载扩展；这里交给独立的 bun 宿主，
-//     文件系统访问按 cwd / agent 目录 / 临时目录白名单卡（见 docs/extensions.md）。
+//     文件系统访问按 cwd / agent 目录 / 配置目录 / 临时目录白名单卡（见 docs/extensions.md）。
 
 ///|
 /// 扩展从哪儿来。决定诊断信息里的标签，也决定重名时的排序。

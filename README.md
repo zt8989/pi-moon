@@ -76,7 +76,7 @@ reducer 里没有一个 `await`、没有一个 `fetch`、也没有 while。真�
   node_modules 解析依赖，`Bun.build` 产物按内容哈希缓存，缓存未命中才打包。
   宿主**常驻**（`--mode serve`）：扩展注册的工具走与内置工具同一条 `run_tools`
   effect 真被执行，`turn_start` / `turn_end` / `tool_execution_*` 钩子按行协议派发。
-  Node API 可用，文件系统访问按 cwd / agent 目录 / 临时目录白名单卡。
+  Node API 可用，文件系统访问按 cwd / agent 目录 / 配置目录 / 临时目录白名单卡。
   pi 官方 70 个单文件示例全部装载成功（见 [docs/extensions.md](docs/extensions.md)）。
 
 - **远程工具（RemoteReActAgent）**：`--remote-tools <host:port>` 把**内置工具的

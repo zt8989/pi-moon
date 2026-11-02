@@ -136,11 +136,18 @@ effect 边界**按 action 顺序送达（于是 `turn_start` 一定早于它那�
 ## 文件系统白名单
 
 扩展能自由用 `node:fs`，但路径按**允许根目录**过滤：`cwd`、agent 目录、
-`TMPDIR`。越界读写在调用点抛错：
+配置目录（`XDG_CONFIG_HOME`，未设或不绝对时用 `~/.config`）、`TMPDIR`。
+越界读写在调用点抛错：
 
 ```text
-扩展沙盒拒绝读路径 /etc/hosts（只允许 cwd / agent 目录 / 临时目录）
+扩展沙盒拒绝读路径 /etc/hosts（只允许 cwd / agent 目录 / 配置目录 / 临时目录）
 ```
+
+配置目录这一根不是可选项：pi 扩展普遍把配置放在 `<config>/<包名>/config.json`，
+而且**注册阶段**就会读 —— `rpiv-ask-user-question` 在 `registerTool` 里同步读
+`~/.config/rpiv-ask-user-question/config.json`，保存时还要写。少了它，
+这类包表现为「构建成功、import 成功、factory 抛错」（`rpiv-config` 的
+`existsSync` 在 try 之外，被拒就是装载失败）—— 与 bun 解析无关。
 
 实现方式有个坑要说清楚：`Bun.build` 的插件**看不到内置模块**
 （`node:fs` 在插件之前就被解析成 external 了），所以策略是在**产物后处理**里做的 ——
@@ -198,11 +205,13 @@ Windows 上建目录符号链接要特权（Developer Mode / 管理员），普�
 **兼容面实测**：pi 官方 `examples/extensions/` 的 70 个单文件示例 **70 个全部
 装载成功**（早前「嵌 wasm + 拒绝 Node」的方案是 53 装载 / 17 跳过）。
 
-**真包现状**（2026-11-01 实跑）：`pi-background-tasks` 的两条扩展全功能装载
-（注册的工具全部可用）；本地 TUI 扩展（orca-* / herdr-*）装载正常。但
-`pi-subagents`、`pi-web-access`、`@juicesharp/rpiv-ask-user-question` 三个
-重包在**构建成功之后**、import 产物阶段挂在 bun 的模块解析上（bun 1.4.4，
-深 `file://` 依赖图触发解析器内部错误）—— 独立问题，见 issue #14。
+**真包现状**（2026-11-02 实跑）：`pi-background-tasks` 的两条扩展全功能装载
+（注册的工具全部可用）；`pi-web-access` 与 `@juicesharp/rpiv-ask-user-question`
+装载正常（后者注册 `ask_user_question`；早前失败是沙箱缺配置根，不是 bun）；
+本地 TUI 扩展（orca-* / herdr-*）装载正常。`pi-subagents` 仍装不上，但原因也不是
+bun：它在模块顶层用 `import.meta.url` 反推 `../../package.json`，而单文件产物
+落在 `build/<key>.mjs`，于是算成 `<hostRoot>/package.json`，import 阶段 ENOENT
+（bun 的依赖图与 `file://` 解析都正常 —— 放一份 package.json 就能装）。
 
 ## 代码地图
 
