@@ -33,7 +33,7 @@ pub let tool_host_script_source : String =
   #|
   #|import { createServer } from "node:net";
   #|import { existsSync, readdirSync, writeFileSync } from "node:fs";
-  #|import { join } from "node:path";
+  #|import { dirname, join } from "node:path";
   #|import { pathToFileURL } from "node:url";
   #|
   #|//------------------------------------------------------------------------------------------------------------------------------
@@ -76,8 +76,9 @@ pub let tool_host_script_source : String =
   #|
   #|//------------------------------------------------------------------------------------------------------------------------------
   #|// pi 的 node_modules：--modules 显式指定 > PI_PI_MODULES > pi 装机里版本号
-  #|// 最大的那份。与 pi-moon 侧 resolve_pi_modules 同一搜索顺序 —— 手动部署
-  #|// 只给 --port / --cwd 也能起（「bun 直接启动，不依赖 pi-moon 进程」）。
+  #|// 最大的那份 > agent 目录里扩展装的包 > PATH 上全局 bin 反推出的 npm 全局
+  #|// 装机。与 pi-moon 侧 resolve_pi_modules 同一搜索顺序 —— 手动部署只给
+  #|// --port / --cwd 也能起（「bun 直接启动，不依赖 pi-moon 进程」）。
   #|//------------------------------------------------------------------------------------------------------------------------------
   #|
   #|function isPiModules(path) {
@@ -111,6 +112,34 @@ pub let tool_host_script_source : String =
   #|  return key;
   #|}
   #|
+  #|// PATH 上全局 bin 反推出的 npm 全局 node_modules 根。`npm i -g` / nvm / scoop
+  #|// 装的 pi 只在这里：全局 bin 目录可能是前缀本身（Windows / nvm），也可能是
+  #|// `<前缀>/bin`（POSIX 前缀布局），bun 的全局装机又放在 `install/global` 下。
+  #|function globalModulesCandidates() {
+  #|  const raw = process.env.PATH || "";
+  #|  // Windows 的盘符里也有 `:`，按 `;` 切才对；POSIX 的 PATH 里不会出现 `;`。
+  #|  const separator = raw.includes(";") ? ";" : ":";
+  #|  const out = [];
+  #|  for (const entry of raw.split(separator)) {
+  #|    const trimmed = entry.trim().replace(/[\\/]+$/, "");
+  #|    if (!trimmed) {
+  #|      continue;
+  #|    }
+  #|    const prefix = dirname(trimmed);
+  #|    for (const candidate of [
+  #|      join(trimmed, "node_modules"),
+  #|      join(prefix, "lib", "node_modules"),
+  #|      join(prefix, "install", "global", "node_modules"),
+  #|      join(trimmed, "install", "global", "node_modules"),
+  #|    ]) {
+  #|      if (!out.includes(candidate)) {
+  #|        out.push(candidate);
+  #|      }
+  #|    }
+  #|  }
+  #|  return out;
+  #|}
+  #|
   #|function resolvePiModules() {
   #|  if (process.env.PI_PI_MODULES && isPiModules(process.env.PI_PI_MODULES)) {
   #|    return process.env.PI_PI_MODULES;
@@ -135,7 +164,15 @@ pub let tool_host_script_source : String =
   #|    return best.path;
   #|  }
   #|  const fallback = join(home, "npm", "node_modules");
-  #|  return isPiModules(fallback) ? fallback : "";
+  #|  if (isPiModules(fallback)) {
+  #|    return fallback;
+  #|  }
+  #|  for (const candidate of globalModulesCandidates()) {
+  #|    if (isPiModules(candidate)) {
+  #|      return candidate;
+  #|    }
+  #|  }
+  #|  return "";
   #|}
   #|
   #|//------------------------------------------------------------------------------------------------------------------------------

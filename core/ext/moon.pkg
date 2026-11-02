@@ -36,6 +36,7 @@ options(
     "ext_wbtest.mbt": [ "native" ],
     "host_wbtest.mbt": [ "native" ],
     "prepare_wbtest.mbt": [ "native" ],
+    "pi_modules_wbtest.mbt": [ "native" ],
     "serve_wbtest.mbt": [ "native" ],
   },
 )

@@ -19,8 +19,9 @@
 
 宿主自己解析 pi 装机：`--modules` 显式指定 > 环境变量 `PI_PI_MODULES` >
 `<agent dir>/install/releases/` 里版本号最大的一份 > `<agent dir>/npm/node_modules`
-（与 pi-moon 侧同一条解析顺序）。bun 的定位同理（`PI_MOON_BUN` 显式指定 > 垫片
-扫描——Windows 上 npm/nvm 的 `.cmd` 垫片不能直接 spawn，真 exe 在
+> PATH 上全局 bin 反推出的 npm 全局 `node_modules`（`npm i -g` / nvm / scoop 装的
+pi 只在这里）。与 pi-moon 侧同一条解析顺序。bun 的定位同理（`PI_MOON_BUN` 显式
+指定 > 垫片扫描 —— Windows 上 npm/nvm 的 `.cmd` 垫片不能直接 spawn，真 exe 在
 `node_modules/bun/bin/bun.exe` 下）。
 
 ## 本机双终端演示

@@ -294,6 +294,9 @@ pi-moon -p "用 demo_tool 说你好"                  # 第二次：命中产物
 [ext] 装载扩展 "y" 失败：…
 ```
 
-`PI_PI_MODULES` 可以显式指定 pi 的 node_modules；默认去
-`<agent dir>/install/releases/<版本>/node_modules` 里挑版本号最大的那份。
+`PI_PI_MODULES` 可以显式指定 pi 的 node_modules；默认按顺序找
+`<agent dir>/install/releases/<版本>/node_modules`（版本号最大的那份）、
+`<agent dir>/npm/node_modules`，最后从 PATH 上的全局 bin 反推 npm 全局装机的
+`node_modules`（`npm i -g` / nvm / scoop 装的 pi 只在这里 —— 前两条一个都命中
+不了，光看 agent 目录会误判成「这台机器没装 pi」）。
 `PI_MOON_BUN` 可以指定 bun 可执行文件。

@@ -56,7 +56,8 @@ reducer ──► Cmd::RunTools(calls)
   ```
 
   `--modules` 可用环境变量 `PI_PI_MODULES` 指定（pi-moon 侧与扩展宿主同一条
-  解析逻辑：env 优先，再扫 pi 装机取版本号最大的那份）；手脚机器只需要 bun
+  解析逻辑：env 优先，再扫 pi 装机取版本号最大的那份，最后从 PATH 上的全局
+  bin 反推 npm 全局装机的 `node_modules`）；手脚机器只需要 bun
   和 pi 装机，**不需要任何模型密钥**。v1 只绑 127.0.0.1；`--managed` 供
   pi-moon 拉起时使用（父进程关 stdin 宿主即退）。
 - **信任边界（v1）**：明文 TCP，宿主默认只监听 localhost；跨机部署走 SSH 隧道
